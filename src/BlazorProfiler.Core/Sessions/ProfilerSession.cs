@@ -76,8 +76,17 @@ public sealed class ProfilerSessionStatistics
     /// <summary>Events evicted by retention limits.</summary>
     public long EvictedEvents { get; init; }
 
-    /// <summary>The sequence number of the most recent event (cursor for incremental reads).</summary>
+    /// <summary>
+    /// The sequence number of the most recent event (cursor for incremental reads). Sequence numbers are never reused, not
+    /// even after the session is cleared.
+    /// </summary>
     public long LastSequence { get; init; }
+
+    /// <summary>
+    /// The sequence number consumed by the most recent clear (zero when the session was never cleared). A cursor below it
+    /// refers to events that were removed by the clear.
+    /// </summary>
+    public long ClearedSequence { get; init; }
 
     /// <summary>Whether the session is backed by an imported trace.</summary>
     public bool IsImported { get; init; }
@@ -366,6 +375,24 @@ public sealed class ProfilerSession : IProfilerSession
         }
     }
 
+    /// <summary>
+    /// Replaces a stored event with an updated copy (for example a request enriched by browser Resource Timing) and adjusts
+    /// the aggregates accordingly. Does nothing when the session does not hold <paramref name="original"/>.
+    /// </summary>
+    internal bool TryReplace(HttpRequestEvent original, HttpRequestEvent replacement)
+    {
+        lock (_lock)
+        {
+            if (_state == ProfilerSessionState.Disposed || !_store.Replace(original, replacement))
+            {
+                return false;
+            }
+
+            _aggregates.Replace(original, replacement);
+            return true;
+        }
+    }
+
     /// <summary>Appends an event to an imported session.</summary>
     internal void AppendImported(ProfilerEvent profilerEvent)
     {
@@ -471,7 +498,8 @@ public sealed class ProfilerSession : IProfilerSession
             StoredBytes = _store.EstimatedBytes,
             AcceptedEvents = _store.TotalAppended,
             EvictedEvents = _store.EvictedCount,
-            LastSequence = _store.TotalAppended,
+            LastSequence = _store.LastSequence,
+            ClearedSequence = _store.ClearedSequence,
             IsImported = IsImported,
             StartTimestamp = StartTimestamp,
             ClockFrequency = Clock.Frequency,

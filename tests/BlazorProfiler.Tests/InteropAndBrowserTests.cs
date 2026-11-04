@@ -175,8 +175,32 @@ public class BrowserIngestionTests
         await using var f = ProfilerFixture.Create();
         var collector = f.Root.GetRequiredService<BrowserCollector>();
         Assert.Equal(0, collector.Ingest(new string('x', BrowserCollector.MaxPayloadLength + 1), 0));
-        Assert.Equal(0, collector.Ingest("{not json", 0));
+
+        // Discarded batches are never silent: they show up in the collector's health.
         Assert.Equal(1, collector.GetStatus().Errors);
+        Assert.Contains("exceeded the limit", collector.GetStatus().LastError, StringComparison.Ordinal);
+        Assert.Equal(0, collector.Ingest("{not json", 0));
+        Assert.Equal(2, collector.GetStatus().Errors);
+    }
+
+    [Fact]
+    public async Task ReportsEntriesBeyondTheBatchLimit()
+    {
+        await using var f = ProfilerFixture.Create();
+        var collector = f.Root.GetRequiredService<BrowserCollector>();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var entries = string.Join(",", Enumerable.Range(0, BrowserCollector.MaxEntriesPerBatch + 5).Select(_ => $$"""{"k":"l","n":"longtask","t":{{now}},"d":60,"b":10}"""));
+        Assert.Equal(BrowserCollector.MaxEntriesPerBatch, collector.Ingest($"[{entries}]", 0));
+        Assert.Equal(1, collector.GetStatus().Errors);
+    }
+
+    [Fact]
+    public void ServerBatchBudgetFitsTheDefaultSignalRMessageLimit()
+    {
+        // The browser module escapes the batch again when sending it, so the budget must leave room for that and for
+        // multi-byte characters within SignalR's default 32 KB MaximumReceiveMessageSize.
+        Assert.True(BrowserCollector.ServerMaxBatchLength * 2 <= 32 * 1024);
+        Assert.True(BrowserCollector.WebAssemblyMaxBatchLength <= BrowserCollector.MaxPayloadLength);
     }
 }
 

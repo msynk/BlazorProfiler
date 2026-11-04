@@ -5,6 +5,11 @@
 
 const CHANNEL_NAME = 'blazor-profiler';
 const MAX_BUFFER = 2000;
+const MAX_ENTRIES_PER_BATCH = 1000;
+const MAX_BATCHES_PER_FLUSH = 8;
+// Blazor Server's default SignalR limit is 32 KB per incoming message; the batch travels as an escaped string argument,
+// so the default budget leaves room for escaping, multi-byte characters, and the invocation envelope.
+const DEFAULT_MAX_BATCH_CHARS = 16000;
 
 let state = null;
 
@@ -28,7 +33,7 @@ export function start(dotNetRef, optionsJson) {
     observeInteractions(options.interactionThresholdMs || 40);
     observeLongFrames();
     observeResources();
-    state.timer = setInterval(flush, options.flushIntervalMs || 2000);
+    state.timer = setInterval(() => flush(false), options.flushIntervalMs || 2000);
   }
 
   if (options.bridge) {
@@ -56,7 +61,7 @@ export function stop() {
   }
 
   clearInterval(state.timer);
-  flush();
+  flush(true);
   if (state.channel) {
     state.channel.close();
   }
@@ -118,6 +123,11 @@ function epoch(startTime) {
   return performance.timeOrigin + startTime;
 }
 
+// Long strings are cut here as well as in .NET, so a single entry can never exceed the batch budget.
+function cut(value, max) {
+  return typeof value === 'string' && value.length > max ? value.slice(0, max) : value;
+}
+
 function observeInteractions(threshold) {
   observe('event', { durationThreshold: Math.max(16, threshold) }, entries => {
     for (const e of entries) {
@@ -133,13 +143,13 @@ function observeInteractions(threshold) {
 
       const entry = {
         k: 'i',
-        n: e.name,
+        n: cut(e.name, 64),
         t: epoch(e.startTime),
         d: e.duration,
         id: Math.max(0, e.processingStart - e.startTime),
         pr: Math.max(0, e.processingEnd - e.processingStart),
         pd: Math.max(0, e.startTime + e.duration - e.processingEnd),
-        tag: e.target && e.target.tagName ? e.target.tagName.toLowerCase() : undefined,
+        tag: e.target && e.target.tagName ? cut(e.target.tagName.toLowerCase(), 32) : undefined,
       };
 
       if (existing) {
@@ -162,7 +172,7 @@ function observeLongFrames() {
           script = longest.sourceURL || longest.invoker || undefined;
         }
 
-        push({ k: 'l', n: 'long-animation-frame', t: epoch(e.startTime), d: e.duration, b: e.blockingDuration || 0, s: script });
+        push({ k: 'l', n: 'long-animation-frame', t: epoch(e.startTime), d: e.duration, b: e.blockingDuration || 0, s: cut(script, 512) });
       }
     });
   } else {
@@ -179,10 +189,10 @@ function observeResources() {
     for (const e of entries) {
       push({
         k: 'r',
-        n: e.name,
+        n: cut(e.name, 2048),
         t: epoch(e.startTime),
         d: e.duration,
-        it: e.initiatorType,
+        it: cut(e.initiatorType, 32),
         ts: e.transferSize || 0,
         ds: e.decodedBodySize || 0,
         st: e.responseStatus || 0,
@@ -191,14 +201,54 @@ function observeResources() {
   });
 }
 
-function flush() {
+// Sends buffered entries in batches whose serialized size stays within the transport budget (on Blazor Server an
+// oversized message would close the circuit). A periodic flush sends at most MAX_BATCHES_PER_FLUSH batches and leaves the
+// rest for the next tick; the final flush on stop sends everything.
+function flush(all) {
   if (!state || state.buffer.length === 0) {
     return;
   }
 
-  const batch = state.buffer.splice(0, 1000);
-  state.interactions.clear();
-  state.ref.invokeMethodAsync('BlazorProfiler.Ingest', JSON.stringify(batch)).catch(() => { /* circuit gone */ });
+  const budget = state.options.maxBatchChars || DEFAULT_MAX_BATCH_CHARS;
+  const sent = new Set();
+  for (let batches = 0; state.buffer.length > 0 && (all || batches < MAX_BATCHES_PER_FLUSH); batches++) {
+    const parts = [];
+    let size = 2;
+    let taken = 0;
+    while (taken < state.buffer.length && parts.length < MAX_ENTRIES_PER_BATCH) {
+      const entry = state.buffer[taken];
+      const text = JSON.stringify(entry);
+      // The batch is passed as a string argument and escaped again on the wire, so measure the escaped length.
+      const cost = JSON.stringify(text).length - 1;
+      if (cost > budget) {
+        // Cannot be sent without exceeding the budget; drop it (entries are truncated, so this is not expected).
+        taken++;
+        sent.add(entry);
+        continue;
+      }
+
+      if (parts.length > 0 && size + cost > budget) {
+        break;
+      }
+
+      parts.push(text);
+      sent.add(entry);
+      size += cost;
+      taken++;
+    }
+
+    state.buffer.splice(0, taken);
+    if (parts.length > 0) {
+      state.ref.invokeMethodAsync('BlazorProfiler.Ingest', `[${parts.join(',')}]`).catch(() => { /* circuit gone */ });
+    }
+  }
+
+  // Interactions already sent can no longer be updated in place; later entries for them start a new record.
+  for (const [id, entry] of state.interactions) {
+    if (sent.has(entry)) {
+      state.interactions.delete(id);
+    }
+  }
 }
 
 function startBridge() {

@@ -67,6 +67,23 @@ function append(el, children) {
   }
 }
 
+/**
+ * Returns the URL when it is an absolute http(s) URL, otherwise null. Use for every link whose target comes from data
+ * (findings, traces), which may be attacker-controlled: javascript:, data:, and similar schemes are never rendered.
+ */
+export function safeWebUrl(value) {
+  if (typeof value !== 'string' || !value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function clear(el) {
   while (el.firstChild) {
     el.removeChild(el.firstChild);

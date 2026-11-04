@@ -343,23 +343,24 @@ public sealed class HighRenderBatchVolumeRule : DiagnosticRule
         var threshold = context.Options.HighBatchRatePerSecond;
         foreach (var circuit in context.OfType<RenderBatchEvent>().Where(b => b.CircuitId is not null).GroupBy(b => b.CircuitId!))
         {
-            var timestamps = SortedTimestamps(circuit);
-            var peak = PeakCount(timestamps, context.Clock.Frequency);
-            var sustained = SecondsAtOrAbove(timestamps, context.Clock.Frequency, threshold);
+            var sorted = SortedByTimestamp(circuit);
+            var peak = PeakRate(sorted, context.Clock.Frequency);
+            var sustained = SecondsAtOrAbove(sorted, context.Clock.Frequency, threshold);
             if (peak < threshold || sustained < 3)
             {
                 continue;
             }
 
+            var total = Weighted(sorted);
             yield return Create(
                 $"Circuit {circuit.Key} sends up to {FormatNumber(peak)} render batches per second",
                 Scale(peak, threshold),
                 DiagnosticConfidence.High,
-                $"Circuit {circuit.Key} produced {timestamps.Count} render batches, at or above {FormatNumber(threshold)} per second for {sustained} second(s).",
+                $"Circuit {circuit.Key} produced {FormatNumber(total)} render batches, at or above {FormatNumber(threshold)} per second for {sustained} second(s).",
                 "Each batch is serialized and sent to the browser, which must acknowledge it. A sustained high rate consumes server CPU and bandwidth per user and limits how many users a server can host.",
                 "Throttle UI updates from timers and streams (for example to 10 per second), avoid StateHasChanged in loops, and coalesce updates.",
                 [Evidence("Peak batches per second", FormatNumber(peak)), Evidence("Seconds above threshold", FormatNumber(sustained))],
-                new ImpactEstimate { Occurrences = timestamps.Count, Method = "Count of render batches on the circuit.", Quality = ValueQuality.Measured },
+                new ImpactEstimate { Occurrences = total, Method = "Count of render batches on the circuit.", Quality = ValueQuality.Measured },
                 subject: circuit.Key,
                 related: circuit.Take(20));
         }

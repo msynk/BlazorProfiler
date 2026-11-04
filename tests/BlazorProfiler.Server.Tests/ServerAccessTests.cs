@@ -3,10 +3,13 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using BlazorProfiler.Api;
+using BlazorProfiler.Browser;
 using BlazorProfiler.Events;
 using BlazorProfiler.Server;
 using BlazorProfiler.Sessions;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -30,6 +33,8 @@ public sealed class ServerAccessTests
             o.AddPolicy("Developers", p => p.RequireRole("Developer"));
             o.AddPolicy("Users", p => p.RequireAuthenticatedUser());
         });
+        builder.Services.AddScoped<FixedAuthenticationStateProvider>();
+        builder.Services.AddScoped<AuthenticationStateProvider>(sp => sp.GetRequiredService<FixedAuthenticationStateProvider>());
         builder.AddBlazorProfiler(
             o =>
             {
@@ -78,6 +83,101 @@ public sealed class ServerAccessTests
         var info = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(info.GetProperty("canViewAllCircuits").GetBoolean());
         Assert.Equal("server", info.GetProperty("source").GetString());
+    }
+
+    [Theory]
+    [InlineData("X-Forwarded-For", "203.0.113.7")]
+    [InlineData("Forwarded", "for=203.0.113.7")]
+    [InlineData("X-Forwarded-Host", "abc.devtunnels.ms")]
+    public async Task DevelopmentLoopbackGrantIgnoresRelayedRequests(string header, string value)
+    {
+        // Tunnels and local reverse proxies connect over loopback while relaying remote clients.
+        await using var app = await CreateAppAsync("Development", enabled: null);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/_blazor-profiler/api/info");
+        request.Headers.TryAddWithoutValidation(header, value);
+        using var response = await Client(app).SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DevelopmentLoopbackGrantRequiresALocalHostName()
+    {
+        await using var app = await CreateAppAsync("Development", enabled: null);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/_blazor-profiler/api/info");
+        request.Headers.Host = "my-app.ngrok.app";
+        using var response = await Client(app).SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task BridgeAccessFollowsThePoliciesOfTheCircuitUser()
+    {
+        await using var app = await CreateAppAsync("Development", enabled: true, s =>
+        {
+            s.AuthorizationPolicy = "Developers";
+            s.OwnCircuitPolicy = "Users";
+        });
+        app.Services.GetRequiredService<CircuitRegistry>().Register("circuit-alice", null, "alice", DateTimeOffset.UtcNow);
+
+        static async Task<ProfilerApiAccess?> AccessForAsync(WebApplication app, ClaimsPrincipal user)
+        {
+            await using var scope = app.Services.CreateAsyncScope();
+            var state = scope.ServiceProvider.GetRequiredService<FixedAuthenticationStateProvider>();
+            state.User = user;
+            return await scope.ServiceProvider.GetRequiredService<IProfilerBridgeAccessProvider>().GetAccessAsync();
+        }
+
+        // Anonymous users get nothing, even in Development: the bridge cannot prove a request is local.
+        Assert.Null(await AccessForAsync(app, new ClaimsPrincipal(new ClaimsIdentity())));
+
+        var alice = await AccessForAsync(app, User("alice"));
+        Assert.NotNull(alice);
+        Assert.False(alice.CanViewAllCircuits);
+        Assert.Equal(["circuit-alice"], alice.OwnedCircuits);
+
+        var developer = await AccessForAsync(app, User("dev", "Developer"));
+        Assert.True(developer!.CanViewAllCircuits);
+    }
+
+    [Fact]
+    public void ClosedCircuitSessionsAreRetainedWithinTheLimitAndStayVisibleToTheirOwner()
+    {
+        var registry = new CircuitRegistry();
+        var live = new HashSet<string>(StringComparer.Ordinal) { "s1", "s2", "s3" };
+        Assert.Empty(registry.RetainClosedCircuit("c1", "alice", "s1", 2, live.Contains));
+        Assert.Empty(registry.RetainClosedCircuit("c2", "bob", "s2", 2, live.Contains));
+        Assert.Equal(["c1"], registry.GetOwned("alice"));
+
+        // Over the limit: the oldest retained session is returned for removal and its owner loses access to it.
+        Assert.Equal(["s1"], registry.RetainClosedCircuit("c3", "alice", "s3", 2, live.Contains));
+        Assert.Equal(["c3"], registry.GetOwned("alice"));
+
+        // Entries of sessions removed elsewhere are discarded instead of counting toward the limit.
+        live.Remove("s2");
+        live.Add("s4");
+        Assert.Empty(registry.RetainClosedCircuit("c4", "bob", "s4", 2, live.Contains));
+        Assert.Equal("s3", registry.TakeOldestRetainedSession());
+        Assert.Equal("s4", registry.TakeOldestRetainedSession());
+        Assert.Null(registry.TakeOldestRetainedSession());
+    }
+
+    [Fact]
+    public void RetainingNoClosedCircuitSessionsRemovesThemImmediately()
+    {
+        var registry = new CircuitRegistry();
+        Assert.Equal(["s1"], registry.RetainClosedCircuit("c1", "alice", "s1", 0, _ => true));
+        Assert.Empty(registry.GetOwned("alice"));
+    }
+
+    private static ClaimsPrincipal User(string name, string? role = null)
+    {
+        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, name), new(ClaimTypes.Name, name) };
+        if (role is not null)
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+        }
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
     }
 
     [Fact]
@@ -283,6 +383,13 @@ public sealed class ServerAccessTests
         {
             SynchronizationContext.SetSynchronizationContext(previous);
         }
+    }
+
+    private sealed class FixedAuthenticationStateProvider : AuthenticationStateProvider
+    {
+        public ClaimsPrincipal User { get; set; } = new(new ClaimsIdentity());
+
+        public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(User));
     }
 
     private sealed class TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)

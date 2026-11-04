@@ -136,11 +136,15 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
     private readonly ILogger _logger;
     private readonly object _processLock = new();
 
+    // Serializes collector start/stop. Held while collectors start or stop (never while holding _gate), so the decision
+    // and the transition happen atomically with respect to other session state changes.
+    private readonly object _collectorGate = new();
+
     private ProfilerSession[] _recording = [];
     private Task? _consumer;
     private bool _collectorsRunning;
     private bool _started;
-    private bool _disposed;
+    private volatile bool _disposed;
     private long _nextEventId;
     private long _nextOperationId;
     private long _emitted;
@@ -180,7 +184,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         [
             new FilterProcessor(options.Filters),
             new RedactionProcessor(RedactionPolicy),
-            new BrowserResourceMergeProcessor(Clock),
+            new BrowserResourceMergeProcessor(Clock, ReplaceStoredEvent),
             .. processors ?? [],
         ];
         Diagnostics = new DiagnosticEngine(options.Diagnostics, rules ?? BuiltInRules.Create(), recommendationProviders);
@@ -443,7 +447,8 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
     /// <inheritdoc />
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
-        if (_channel is null || _consumer is null)
+        var consumer = _consumer;
+        if (_channel is null || consumer is null)
         {
             return;
         }
@@ -451,11 +456,20 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         var request = new FlushRequest();
         while (!_channel.Writer.TryWrite(request))
         {
+            // The writer fails permanently once the channel is completed (disposal), and the consumer no longer drains
+            // the queue once it has stopped; nothing can be flushed in either case.
+            if (_disposed || consumer.IsCompleted)
+            {
+                return;
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(1, cancellationToken).ConfigureAwait(false);
         }
 
-        await request.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // A request queued just before the consumer stops (disposal or an unexpected failure) is never processed, so
+        // also complete when the consumer completes.
+        await Task.WhenAny(request.Completion.Task, consumer).WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -475,7 +489,12 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
             _recording = [];
         }
 
-        StopCollectors();
+        lock (_collectorGate)
+        {
+            _collectorsRunning = false;
+            StopCollectors();
+        }
+
         _channel?.Writer.TryComplete();
         await _shutdown.CancelAsync().ConfigureAwait(false);
         if (_consumer is not null)
@@ -502,8 +521,6 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
 
     private void OnSessionStateChanged(ProfilerSession session)
     {
-        bool startCollectors;
-        bool stopCollectors;
         lock (_gate)
         {
             if (session.State == ProfilerSessionState.Disposed)
@@ -512,25 +529,40 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
             }
 
             _recording = [.. _sessions.Where(s => s.State == ProfilerSessionState.Recording)];
-            startCollectors = _recording.Length > 0 && !_collectorsRunning;
-            stopCollectors = _recording.Length == 0 && _collectorsRunning;
-            if (startCollectors)
-            {
-                _collectorsRunning = true;
-            }
-            else if (stopCollectors)
-            {
-                _collectorsRunning = false;
-            }
         }
 
-        if (startCollectors)
+        SynchronizeCollectors();
+    }
+
+    /// <summary>
+    /// Starts or stops collectors so that they run exactly when a session is recording. The desired state is re-read
+    /// under the collector gate, so concurrent session changes cannot apply their transitions out of order (for example a
+    /// stop computed before another session started, applied after it).
+    /// </summary>
+    private void SynchronizeCollectors()
+    {
+        lock (_collectorGate)
         {
-            StartCollectors();
-        }
-        else if (stopCollectors)
-        {
-            StopCollectors();
+            bool shouldRun;
+            lock (_gate)
+            {
+                shouldRun = !_disposed && _recording.Length > 0;
+            }
+
+            if (shouldRun == _collectorsRunning)
+            {
+                return;
+            }
+
+            _collectorsRunning = shouldRun;
+            if (shouldRun)
+            {
+                StartCollectors();
+            }
+            else
+            {
+                StopCollectors();
+            }
         }
     }
 
@@ -642,6 +674,24 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         finally
         {
             Interlocked.Add(ref _processingTicks, Stopwatch.GetTimestamp() - start);
+        }
+    }
+
+    /// <summary>
+    /// Replaces an event that sessions already stored with an enriched copy (runs on the consumer, inside processing).
+    /// </summary>
+    private void ReplaceStoredEvent(HttpRequestEvent original, HttpRequestEvent replacement)
+    {
+        ProfilerSession[] sessions;
+        lock (_gate)
+        {
+            // Include paused and stopped sessions: they may hold the original even though they no longer record.
+            sessions = [.. _sessions];
+        }
+
+        foreach (var session in sessions)
+        {
+            session.TryReplace(original, replacement);
         }
     }
 

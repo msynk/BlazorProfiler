@@ -73,8 +73,43 @@ public abstract class DiagnosticRule : IDiagnosticRule
         return counts.Values.Count(c => c >= threshold);
     }
 
-    /// <summary>The weighted count of events.</summary>
-    protected static double Weighted(IEnumerable<ProfilerEvent> events) => events.Sum(e => e.SampleWeight);
+    /// <summary>Events sorted by start timestamp.</summary>
+    protected static List<ProfilerEvent> SortedByTimestamp(IEnumerable<ProfilerEvent> events)
+    {
+        var list = events.ToList();
+        list.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        return list;
+    }
+
+    /// <summary>
+    /// The peak weighted number of events in any one window of <paramref name="windowTicks"/> (events sorted by timestamp).
+    /// Sampled events count for the occurrences they represent, so rates are not under-estimated under sampling.
+    /// </summary>
+    protected static double PeakRate(IReadOnlyList<ProfilerEvent> sortedEvents, long windowTicks) =>
+        DiagnosticContext.PeakWeight(sortedEvents, windowTicks);
+
+    /// <summary>Counts the seconds in which the weighted number of events reached <paramref name="threshold"/>.</summary>
+    protected static int SecondsAtOrAbove(IReadOnlyList<ProfilerEvent> events, long frequency, double threshold)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        if (events.Count == 0)
+        {
+            return 0;
+        }
+
+        var weights = new Dictionary<long, double>();
+        foreach (var e in events)
+        {
+            var second = e.Timestamp / frequency;
+            weights[second] = weights.GetValueOrDefault(second) + DiagnosticContext.WeightOf(e);
+        }
+
+        // The tolerance absorbs floating-point residue from fractional weights.
+        return weights.Values.Count(w => w >= threshold - 1e-9);
+    }
+
+    /// <summary>The weighted count of events: the number of occurrences they represent when sampled.</summary>
+    protected static double Weighted(IEnumerable<ProfilerEvent> events) => events.Sum(DiagnosticContext.WeightOf);
 
     /// <summary>Estimates a percentile of event durations in ticks.</summary>
     protected static long PercentileTicks(IEnumerable<ProfilerEvent> events, double percentile)
@@ -88,6 +123,25 @@ public abstract class DiagnosticRule : IDiagnosticRule
         durations.Sort();
         var rank = (int)Math.Ceiling(percentile / 100.0 * durations.Count) - 1;
         return durations[Math.Clamp(rank, 0, durations.Count - 1)];
+    }
+
+    /// <summary>
+    /// Maps each operation to the first event handler recorded for it. Operation identifiers are normally unique per
+    /// handler, but imported or merged traces can repeat them, so duplicates are tolerated instead of failing the rule.
+    /// </summary>
+    protected static Dictionary<long, EventHandlerEvent> HandlersByOperation(DiagnosticContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var handlers = new Dictionary<long, EventHandlerEvent>();
+        foreach (var handler in context.OfType<EventHandlerEvent>())
+        {
+            if (handler.OperationId != 0)
+            {
+                handlers.TryAdd(handler.OperationId, handler);
+            }
+        }
+
+        return handlers;
     }
 
     /// <summary>Formats a handler display name.</summary>

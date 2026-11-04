@@ -167,15 +167,15 @@ public sealed class RapidEventStreamRule : DiagnosticRule
     {
         var options = context.Options;
         var batchesByOperation = context.OfType<RenderBatchEvent>().Where(b => b.OperationId != 0).GroupBy(b => b.OperationId).ToDictionary(g => g.Key, g => g.ToList());
-        foreach (var group in context.OfType<EventHandlerEvent>().GroupBy(HandlerName).OrderByDescending(g => g.Count()))
+        foreach (var group in context.OfType<EventHandlerEvent>().GroupBy(HandlerName).OrderByDescending(g => Weighted(g)))
         {
             var events = group.ToList();
-            if (events.Count < 20)
+            if (Weighted(events) < 20)
             {
                 continue;
             }
 
-            var peak = PeakCount(SortedTimestamps(events), context.Clock.Frequency);
+            var peak = PeakRate(SortedByTimestamp(events), context.Clock.Frequency);
             if (peak < options.RapidEventsPerSecond)
             {
                 continue;
@@ -227,7 +227,7 @@ public sealed class DuplicateRequestsInHandlerRule : DiagnosticRule
     /// <inheritdoc />
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
-        var handlers = context.OfType<EventHandlerEvent>().Where(h => h.OperationId != 0).ToDictionary(h => h.OperationId);
+        var handlers = HandlersByOperation(context);
         var byHandler = new Dictionary<string, (EventHandlerEvent Handler, int Operations, int Duplicates, double WastedMs, List<HttpRequestEvent> Requests)>(StringComparer.Ordinal);
         foreach (var (operationId, events) in context.ByOperation)
         {

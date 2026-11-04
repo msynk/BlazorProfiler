@@ -1,7 +1,7 @@
 // Dashboard views. Each view receives the shared context and returns a DOM element.
 import {
   h, clear, fmtMs, fmtBytes, fmtNum, fmtPct, shortType, qualityBadge, emptyState, virtualList, sortableTable,
-  lineChart, color, settings, debounce,
+  lineChart, color, settings, debounce, safeWebUrl,
 } from './util.js';
 import { Timeline, LANES, describeShort } from './timeline.js';
 
@@ -759,7 +759,9 @@ function findingCard(ctx, f, open) {
     h('span', { class: 'badge', title: 'How strongly the evidence supports the explanation' }, `${f.confidence} confidence`)));
 
   const actions = h('div', { class: 'toolbar' });
-  if (!ctx.state.source?.readOnly && !ctx.state.session?.fileImported) {
+  // Suppressions apply to every user, so only callers with access to all circuits may change them.
+  const canSuppress = ctx.state.info?.canViewAllCircuits !== false;
+  if (canSuppress && !ctx.state.source?.readOnly && !ctx.state.session?.fileImported) {
     if (f.suppression) {
       actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: () => ctx.act(s => s.unsuppress(f.fingerprint), 'Suppression removed') }, `Restore (${f.suppression.kind})`));
     } else {
@@ -772,8 +774,10 @@ function findingCard(ctx, f, open) {
     actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: () => ctx.navigate('timeline', { eventId: f.relatedEventIds[0] }) }, 'Show in timeline'));
   }
 
-  if (f.documentationUrl) {
-    actions.appendChild(h('a', { href: f.documentationUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Rule documentation'));
+  // Findings can come from imported trace files or other untrusted sources; only web links are rendered.
+  const documentationUrl = safeWebUrl(f.documentationUrl);
+  if (documentationUrl) {
+    actions.appendChild(h('a', { href: documentationUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Rule documentation'));
   }
 
   card.appendChild(h('div', { class: 'body' },

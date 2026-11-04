@@ -1,3 +1,5 @@
+using BlazorProfiler.Analysis;
+using BlazorProfiler.Api;
 using BlazorProfiler.Collectors;
 using BlazorProfiler.Correlation;
 using BlazorProfiler.Events;
@@ -214,6 +216,61 @@ public class StoreTests
     }
 
     [Fact]
+    public void CursorsFromBeforeAClearReturnEveryEventAppendedAfterIt()
+    {
+        var store = new BoundedEventStore(1000, long.MaxValue, long.MaxValue);
+        for (var i = 0; i < 10; i++)
+        {
+            store.Append(Ev.Parameters("Before", i), 0);
+        }
+
+        store.GetAfter(0, 100, out var cursor);
+        Assert.Equal(10, cursor);
+        store.Clear();
+
+        // More events arrive after the clear than the old cursor value: none may be skipped or mistaken for old ones.
+        for (var i = 0; i < 40; i++)
+        {
+            store.Append(Ev.Parameters("After", i), 0);
+        }
+
+        var page = store.GetAfter(cursor, 100, out var next);
+        Assert.Equal(40, page.Count);
+        Assert.All(page, e => Assert.Equal("After", ((ParametersSetEvent)e).ComponentType));
+        Assert.Equal(store.LastSequence, next);
+        Assert.True(store.ClearedSequence > cursor);
+        Assert.Equal(40, store.TotalAppended);
+        Assert.Empty(store.GetAfter(next, 100, out _));
+    }
+
+    [Fact]
+    public void CursorAheadOfTheStoreRestartsFromTheOldestEvent()
+    {
+        var store = new BoundedEventStore(1000, long.MaxValue, long.MaxValue);
+        for (var i = 0; i < 5; i++)
+        {
+            store.Append(Ev.Parameters("A", i), 0);
+        }
+
+        Assert.Equal(5, store.GetAfter(5000, 100, out var cursor).Count);
+        Assert.Equal(5, cursor);
+    }
+
+    [Fact]
+    public void ReplaceSwapsTheStoredInstanceAndTheOperationIndex()
+    {
+        var store = new BoundedEventStore(10, long.MaxValue, long.MaxValue);
+        var original = Ev.Http("/a", 0, 1, operation: 3);
+        store.Append(original, 0);
+        store.Append(Ev.Parameters("A", 1), 0);
+        var replacement = Ev.Http("/a", 0, 1, operation: 3);
+        Assert.True(store.Replace(original, replacement));
+        Assert.Same(replacement, store.ToArray()[0]);
+        Assert.Same(replacement, Assert.Single(store.GetOperation(3)));
+        Assert.False(store.Replace(original, replacement));
+    }
+
+    [Fact]
     public void OperationIndexTracksEviction()
     {
         var store = new BoundedEventStore(50, long.MaxValue, long.MaxValue);
@@ -326,6 +383,55 @@ public class SessionTests
         session.Clear();
         Assert.Equal(0, session.GetStatistics().StoredEvents);
         Assert.Empty(session.GetSummary().Components);
+    }
+
+    [Fact]
+    public void EventPagesSignalAResetAfterClear()
+    {
+        var (host, session, _) = TestHost.WithSession();
+        var api = new ProfilerApi(host, "test");
+        for (var i = 0; i < 10; i++)
+        {
+            host.Emit(Ev.Parameters("A", i));
+        }
+
+        var first = api.GetEvents(ProfilerApiAccess.Full, session.Id, 0, 100);
+        Assert.False(first.Reset);
+        Assert.Equal(10, first.Events.Count);
+
+        session.Clear();
+        var empty = api.GetEvents(ProfilerApiAccess.Full, session.Id, first.Cursor, 100);
+        Assert.True(empty.Reset);
+        Assert.False(empty.Gap);
+        Assert.Empty(empty.Events);
+
+        // Once the client has the post-clear cursor, later pages are ordinary increments.
+        host.Emit(Ev.Parameters("B", 20));
+        var next = api.GetEvents(ProfilerApiAccess.Full, session.Id, empty.Cursor, 100);
+        Assert.False(next.Reset);
+        Assert.Equal("B", ((ParametersSetEvent)Assert.Single(next.Events)).ComponentType);
+
+        // A client that missed the clear entirely still learns about it.
+        var stale = api.GetEvents(ProfilerApiAccess.Full, session.Id, first.Cursor, 100);
+        Assert.True(stale.Reset);
+        Assert.Single(stale.Events);
+    }
+
+    [Fact]
+    public void SuppressionsRequireAccessToAllCircuits()
+    {
+        var (host, _, _) = TestHost.WithSession();
+        var api = new ProfilerApi(host, "test");
+        var ownCircuitsOnly = new ProfilerApiAccess { CanViewAllCircuits = false, CanControl = true, OwnedCircuits = new HashSet<string> { "c1" } };
+
+        var suppress = Assert.Throws<ProfilerApiException>(() => api.Suppress(ownCircuitsOnly, "BP3001:*", SuppressionKind.Dismissed, null));
+        Assert.Equal(403, suppress.StatusCode);
+        Assert.Empty(host.Diagnostics.Suppressions.GetAll());
+
+        api.Suppress(ProfilerApiAccess.Full, "BP3001:x", SuppressionKind.Expected, null);
+        var unsuppress = Assert.Throws<ProfilerApiException>(() => api.Unsuppress(ownCircuitsOnly, "BP3001:x"));
+        Assert.Equal(403, unsuppress.StatusCode);
+        Assert.Single(host.Diagnostics.Suppressions.GetAll());
     }
 
     [Fact]
@@ -464,6 +570,51 @@ public class HostTests
         Assert.Equal(1, collector.Stops);
         b.Resume();
         Assert.Equal(2, collector.Starts);
+    }
+
+    [Fact]
+    public async Task CollectorsRunWhileAnySessionRecordsUnderConcurrentStateChanges()
+    {
+        var collector = new RecordingCollector();
+        await using var host = TestHost.Create(collectors: [collector]);
+        for (var i = 0; i < 300; i++)
+        {
+            // One session stops while another starts: the stop must never be applied after the start.
+            var closing = host.StartSession();
+            using var barrier = new Barrier(2);
+            IProfilerSession? opened = null;
+            await Task.WhenAll(
+                Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    closing.Stop();
+                }),
+                Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    opened = host.StartSession();
+                }));
+
+            Assert.True(host.IsRecording);
+            Assert.Equal(CollectorState.Running, collector.GetStatus().State);
+
+            host.RemoveSession(closing.Id);
+            host.RemoveSession(opened!.Id);
+            Assert.False(host.IsRecording);
+            Assert.Equal(CollectorState.Stopped, collector.GetStatus().State);
+        }
+    }
+
+    [Fact]
+    public async Task FlushCompletesDuringAndAfterDisposal()
+    {
+        var host = new ProfilerHost(new ProfilerOptions { Enabled = true, AutoStartSession = false }, new FakeClock());
+        host.StartSession();
+        host.Emit(Ev.Parameters("A", 0));
+        var during = host.FlushAsync();
+        await host.DisposeAsync();
+        await during.WaitAsync(TimeSpan.FromSeconds(10));
+        await host.FlushAsync().WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
@@ -607,6 +758,27 @@ public class BrowserMergeTests
         Assert.Equal(ValueQuality.Measured, http.ResponseBytesQuality);
         Assert.False(http.FromCache);
         Assert.Single(events.OfType<BrowserResourceEvent>());
+        Assert.Equal(1234, session.GetSummary().Endpoints.Single().ResponseBytes);
+    }
+
+    [Fact]
+    public void ResourceTimingReplacesTheStoredRequestAndUpdatesAggregates()
+    {
+        var (host, session, _) = TestHost.WithSession();
+        host.Emit(Ev.Http("https://x.test/api/data", 100, 50, operation: 7));
+        var original = session.GetEvents(new EventQuery()).OfType<HttpRequestEvent>().Single();
+        host.Emit(new BrowserResourceEvent { Url = "https://x.test/api/data", InitiatorType = "fetch", Timestamp = Ev.T(110), Duration = Ev.D(40), TransferSize = 0, DecodedBodySize = 500, FromCache = true });
+
+        // Stored events are immutable (readers may be serializing them): the enriched request is a copy.
+        var enriched = session.GetEvents(new EventQuery()).OfType<HttpRequestEvent>().Single();
+        Assert.NotSame(original, enriched);
+        Assert.Null(original.FromCache);
+        Assert.True(enriched.FromCache);
+        Assert.Equal(original.Id, enriched.Id);
+        Assert.Same(enriched, session.GetOperationEvents(7).Single());
+
+        var endpoint = session.GetSummary().Endpoints.Single();
+        Assert.Equal(1, endpoint.CacheHits);
     }
 
     [Fact]
@@ -655,6 +827,27 @@ public class AggregateTests
         Assert.Equal(3, summary.Instances.Count);
         Assert.Equal(1, summary.Instances.Single(i => i.InstanceId == 2).ParentInstanceId);
         Assert.Contains(summary.TimeSeries, p => p.HttpRequests == 1 && p.Second == 1);
+    }
+
+    [Fact]
+    public void FullInstanceTableEvictsDisposedInstancesAndOtherwiseStopsTracking()
+    {
+        var (host, session, _) = TestHost.WithSession(o => o.Retention.MaxTrackedInstances = 16);
+        for (var i = 1; i <= 17; i++)
+        {
+            host.Emit(new ComponentCreatedEvent { ComponentType = "A", ComponentInstanceId = i, Timestamp = Ev.T(i) });
+        }
+
+        var ids = session.GetSummary().Instances.Select(x => x.InstanceId).ToList();
+        Assert.Equal(16, ids.Count);
+        Assert.DoesNotContain(17, ids);
+
+        host.Emit(new ComponentDisposedEvent { ComponentType = "A", ComponentInstanceId = 3, Timestamp = Ev.T(20) });
+        host.Emit(new ComponentCreatedEvent { ComponentType = "A", ComponentInstanceId = 18, Timestamp = Ev.T(21) });
+        ids = session.GetSummary().Instances.Select(x => x.InstanceId).ToList();
+        Assert.Equal(16, ids.Count);
+        Assert.Contains(18, ids);
+        Assert.DoesNotContain(3, ids);
     }
 
     [Fact]

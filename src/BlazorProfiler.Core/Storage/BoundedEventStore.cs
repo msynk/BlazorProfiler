@@ -83,6 +83,18 @@ public interface IProfilerEventStore
     /// <summary>The sequence number of the oldest retained event (sequence numbers start at 1).</summary>
     long OldestSequence { get; }
 
+    /// <summary>
+    /// The sequence number of the most recent event. Sequence numbers increase monotonically for the lifetime of the store
+    /// and are not reused after <see cref="Clear"/>, so a cursor can never point at an unrelated event.
+    /// </summary>
+    long LastSequence { get; }
+
+    /// <summary>
+    /// The sequence number consumed by the most recent <see cref="Clear"/> (zero when the store was never cleared). Every
+    /// event at or below it was removed by the clear; a cursor below it predates the clear.
+    /// </summary>
+    long ClearedSequence { get; }
+
     /// <summary>Appends an event, evicting old events as required by the retention limits.</summary>
     void Append(ProfilerEvent profilerEvent, long now);
 
@@ -92,12 +104,19 @@ public interface IProfilerEventStore
     /// <summary>Removes every event.</summary>
     void Clear();
 
+    /// <summary>
+    /// Replaces a retained event with another instance (for example an enriched copy) at the same position. Returns
+    /// <see langword="false"/> when <paramref name="original"/> is not retained.
+    /// </summary>
+    bool Replace(ProfilerEvent original, ProfilerEvent replacement);
+
     /// <summary>Returns the events matching <paramref name="query"/> in storage order.</summary>
     List<ProfilerEvent> Query(EventQuery query);
 
     /// <summary>
     /// Returns up to <paramref name="max"/> events whose sequence number is greater than <paramref name="afterSequence"/>,
-    /// together with the sequence number of the last returned event.
+    /// together with the sequence number of the last returned event. A cursor that is ahead of the store (not produced by
+    /// it) restarts at the oldest event retained since the last clear.
     /// </summary>
     List<ProfilerEvent> GetAfter(long afterSequence, int max, out long lastSequence);
 
@@ -123,7 +142,9 @@ public sealed class BoundedEventStore : IProfilerEventStore
     private ProfilerEvent[] _buffer;
     private int _head; // index of the oldest event
     private int _count;
-    private long _appended;
+    private long _appended; // since creation or the last clear
+    private long _lastSequence; // monotonic for the lifetime of the store
+    private long _clearedSequence;
     private long _bytes;
     private long _evicted;
 
@@ -155,7 +176,13 @@ public sealed class BoundedEventStore : IProfilerEventStore
     public long EvictedCount => _evicted;
 
     /// <inheritdoc />
-    public long OldestSequence => _appended - _count + 1;
+    public long OldestSequence => _lastSequence - _count + 1;
+
+    /// <inheritdoc />
+    public long LastSequence => _lastSequence;
+
+    /// <inheritdoc />
+    public long ClearedSequence => _clearedSequence;
 
     /// <inheritdoc />
     public void Append(ProfilerEvent profilerEvent, long now)
@@ -174,6 +201,7 @@ public sealed class BoundedEventStore : IProfilerEventStore
         _buffer[(_head + _count) % _buffer.Length] = profilerEvent;
         _count++;
         _appended++;
+        _lastSequence++;
         _bytes += size;
 
         if (profilerEvent.OperationId != 0)
@@ -210,6 +238,39 @@ public sealed class BoundedEventStore : IProfilerEventStore
         _appended = 0;
         _evicted = 0;
         _byOperation.Clear();
+
+        // The clear consumes a sequence number of its own: every cursor handed out before it is below it, every cursor
+        // handed out after it is at or above it, so readers can always tell whether their data predates the clear.
+        _lastSequence++;
+        _clearedSequence = _lastSequence;
+    }
+
+    /// <inheritdoc />
+    public bool Replace(ProfilerEvent original, ProfilerEvent replacement)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        // Replacements target recent events, so search from the newest.
+        for (var i = _count - 1; i >= 0; i--)
+        {
+            var index = (_head + i) % _buffer.Length;
+            if (!ReferenceEquals(_buffer[index], original))
+            {
+                continue;
+            }
+
+            _buffer[index] = replacement;
+            _bytes = Math.Max(0, _bytes - original.EstimateSize() + replacement.EstimateSize());
+            if (original.OperationId != 0 && _byOperation.TryGetValue(original.OperationId, out var list))
+            {
+                list.Replace(original, replacement);
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     /// <inheritdoc />
@@ -236,21 +297,22 @@ public sealed class BoundedEventStore : IProfilerEventStore
     /// <inheritdoc />
     public List<ProfilerEvent> GetAfter(long afterSequence, int max, out long lastSequence)
     {
+        if (afterSequence > _lastSequence || afterSequence < _clearedSequence)
+        {
+            // The cursor was not produced by this store (ahead of it) or predates the last clear: restart at the clear, so
+            // every event appended since is returned.
+            afterSequence = _clearedSequence;
+        }
+
         var oldest = OldestSequence;
         var startSequence = Math.Max(afterSequence + 1, oldest);
-        var results = new List<ProfilerEvent>(Math.Clamp((int)Math.Min(max, _appended - startSequence + 1), 0, 4096));
+        var results = new List<ProfilerEvent>(Math.Clamp((int)Math.Min(max, _lastSequence - startSequence + 1), 0, 4096));
         lastSequence = afterSequence;
-        for (var sequence = startSequence; sequence <= _appended && results.Count < max; sequence++)
+        for (var sequence = startSequence; sequence <= _lastSequence && results.Count < max; sequence++)
         {
             var logical = (int)(sequence - oldest);
             results.Add(_buffer[(_head + logical) % _buffer.Length]);
             lastSequence = sequence;
-        }
-
-        if (results.Count == 0 && afterSequence > _appended)
-        {
-            // The cursor is ahead of the store (for example after Clear); restart from the beginning.
-            lastSequence = _appended;
         }
 
         return results;
@@ -347,6 +409,18 @@ public sealed class BoundedEventStore : IProfilerEventStore
             {
                 Items.RemoveRange(0, _start);
                 _start = 0;
+            }
+        }
+
+        public void Replace(ProfilerEvent original, ProfilerEvent replacement)
+        {
+            for (var i = Items.Count - 1; i >= _start; i--)
+            {
+                if (ReferenceEquals(Items[i], original))
+                {
+                    Items[i] = replacement;
+                    return;
+                }
             }
         }
 

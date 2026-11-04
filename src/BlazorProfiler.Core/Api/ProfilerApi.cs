@@ -55,10 +55,16 @@ public sealed class EventPage
     public long Cursor { get; set; }
 
     /// <summary>
-    /// Whether events between the requested cursor and the first returned event were evicted (or the session was cleared),
-    /// so the client should treat its view as incomplete.
+    /// Whether events between the requested cursor and the first returned event were evicted by retention limits, so the
+    /// client should treat its view as incomplete.
     /// </summary>
     public bool Gap { get; set; }
+
+    /// <summary>
+    /// Whether the requested cursor predates a clear of the session (or was not issued by it). The client must discard the
+    /// events it holds; the returned events start after the clear.
+    /// </summary>
+    public bool Reset { get; set; }
 
     /// <summary>Whether more events are available immediately.</summary>
     public bool HasMore { get; set; }
@@ -177,7 +183,10 @@ public sealed class ProfilerApiAccess
     /// <summary>Circuits the caller owns (visible even without <see cref="CanViewAllCircuits"/>).</summary>
     public IReadOnlySet<string> OwnedCircuits { get; init; } = new HashSet<string>(StringComparer.Ordinal);
 
-    /// <summary>Whether the caller may modify sessions (start, stop, clear, import, suppress).</summary>
+    /// <summary>
+    /// Whether the caller may modify sessions (start, stop, clear). Process-wide changes (process-wide sessions, import,
+    /// suppressions) additionally require <see cref="CanViewAllCircuits"/>.
+    /// </summary>
     public bool CanControl { get; init; } = true;
 
     /// <summary>Returns whether a session is visible to the caller.</summary>
@@ -241,12 +250,17 @@ public sealed class ProfilerApi
             cursor--;
         }
 
+        // Sequence numbers are never reused, so a cursor below the last clear (or ahead of the session) means the caller's
+        // data no longer exists. A fresh reader (cursor 0) has nothing to discard.
+        var reset = after > statistics.LastSequence || (after > 0 && after < statistics.ClearedSequence);
+        var effectiveAfter = reset || after < statistics.ClearedSequence ? statistics.ClearedSequence : after;
         var oldest = statistics.LastSequence - statistics.StoredEvents + 1;
         return new EventPage
         {
             Events = events,
             Cursor = cursor,
-            Gap = after > statistics.LastSequence || (after + 1 < oldest && statistics.LastSequence > 0),
+            Gap = effectiveAfter + 1 < oldest && statistics.StoredEvents > 0,
+            Reset = reset,
             HasMore = hasMore,
         };
     }
@@ -380,9 +394,13 @@ public sealed class ProfilerApi
     }
 
     /// <summary>Adds a suppression.</summary>
+    /// <remarks>
+    /// Suppressions are process-wide (they apply to every session and every caller's reports), so only callers that may
+    /// view all circuits can change them.
+    /// </remarks>
     public void Suppress(ProfilerApiAccess access, string? fingerprint, SuppressionKind kind, string? note)
     {
-        RequireControl(access);
+        RequireSuppressionControl(access);
         if (string.IsNullOrWhiteSpace(fingerprint) || fingerprint.Length > 1024)
         {
             throw new ProfilerApiException("A valid fingerprint is required.");
@@ -392,9 +410,10 @@ public sealed class ProfilerApi
     }
 
     /// <summary>Removes a suppression.</summary>
+    /// <remarks>Like <see cref="Suppress"/>, requires access to all circuits.</remarks>
     public void Unsuppress(ProfilerApiAccess access, string? fingerprint)
     {
-        RequireControl(access);
+        RequireSuppressionControl(access);
         _profiler.Diagnostics.Suppressions.Remove(fingerprint ?? string.Empty);
     }
 
@@ -498,6 +517,15 @@ public sealed class ProfilerApi
         if (!access.CanControl)
         {
             throw new ProfilerApiException("The caller is not allowed to control profiling.") { StatusCode = 403 };
+        }
+    }
+
+    private static void RequireSuppressionControl(ProfilerApiAccess access)
+    {
+        RequireControl(access);
+        if (!access.CanViewAllCircuits)
+        {
+            throw new ProfilerApiException("Suppressions apply to every user; changing them requires access to all circuits.") { StatusCode = 403 };
         }
     }
 

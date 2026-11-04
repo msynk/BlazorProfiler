@@ -20,6 +20,10 @@ public sealed class SessionAggregates
 
     private readonly Dictionary<string, ComponentAggregate> _components = new(StringComparer.Ordinal);
     private readonly Dictionary<long, InstanceAggregate> _instances = [];
+
+    // Disposed instances in disposal order: eviction candidates once _instances is full. Entries are validated when
+    // dequeued, so stale ones (already evicted) cost nothing beyond the dequeue.
+    private readonly Queue<long> _disposedInstances = new();
     private readonly Dictionary<string, HandlerAggregate> _handlers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EndpointAggregate> _endpoints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, InteropAggregate> _interop = new(StringComparer.Ordinal);
@@ -106,7 +110,16 @@ public sealed class SessionAggregates
                     var component = GetComponent(disposed.ComponentType);
                     component.Disposed += weight;
                     var instance = TrackInstance(disposed);
-                    instance?.SetDisposed(disposed.Timestamp);
+                    if (instance is not null)
+                    {
+                        if (instance.Disposed is null)
+                        {
+                            _disposedInstances.Enqueue(instance.Id);
+                        }
+
+                        instance.SetDisposed(disposed.Timestamp);
+                    }
+
                     break;
                 }
 
@@ -425,6 +438,28 @@ public sealed class SessionAggregates
         }
     }
 
+    /// <summary>
+    /// Updates the aggregates after an already-added event was replaced by an enriched copy. Only the fields that
+    /// enrichment can change (response size and cache status of HTTP requests) are re-aggregated.
+    /// </summary>
+    public void Replace(ProfilerEvent original, ProfilerEvent replacement)
+    {
+        if (original is not HttpRequestEvent before || replacement is not HttpRequestEvent after)
+        {
+            return;
+        }
+
+        var key = before.Endpoint ?? before.Url ?? "(unknown)";
+        if (!_endpoints.TryGetValue(key, out var aggregate) && !_endpoints.TryGetValue(OverflowKey, out aggregate))
+        {
+            return;
+        }
+
+        var weight = before.SampleWeight > 0 ? before.SampleWeight : 1;
+        aggregate.ResponseBytes += (after.ResponseBytes ?? 0) - (before.ResponseBytes ?? 0);
+        aggregate.CacheHits += ((after.FromCache == true ? 1 : 0) - (before.FromCache == true ? 1 : 0)) * weight;
+    }
+
     /// <summary>Creates an immutable summary in display units.</summary>
     public SessionSummary CreateSummary()
     {
@@ -596,23 +631,24 @@ public sealed class SessionAggregates
 
         if (_instances.Count >= _maxInstances)
         {
-            // Prefer evicting a disposed instance; otherwise stop tracking new instances.
-            long? victim = null;
-            foreach (var (key, value) in _instances)
+            // Evict the earliest disposed instance; when none is disposed (for example components that do not report
+            // disposal), stop tracking new instances. Both paths are O(1) amortized: lookups of untracked instances in a
+            // full table must not scan it, because they happen for every event of every untracked component.
+            var evicted = false;
+            while (_disposedInstances.TryDequeue(out var candidate))
             {
-                if (value.Disposed is not null)
+                if (_instances.TryGetValue(candidate, out var value) && value.Disposed is not null)
                 {
-                    victim = key;
+                    _instances.Remove(candidate);
+                    evicted = true;
                     break;
                 }
             }
 
-            if (victim is null)
+            if (!evicted)
             {
                 return null;
             }
-
-            _instances.Remove(victim.Value);
         }
 
         instance = new InstanceAggregate(id, type);

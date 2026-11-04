@@ -19,6 +19,10 @@ public sealed class CircuitRegistry
     private readonly ConcurrentDictionary<string, CircuitEntry> _circuits = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<SynchronizationContext, string> _contexts = [];
 
+    // Closed circuits whose automatic session is still retained, oldest first. Their owners keep access to those sessions.
+    private readonly object _retainedGate = new();
+    private readonly LinkedList<RetainedCircuit> _retained = new();
+
     /// <summary>Registers a circuit and the synchronization context of its renderer.</summary>
     public void Register(string circuitId, SynchronizationContext? context, string? ownerKey, DateTimeOffset openedAt)
     {
@@ -45,15 +49,90 @@ public sealed class CircuitRegistry
     public string? GetCircuitId(SynchronizationContext? context) =>
         context is not null && _contexts.TryGetValue(context, out var id) ? id : null;
 
-    /// <summary>Returns the circuits owned by a principal key.</summary>
+    /// <summary>
+    /// Returns the circuits owned by a principal key: live circuits, plus closed circuits whose automatic session is still
+    /// retained (see <see cref="ProfilerServerOptions.RetainedCircuitSessions"/>).
+    /// </summary>
     public IReadOnlySet<string> GetOwned(string? ownerKey)
     {
+        var owned = new HashSet<string>(StringComparer.Ordinal);
         if (string.IsNullOrEmpty(ownerKey))
         {
-            return new HashSet<string>(StringComparer.Ordinal);
+            return owned;
         }
 
-        return _circuits.Values.Where(c => string.Equals(c.OwnerKey, ownerKey, StringComparison.Ordinal)).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var circuit in _circuits.Values)
+        {
+            if (string.Equals(circuit.OwnerKey, ownerKey, StringComparison.Ordinal))
+            {
+                owned.Add(circuit.Id);
+            }
+        }
+
+        lock (_retainedGate)
+        {
+            foreach (var retained in _retained)
+            {
+                if (string.Equals(retained.OwnerKey, ownerKey, StringComparison.Ordinal))
+                {
+                    owned.Add(retained.CircuitId);
+                }
+            }
+        }
+
+        return owned;
+    }
+
+    /// <summary>
+    /// Records that the automatic session of a closed circuit is retained, so its owner keeps access to it, and returns the
+    /// sessions to remove (oldest first) to stay within <paramref name="limit"/> retained sessions.
+    /// </summary>
+    /// <param name="circuitId">The closed circuit.</param>
+    /// <param name="ownerKey">The circuit's owner key, if any.</param>
+    /// <param name="sessionId">The circuit's automatic session.</param>
+    /// <param name="limit">The maximum number of retained sessions.</param>
+    /// <param name="sessionExists">Returns whether a session still exists; entries of removed sessions are discarded.</param>
+    internal List<string> RetainClosedCircuit(string circuitId, string? ownerKey, string sessionId, int limit, Func<string, bool> sessionExists)
+    {
+        var evicted = new List<string>();
+        lock (_retainedGate)
+        {
+            for (var node = _retained.First; node is not null;)
+            {
+                var next = node.Next;
+                if (!sessionExists(node.Value.SessionId))
+                {
+                    _retained.Remove(node);
+                }
+
+                node = next;
+            }
+
+            _retained.AddLast(new RetainedCircuit(circuitId, ownerKey, sessionId));
+            while (_retained.Count > Math.Max(0, limit))
+            {
+                evicted.Add(_retained.First!.Value.SessionId);
+                _retained.RemoveFirst();
+            }
+        }
+
+        return evicted;
+    }
+
+    /// <summary>Removes and returns the oldest retained closed-circuit session, if any.</summary>
+    internal string? TakeOldestRetainedSession()
+    {
+        lock (_retainedGate)
+        {
+            var first = _retained.First;
+            if (first is null)
+            {
+                return null;
+            }
+
+            _retained.RemoveFirst();
+            return first.Value.SessionId;
+        }
     }
 
     /// <summary>Returns live circuits, optionally restricted to a set of identifiers.</summary>
@@ -81,6 +160,8 @@ public sealed class CircuitRegistry
 
         public bool Connected { get; set; }
     }
+
+    private sealed record RetainedCircuit(string CircuitId, string? OwnerKey, string SessionId);
 }
 
 /// <summary>A live circuit as returned to dashboards.</summary>
@@ -213,6 +294,7 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
     private readonly IServiceProvider _services;
     private readonly ProfilerServerOptions _options;
     private string? _sessionId;
+    private string? _ownerKey;
 
     /// <summary>Creates the handler.</summary>
     public ProfilerCircuitHandler(CircuitCollector collector, CircuitRegistry registry, IServiceProvider services, ProfilerServerOptions options)
@@ -243,18 +325,37 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
             // Authentication may not be configured; the circuit is then anonymous.
         }
 
+        _ownerKey = owner;
         _registry.Register(circuit.Id, SynchronizationContext.Current, owner, DateTimeOffset.UtcNow);
         Record(circuit, CircuitChange.Opened);
 
-        if (_options.AutoCircuitSessions && _collector.CurrentProfiler is { IsEnabled: true } profiler)
+        // Resolve the profiler directly: the collector only knows it once a first session has started, and the automatic
+        // circuit session may be that first session.
+        if (_options.AutoCircuitSessions && _services.GetService<IProfiler>() is { IsEnabled: true } profiler)
+        {
+            _sessionId = StartCircuitSession(profiler, circuit.Id);
+        }
+    }
+
+    private string? StartCircuitSession(IProfiler profiler, string circuitId)
+    {
+        var options = new ProfilerSessionOptions { Name = "Circuit " + circuitId[..Math.Min(8, circuitId.Length)], CircuitId = circuitId };
+        while (true)
         {
             try
             {
-                _sessionId = profiler.StartSession(new ProfilerSessionOptions { Name = "Circuit " + circuit.Id[..Math.Min(8, circuit.Id.Length)], CircuitId = circuit.Id }).Id;
+                return profiler.StartSession(options).Id;
             }
             catch (InvalidOperationException)
             {
-                // Session limit reached; circuit data remains available in process-wide sessions.
+                // Session limit reached: make room by removing the oldest session retained from a closed circuit. When none
+                // is left, circuit data remains available in process-wide sessions.
+                if (_registry.TakeOldestRetainedSession() is not { } retained)
+                {
+                    return null;
+                }
+
+                profiler.RemoveSession(retained);
             }
         }
     }
@@ -280,11 +381,20 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
     {
         Record(circuit, CircuitChange.Closed);
         _registry.Remove(circuit.Id);
-        if (_sessionId is not null && _collector.CurrentProfiler?.GetSession(_sessionId) is { } session)
+        if (_sessionId is not null && _services.GetService<IProfiler>() is { } profiler && profiler.GetSession(_sessionId) is { } session)
         {
             session.Stop();
+
+            // Keep a bounded number of closed circuits' sessions (and their owners' access to them); remove the rest so
+            // they neither hold memory nor count toward the session limit indefinitely.
+            var evicted = _registry.RetainClosedCircuit(circuit.Id, _ownerKey, _sessionId, _options.RetainedCircuitSessions, id => profiler.GetSession(id) is not null);
+            foreach (var id in evicted)
+            {
+                profiler.RemoveSession(id);
+            }
         }
 
+        _sessionId = null;
         return Task.CompletedTask;
     }
 

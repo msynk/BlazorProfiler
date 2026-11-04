@@ -24,8 +24,17 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     private const string MethodTag = "code.function.name";
     private const string ErrorTag = "error.type";
 
+    // A render batch waits for its size, which the framework records right after the duration on the same thread. The
+    // ambient correlation (synchronization context and operation frame) is captured with it, because a batch that never
+    // receives a size is emitted later from whatever work runs next on the thread, possibly for another circuit.
     [ThreadStatic]
     private static RenderBatchEvent? t_pendingBatch;
+
+    [ThreadStatic]
+    private static SynchronizationContext? t_pendingContext;
+
+    [ThreadStatic]
+    private static OperationFrame? t_pendingFrame;
 
     private readonly ComponentInstanceRegistry _registry;
     private readonly ProfilerHostingInfo _hosting;
@@ -94,7 +103,7 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     {
         _listener?.Dispose();
         _listener = null;
-        t_pendingBatch = null;
+        ClearPendingBatch();
     }
 
     private void OnDouble(Instrument instrument, double measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
@@ -141,6 +150,8 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
 
                         // The batch size is recorded immediately after the duration on the same thread.
                         t_pendingBatch = e;
+                        t_pendingContext = SynchronizationContext.Current;
+                        t_pendingFrame = ProfilerContext.Current;
                         break;
                     }
 
@@ -183,7 +194,9 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
         }
 
         var pending = t_pendingBatch;
-        t_pendingBatch = null;
+        var context = t_pendingContext;
+        var frame = t_pendingFrame;
+        ClearPendingBatch();
         if (pending is null || Profiler is not { IsRecording: true })
         {
             return;
@@ -192,7 +205,7 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
         try
         {
             pending.UpdatedComponentCount = measurement;
-            Emit(pending);
+            EmitInContext(pending, context, frame);
         }
         catch (Exception ex)
         {
@@ -234,12 +247,49 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
 
     private void FlushPendingBatch()
     {
-        // A batch that failed synchronously reports no size; emit it without one.
+        // A batch whose size was never reported is emitted without one, attributed to the context it was recorded in.
         var pending = t_pendingBatch;
         if (pending is not null)
         {
-            t_pendingBatch = null;
-            Emit(pending);
+            var context = t_pendingContext;
+            var frame = t_pendingFrame;
+            ClearPendingBatch();
+            EmitInContext(pending, context, frame);
+        }
+    }
+
+    private static void ClearPendingBatch()
+    {
+        t_pendingBatch = null;
+        t_pendingContext = null;
+        t_pendingFrame = null;
+    }
+
+    /// <summary>
+    /// Emits an event with the ambient correlation it was recorded under. Correlation providers read the ambient
+    /// synchronization context and operation frame during <see cref="IProfiler.Emit"/>, so both are restored temporarily
+    /// when they differ from the current ones.
+    /// </summary>
+    private void EmitInContext(ProfilerEvent e, SynchronizationContext? context, OperationFrame? frame)
+    {
+        var currentContext = SynchronizationContext.Current;
+        var currentFrame = ProfilerContext.Current;
+        if (ReferenceEquals(currentContext, context) && ReferenceEquals(currentFrame, frame))
+        {
+            Emit(e);
+            return;
+        }
+
+        SynchronizationContext.SetSynchronizationContext(context);
+        ProfilerContext.Restore(frame);
+        try
+        {
+            Emit(e);
+        }
+        finally
+        {
+            ProfilerContext.Restore(currentFrame);
+            SynchronizationContext.SetSynchronizationContext(currentContext);
         }
     }
 

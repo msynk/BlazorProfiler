@@ -65,6 +65,16 @@ public sealed class BrowserCollector : ProfilerCollectorBase
     /// <summary>The maximum accepted payload length in characters.</summary>
     public const int MaxPayloadLength = 512 * 1024;
 
+    /// <summary>
+    /// The batch size budget, in characters, used by the browser module on Blazor Server. Batches are sent over the circuit,
+    /// whose SignalR connection rejects (and closes on) incoming messages above <c>HubOptions.MaximumReceiveMessageSize</c>
+    /// (32 KB by default); the budget leaves room for escaping and the invocation envelope.
+    /// </summary>
+    public const int ServerMaxBatchLength = 16_000;
+
+    /// <summary>The batch size budget, in characters, used by the browser module in WebAssembly (in-process calls).</summary>
+    public const int WebAssemblyMaxBatchLength = MaxPayloadLength / 2;
+
     /// <inheritdoc />
     public override CollectorDescriptor Descriptor { get; } = new()
     {
@@ -100,8 +110,15 @@ public sealed class BrowserCollector : ProfilerCollectorBase
     public int Ingest(string? json, double clockOffsetMs)
     {
         var profiler = Profiler;
-        if (!IsCollecting || profiler is null || string.IsNullOrEmpty(json) || json.Length > MaxPayloadLength)
+        if (!IsCollecting || profiler is null || string.IsNullOrEmpty(json))
         {
+            return 0;
+        }
+
+        if (json.Length > MaxPayloadLength)
+        {
+            // Never parse oversized input, but make the loss visible in the collector's health.
+            RecordError(new InvalidDataException($"A browser batch of {json.Length} characters exceeded the limit of {MaxPayloadLength} characters and was discarded."));
             return 0;
         }
 
@@ -119,6 +136,11 @@ public sealed class BrowserCollector : ProfilerCollectorBase
         if (entries is null)
         {
             return 0;
+        }
+
+        if (entries.Length > MaxEntriesPerBatch)
+        {
+            RecordError(new InvalidDataException($"A browser batch contained {entries.Length} entries; only the first {MaxEntriesPerBatch} were recorded."));
         }
 
         var clock = profiler.Clock;

@@ -27,31 +27,37 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
         }
 
         var server = calls.Any(c => c.CircuitId is not null);
-        var handlers = context.OfType<EventHandlerEvent>().Where(h => h.OperationId != 0).ToDictionary(h => h.OperationId);
-        foreach (var operation in calls.Where(c => c.OperationId != 0).GroupBy(c => c.OperationId).Where(g => g.Count() >= options.ExcessiveInteropCallsPerOperation).OrderByDescending(g => g.Count()).Take(5))
+        var handlers = HandlersByOperation(context);
+
+        // Counts are weighted: under sampling each retained call stands for several calls.
+        foreach (var operation in calls.Where(c => c.OperationId != 0).GroupBy(c => c.OperationId).Select(g => (g.Key, Calls: g.ToList(), Weight: Weighted(g))).Where(g => g.Weight >= options.ExcessiveInteropCallsPerOperation).OrderByDescending(g => g.Weight).Take(5))
         {
-            var list = operation.ToList();
+            var list = operation.Calls;
+            var count = operation.Weight;
+            var quality = Core.ValueQualityFor(list);
             var name = handlers.TryGetValue(operation.Key, out var handler) ? HandlerName(handler) : "operation " + operation.Key;
-            var top = list.GroupBy(c => c.Identifier).OrderByDescending(g => g.Count()).Take(3).Select(g => $"{g.Key} ×{g.Count()}");
+            var top = list.GroupBy(c => c.Identifier).Select(g => (g.Key, Weight: Weighted(g))).OrderByDescending(g => g.Weight).Take(3).Select(g => $"{g.Key} ×{FormatNumber(g.Weight)}");
+            var totalMs = Math.Round(list.Sum(c => context.Ms(c.Duration) * DiagnosticContext.WeightOf(c)), 3);
             yield return Create(
-                $"{name} makes {list.Count} interop calls",
-                Scale(list.Count, options.ExcessiveInteropCallsPerOperation),
+                $"{name} makes {FormatNumber(count)} interop calls",
+                Scale(count, options.ExcessiveInteropCallsPerOperation),
                 DiagnosticConfidence.High,
-                $"One invocation of {name} made {list.Count} JavaScript interop calls ({string.Join(", ", top)}).",
+                $"One invocation of {name} made {FormatNumber(count)} JavaScript interop calls ({string.Join(", ", top)}).",
                 server
                     ? "On Blazor Server every interop call is a network round trip over the circuit, so many calls multiply latency."
                     : "Each interop crossing serializes arguments and switches between .NET and JavaScript.",
                 "Combine calls into one JavaScript function that performs the whole operation, pass arrays instead of calling per item, and cache values that do not change.",
-                [Evidence("Calls in the operation", FormatNumber(list.Count)), Evidence("Interop time", FormatMs(list.Sum(c => context.Ms(c.Duration))))],
-                new ImpactEstimate { TotalMs = Math.Round(list.Sum(c => context.Ms(c.Duration)), 3), Occurrences = list.Count, Method = "Sum of measured interop call durations in the operation.", Quality = ValueQuality.Measured },
+                [Evidence("Calls in the operation", FormatNumber(count), quality), Evidence("Interop time", FormatMs(totalMs), quality)],
+                new ImpactEstimate { TotalMs = totalMs, Occurrences = count, Method = "Sum of measured interop call durations in the operation (weighted by sampling).", Quality = quality },
                 subject: name,
                 related: list);
         }
 
-        var peak = PeakCount(SortedTimestamps(calls), context.Clock.Frequency);
+        var peak = PeakRate(SortedByTimestamp(calls), context.Clock.Frequency);
         if (peak >= options.ExcessiveInteropCallsPerSecond)
         {
-            var top = calls.GroupBy(c => c.Identifier).OrderByDescending(g => g.Count()).Take(3).Select(g => $"{g.Key} ×{g.Count()}");
+            var top = calls.GroupBy(c => c.Identifier).Select(g => (g.Key, Weight: Weighted(g))).OrderByDescending(g => g.Weight).Take(3).Select(g => $"{g.Key} ×{FormatNumber(g.Weight)}");
+            var quality = Core.ValueQualityFor(calls);
             yield return Create(
                 $"Interop calls peak at {FormatNumber(peak)} per second",
                 Scale(peak, options.ExcessiveInteropCallsPerSecond),
@@ -59,8 +65,8 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
                 $"{FormatNumber(Weighted(calls))} interop calls were made, peaking at {FormatNumber(peak)} per second (top: {string.Join(", ", top)}).",
                 server ? "A sustained high rate of interop calls saturates the circuit's connection." : "A sustained high rate of interop calls adds serialization overhead on the UI thread.",
                 "Throttle callers (timers, scroll and resize handlers), batch work into fewer calls, and keep high-frequency logic entirely in JavaScript.",
-                [Evidence("Peak per second", FormatNumber(peak)), Evidence("Total calls", FormatNumber(Weighted(calls)), Core.ValueQualityFor(calls))],
-                new ImpactEstimate { Occurrences = Weighted(calls), Method = "Peak calls in any one-second window.", Quality = ValueQuality.Measured },
+                [Evidence("Peak per second", FormatNumber(peak), quality), Evidence("Total calls", FormatNumber(Weighted(calls)), quality)],
+                new ImpactEstimate { Occurrences = Weighted(calls), Method = "Peak calls in any one-second window.", Quality = quality },
                 subject: "interop-rate",
                 related: calls.Take(20));
         }
@@ -83,27 +89,31 @@ public sealed class BatchableInteropRule : DiagnosticRule
     /// <inheritdoc />
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
+        // Counts are weighted: under sampling each retained call stands for several calls.
         var groups = context.OfType<JSInteropEvent>()
             .Where(c => c.OperationId != 0 && c.Identifier is not null)
             .GroupBy(c => (c.OperationId, c.Identifier))
-            .Where(g => g.Count() >= 10)
-            .GroupBy(g => g.Key.Identifier)
-            .OrderByDescending(g => g.Sum(x => x.Count()));
+            .Select(g => (g.Key.Identifier, Calls: g.ToList(), Weight: Weighted(g)))
+            .Where(g => g.Weight >= 10)
+            .GroupBy(g => g.Identifier)
+            .OrderByDescending(g => g.Sum(x => x.Weight));
 
         foreach (var identifier in groups)
         {
-            var calls = identifier.SelectMany(g => g).ToList();
-            var perOperation = identifier.Max(g => g.Count());
+            var calls = identifier.SelectMany(g => g.Calls).ToList();
+            var total = identifier.Sum(g => g.Weight);
+            var perOperation = identifier.Max(g => g.Weight);
+            var quality = Core.ValueQualityFor(calls);
             var meanMs = calls.Average(c => context.Ms(c.Duration));
             yield return Create(
-                $"{identifier.Key} called up to {perOperation} times per operation",
+                $"{identifier.Key} called up to {FormatNumber(perOperation)} times per operation",
                 Scale(perOperation, 10),
                 DiagnosticConfidence.Medium,
-                $"{identifier.Key} was called {calls.Count} times across {identifier.Count()} operation(s), up to {perOperation} times in one operation, averaging {FormatMs(meanMs)} per call.",
+                $"{identifier.Key} was called {FormatNumber(total)} times across {identifier.Count()} operation(s), up to {FormatNumber(perOperation)} times in one operation, averaging {FormatMs(meanMs)} per call.",
                 "Repeated calls to the same function in one operation usually iterate over items one at a time. Each call pays the interop crossing cost.",
                 "Send all items in one call (an array argument) and loop in JavaScript, or move the loop entirely into JavaScript.",
-                [Evidence("Calls", FormatNumber(calls.Count)), Evidence("Max per operation", FormatNumber(perOperation)), Evidence("Mean duration", FormatMs(meanMs))],
-                new ImpactEstimate { TotalMs = Math.Round(calls.Sum(c => context.Ms(c.Duration)), 3), Occurrences = calls.Count, Method = "Sum of measured durations of the repeated calls.", Quality = ValueQuality.Measured },
+                [Evidence("Calls", FormatNumber(total), quality), Evidence("Max per operation", FormatNumber(perOperation), quality), Evidence("Mean duration", FormatMs(meanMs))],
+                new ImpactEstimate { TotalMs = Math.Round(calls.Sum(c => context.Ms(c.Duration) * DiagnosticContext.WeightOf(c)), 3), Occurrences = total, Method = "Sum of measured durations of the repeated calls (weighted by sampling).", Quality = quality },
                 subject: identifier.Key,
                 caveats: ["Calls whose order or intermediate results matter may not be batchable."],
                 related: calls);

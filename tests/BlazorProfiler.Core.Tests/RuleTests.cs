@@ -55,6 +55,59 @@ public class RuleTests
     }
 
     [Fact]
+    public void BP1001_WeightsSampledRendersWhenEstimatingRates()
+    {
+        // 30 renders per second for three seconds, sampled at 0.25: only about 7.5 events per second are retained (each
+        // with weight 4), and fewer than MinimumRenderSamples in total. The weighted rate is still 30 per second.
+        var events = Enumerable.Range(0, 90).Select(i => (ProfilerEvent)Ev.Render("App.Ticker", i * (1000.0 / 30), 0.2)).ToList();
+        var report = Analyze(events, o => o.Sampling.Rates[ProfilerEventKind.ComponentRender] = 0.25);
+        Assert.Empty(report.RuleErrors);
+        var finding = Assert.Single(Findings(report, "BP1001"));
+        Assert.Equal("App.Ticker", finding.ComponentType);
+        Assert.Contains(finding.Evidence, e => e.Label == "Peak rate" && e.Quality == ValueQuality.Estimated);
+    }
+
+    [Fact]
+    public void BP4001_WeightsSampledInteropCalls()
+    {
+        // 60 calls in one operation, sampled at 0.5: 30 retained calls stand for 60.
+        var events = new List<ProfilerEvent> { Ev.Handler("App.Chart", "Draw", 0, 50, 1) };
+        events.AddRange(Enumerable.Range(0, 60).Select(i => (ProfilerEvent)Ev.Interop("chart.point", i * 20, 0.1, operation: 1)));
+        var findings = Findings(Analyze(events, o => o.Sampling.Rates[ProfilerEventKind.JSInterop] = 0.5), "BP4001");
+        var finding = Assert.Single(findings, f => f.Subject!.Contains("Chart.Draw", StringComparison.Ordinal));
+        Assert.Contains("60", finding.Title, StringComparison.Ordinal);
+        Assert.Equal(ValueQuality.Estimated, finding.Impact!.Quality);
+    }
+
+    [Fact]
+    public void HandlerRulesTolerateDuplicateOperationIds()
+    {
+        // Imported or merged traces can contain several handlers with the same operation identifier.
+        var events = new List<ProfilerEvent>
+        {
+            Ev.Handler("App.Form", "Save", 0, 5, 1),
+            Ev.Handler("App.Form", "Save", 1, 5, 1),
+            Ev.Http("https://x.test/api/a", 2, 1, operation: 1),
+            Ev.Http("https://x.test/api/a", 3, 1, operation: 1),
+        };
+        events.AddRange(Enumerable.Range(0, 60).Select(i => (ProfilerEvent)Ev.Interop("form.field", 4 + (i * 0.1), 0.05, operation: 1)));
+        var report = Analyze(events);
+        Assert.Empty(report.RuleErrors);
+        Assert.Single(Findings(report, "BP2003"));
+        Assert.Contains(Findings(report, "BP4001"), f => f.Subject!.Contains("Form.Save", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DocumentationLinksMustBeWebUrls()
+    {
+        var (host, session, _) = TestHost.WithSession(rules: [new SlowEndpointRule()]);
+        var engine = new DiagnosticEngine(new DiagnosticOptions(), [new SlowEndpointRule()], [new ScriptLinkProvider()]);
+        host.Emit(Ev.Http("https://x.test/slow", 0, 5000));
+        var finding = Assert.Single(engine.Analyze(session).Findings);
+        Assert.Null(finding.DocumentationUrl);
+    }
+
+    [Fact]
     public void BP1001_IgnoresInfrequentRendering()
     {
         var events = Enumerable.Range(0, 60).Select(i => (ProfilerEvent)Ev.Render("App.Slow", i * 1000)).ToList();
@@ -422,6 +475,11 @@ public class RuleTests
         var a = Analyze(events).Findings.Select(f => f.Fingerprint + f.Summary);
         var b = Analyze(events).Findings.Select(f => f.Fingerprint + f.Summary);
         Assert.Equal(a, b);
+    }
+
+    private sealed class ScriptLinkProvider : IDiagnosticRecommendationProvider
+    {
+        public void Augment(DiagnosticFinding finding) => finding.DocumentationUrl = "javascript:alert(1)";
     }
 
     private sealed class ThrowingRule : IDiagnosticRule

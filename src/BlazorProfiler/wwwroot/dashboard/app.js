@@ -39,10 +39,14 @@ const state = {
   liveSessions: [],
   tick: 0,
   pendingRefresh: false,
+  // Incremented whenever per-session data is reset or invalidated. A poll that started under an older generation
+  // discards its results instead of writing another session's (or outdated) data into the current state.
+  generation: 0,
 };
 
 let pollTimer = 0;
-let polling = false;
+let pollPromise = null;
+let pollAgain = false;
 let timelineRef = null;
 let lastFocus = null;
 
@@ -110,14 +114,32 @@ async function init() {
 
   const query = new URLSearchParams(location.search);
   const mode = query.get('source');
-  if (mode === 'api' && query.get('api')) {
-    useLiveSource(new ApiSource(query.get('api')));
+  const api = mode === 'api' && query.get('api') ? sameOriginPath(query.get('api')) : null;
+  if (api) {
+    useLiveSource(new ApiSource(api));
   } else {
+    if (mode === 'api') {
+      // Never load profiling data from another origin: a crafted link could otherwise make this page (served by the app)
+      // display attacker-controlled data.
+      state.error = 'The api parameter must be a path on this site; other origins are not allowed.';
+      showBanner(state.error, 'error');
+    }
+
     await discoverBridge(mode === 'bridge');
   }
 
   route();
   window.addEventListener('hashchange', route);
+}
+
+/** Returns the path of a same-origin URL (absolute or relative), or null for any other origin. */
+function sameOriginPath(value) {
+  try {
+    const url = new URL(value, location.href);
+    return url.origin === location.origin ? url.pathname : null;
+  } catch {
+    return null;
+  }
 }
 
 async function discoverBridge(expected) {
@@ -164,16 +186,54 @@ function schedulePoll(delay) {
   pollTimer = setTimeout(poll, delay ?? (document.hidden ? 5000 : settings.refreshMs));
 }
 
-async function poll() {
-  if (polling || !state.source) {
+/**
+ * Polls the current source. Only one poll runs at a time; a call made while one is in flight (for example from
+ * selectSession or act) requests another pass and returns a promise that settles after that pass, so callers always
+ * observe data loaded for the state they set up.
+ */
+function poll() {
+  if (!state.source) {
+    return Promise.resolve();
+  }
+
+  if (pollPromise) {
+    pollAgain = true;
+    return pollPromise;
+  }
+
+  pollPromise = (async () => {
+    try {
+      do {
+        pollAgain = false;
+        await pollOnce();
+      } while (pollAgain && state.source);
+    } finally {
+      pollPromise = null;
+      if (state.live && state.source && !state.source.readOnly) {
+        schedulePoll();
+      }
+    }
+  })();
+  return pollPromise;
+}
+
+async function pollOnce() {
+  const source = state.source;
+  if (!source) {
     return;
   }
 
-  polling = true;
+  let generation = state.generation;
+  // True when the session selection, the source, or the session data changed while this pass was awaiting: its results
+  // then belong to another state and must be discarded (a follow-up pass loads the current one).
+  const stale = () => generation !== state.generation || source !== state.source;
   let changed = false;
   try {
-    const source = state.source;
     const info = await source.info();
+    if (source !== state.source) {
+      return;
+    }
+
     state.info = info;
     state.error = null;
     if (source === state.liveSource) {
@@ -190,17 +250,34 @@ async function poll() {
       updateSessionSelect();
     }
 
-    state.session = info.sessions.find(s => s.id === state.sessionId) || null;
+    // The selection may have changed while info was loading; continue with the current one from here on.
+    generation = state.generation;
+    const sessionId = state.sessionId;
+    state.session = info.sessions.find(s => s.id === sessionId) || null;
     if (state.session) {
-      changed = (await loadEvents(source)) || changed;
+      const loaded = await loadEvents(source, sessionId, stale);
+      if (stale()) {
+        return;
+      }
+
+      changed = loaded || changed;
       const summaryEvery = AUTO_RENDER_VIEWS.has(state.view) ? 1 : 2;
       if (!state.summary || state.tick % summaryEvery === 0 || changed) {
-        state.summary = await source.summary(state.sessionId);
+        const summary = await source.summary(sessionId);
+        if (stale()) {
+          return;
+        }
+
+        state.summary = summary;
       }
 
       const findingsEvery = state.view === 'diagnostics' ? 3 : 5;
       if (!state.report || state.tick % findingsEvery === 0) {
-        const report = await source.findings(state.sessionId);
+        const report = await source.findings(sessionId);
+        if (stale()) {
+          return;
+        }
+
         changed = changed || JSON.stringify(report.findings?.map(f => f.fingerprint + f.severity + (f.suppression ? 1 : 0))) !== JSON.stringify(state.report?.findings?.map(f => f.fingerprint + f.severity + (f.suppression ? 1 : 0)));
         state.report = report;
       }
@@ -218,27 +295,30 @@ async function poll() {
       }
     }
   } catch (error) {
+    if (stale()) {
+      return;
+    }
+
     state.error = error.message;
     showBanner(error.message, 'error');
-  } finally {
-    polling = false;
-    if (state.live && state.source && !state.source.readOnly) {
-      schedulePoll();
-    }
   }
 }
 
-async function loadEvents(source) {
+async function loadEvents(source, sessionId, stale) {
   let changed = false;
   for (let page = 0; page < 6; page++) {
-    const result = await source.events(state.sessionId, state.cursor, PAGE_SIZE);
-    if (result.gap && state.cursor > 0) {
-      // Older events were evicted (or the session was cleared); keep what we have but note the gap.
-      showBanner('Some events were evicted by retention limits before they could be loaded; the view may be incomplete.', 'warn');
+    const result = await source.events(sessionId, state.cursor, PAGE_SIZE);
+    if (stale()) {
+      return false;
     }
 
-    if (result.cursor < state.cursor) {
+    if (result.reset || result.cursor < state.cursor) {
+      // The session was cleared since our cursor was issued: drop what we have and continue from the new events.
       state.events = [];
+      changed = true;
+    } else if (result.gap && state.cursor > 0) {
+      // Older events were evicted; keep what we have but note the gap.
+      showBanner('Some events were evicted by retention limits before they could be loaded; the view may be incomplete.', 'warn');
     }
 
     if (result.events.length) {
@@ -260,6 +340,7 @@ async function loadEvents(source) {
 }
 
 function resetSessionData() {
+  state.generation++;
   state.events = [];
   state.cursor = 0;
   state.summary = null;
@@ -438,7 +519,9 @@ async function act(fn, message) {
       showBanner(message, '');
     }
 
+    // Invalidate in-flight polls too: their data was loaded before the action took effect.
     state.report = null;
+    state.generation++;
     await poll();
     render();
   } catch (error) {

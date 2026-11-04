@@ -202,9 +202,16 @@ internal sealed class RedactionProcessor : IProfilerEventProcessor
 /// so one logical request is reported once, enriched with transfer size and cache information.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Matching only applies to events without a circuit identifier (WebAssembly), where browser and .NET timestamps share the
 /// same machine clock. A browser entry matches when the sanitized URL is equal and the start times differ by less than
 /// <see cref="MatchToleranceMs"/>.
+/// </para>
+/// <para>
+/// The matching request has usually been stored and aggregated already, and readers may be serializing it, so it is never
+/// mutated: an enriched copy is passed to the replacement callback, which swaps it into the sessions that hold the original
+/// and updates their aggregates.
+/// </para>
 /// </remarks>
 internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
 {
@@ -212,10 +219,18 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
     private const int Capacity = 512;
 
     private readonly IProfilerClock _clock;
+    private readonly Action<HttpRequestEvent, HttpRequestEvent> _replace;
     private readonly HttpRequestEvent?[] _recent = new HttpRequestEvent?[Capacity];
     private int _next;
 
-    public BrowserResourceMergeProcessor(IProfilerClock clock) => _clock = clock;
+    /// <summary>Creates the processor.</summary>
+    /// <param name="clock">The clock.</param>
+    /// <param name="replace">Called with the original request and its enriched copy when a browser entry matches.</param>
+    public BrowserResourceMergeProcessor(IProfilerClock clock, Action<HttpRequestEvent, HttpRequestEvent> replace)
+    {
+        _clock = clock;
+        _replace = replace;
+    }
 
     public bool Process(ProfilerEvent profilerEvent)
     {
@@ -229,10 +244,11 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
         if (profilerEvent is BrowserResourceEvent resource && resource.CircuitId is null && resource.InitiatorType is "fetch" or "xmlhttprequest")
         {
             var tolerance = _clock.FromMilliseconds(MatchToleranceMs);
-            HttpRequestEvent? best = null;
+            var best = -1;
             var bestDelta = long.MaxValue;
-            foreach (var candidate in _recent)
+            for (var i = 0; i < _recent.Length; i++)
             {
+                var candidate = _recent[i];
                 if (candidate is null || candidate.ResponseBytesQuality == ValueQuality.Measured && candidate.FromCache is not null)
                 {
                     continue;
@@ -246,20 +262,19 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
                 var delta = Math.Abs(candidate.Timestamp - resource.Timestamp);
                 if (delta <= tolerance && delta < bestDelta)
                 {
-                    best = candidate;
+                    best = i;
                     bestDelta = delta;
                 }
             }
 
-            if (best is not null)
+            if (best >= 0)
             {
-                if (resource.TransferSize > 0)
-                {
-                    best.ResponseBytes = resource.TransferSize;
-                    best.ResponseBytesQuality = ValueQuality.Measured;
-                }
-
-                best.FromCache = resource.FromCache;
+                var original = _recent[best]!;
+                var enriched = original.WithBrowserTiming(
+                    resource.TransferSize > 0 ? resource.TransferSize : null,
+                    resource.FromCache);
+                _recent[best] = enriched;
+                _replace(original, enriched);
                 return false;
             }
         }

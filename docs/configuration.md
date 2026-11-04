@@ -130,15 +130,16 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 | `RoutePrefix` | `/_blazor-profiler` | Dashboard redirect and API prefix. |
 | `AuthorizationPolicy` | `null` | Policy granting full access. Required outside Development. |
 | `OwnCircuitPolicy` | `null` | Policy granting access to the caller's own circuits only. |
-| `AllowLoopbackInDevelopment` | `true` | Full access for local requests in Development when no policy is configured. |
+| `AllowLoopbackInDevelopment` | `true` | Full access for local requests in Development when no policy is configured. Requests relayed by proxies or tunnels (forwarding headers, non-local `Host`) never qualify. |
 | `AutoCircuitSessions` | `false` | Start a session per circuit (subject to `MaxSessions`). |
+| `RetainedCircuitSessions` | 4 | Automatic circuit sessions kept (stopped) after their circuit closes, visible to the circuit's owner. Older ones are removed, and a retained one is removed when a new circuit needs room under `MaxSessions`. `0` removes them on close. |
 | `MaxImportBytes` | 64 MB | Upload limit for trace import. |
 
 ## `BlazorProfilerClient` parameters
 
 | Parameter | Default | Description |
 |---|---|---|
-| `EnableDashboardBridge` | WebAssembly: on; server: off | Answer dashboard requests through `BroadcastChannel`. |
+| `EnableDashboardBridge` | WebAssembly: on; server: off | Answer dashboard requests through `BroadcastChannel`. On the server, requests are authorized for the circuit's user with the configured policies. |
 | `Shortcut` | `Alt+Shift+P` | Opens the dashboard; empty disables. |
 | `ShowLauncher` | `false` | Floating button that opens the dashboard. |
 | `DashboardUrl` | hosting default | Override the dashboard URL. |

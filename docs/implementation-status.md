@@ -7,9 +7,9 @@ limitations are listed explicitly rather than hidden.
 
 | Suite | Tests | What it covers |
 |---|---:|---|
-| `BlazorProfiler.Core.Tests` | 106 | Clock, redaction, sampling, filtering, storage limits and eviction, cursors, sessions and isolation, queue overflow, concurrency, collector failure isolation, correlation, browser merge, aggregates, every rule (positive and negative cases), suppression, export/import round trips and invalid input |
-| `BlazorProfiler.Tests` | 31 | Collectors driven through a real `Renderer`: framework metrics, interaction correlation and non-leakage, activator wrapping, `ProfiledComponentBase` (renders, reasons, parameter changes, tree, disposal, output comparison, lifecycle timing, equivalence with `ComponentBase`), HTTP handler, JS interop decorator, browser ingestion, runtime sampling, registration |
-| `BlazorProfiler.Server.Tests` | 10 | Access levels, per-user circuit isolation, CSRF header, import limits, session control, redirect, circuit correlation |
+| `BlazorProfiler.Core.Tests` | 119 | Clock, redaction, sampling, filtering, storage limits and eviction, cursors, sessions and isolation, queue overflow, concurrency, collector failure isolation, correlation, browser merge, aggregates, every rule (positive and negative cases), suppression, export/import round trips and invalid input |
+| `BlazorProfiler.Tests` | 33 | Collectors driven through a real `Renderer`: framework metrics, interaction correlation and non-leakage, activator wrapping, `ProfiledComponentBase` (renders, reasons, parameter changes, tree, disposal, output comparison, lifecycle timing, equivalence with `ComponentBase`), HTTP handler, JS interop decorator, browser ingestion, runtime sampling, registration |
+| `BlazorProfiler.Server.Tests` | 17 | Access levels, per-user circuit isolation, CSRF header, import limits, session control, redirect, circuit correlation, relayed-request rejection, bridge authorization, closed-circuit session retention |
 | `BlazorProfiler.E2E.Tests` | 9 | Real Kestrel + Chromium: Interactive Server and Interactive WebAssembly demos, hub method naming, circuit correlation, request-pattern rules, synchronous handler detection, dashboard UI over HTTP and over the WebAssembly bridge, export and re-import, browser interaction latency, production lockout |
 
 ## Phases

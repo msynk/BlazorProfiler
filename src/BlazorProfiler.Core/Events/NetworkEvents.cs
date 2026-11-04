@@ -63,6 +63,25 @@ public sealed class HttpRequestEvent : ProfilerEvent
     /// <inheritdoc />
     public override int EstimateSize() =>
         base.EstimateSize() + StringSize(Method) + StringSize(Url) + StringSize(Endpoint) + StringSize(OriginComponentType) + 64;
+
+    /// <summary>
+    /// Returns a copy enriched with browser Resource Timing data. Accepted events are immutable, so enrichment that arrives
+    /// after the request was stored replaces the stored event with this copy.
+    /// </summary>
+    /// <param name="responseBytes">The measured transfer size, or <see langword="null"/> to keep the current value.</param>
+    /// <param name="fromCache">Whether the browser served the response from its cache, when known.</param>
+    internal HttpRequestEvent WithBrowserTiming(long? responseBytes, bool? fromCache)
+    {
+        var copy = (HttpRequestEvent)MemberwiseClone();
+        if (responseBytes is { } bytes)
+        {
+            copy.ResponseBytes = bytes;
+            copy.ResponseBytesQuality = ValueQuality.Measured;
+        }
+
+        copy.FromCache = fromCache;
+        return copy;
+    }
 }
 
 /// <summary>Direction of a JavaScript interop call.</summary>

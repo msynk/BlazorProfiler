@@ -181,6 +181,40 @@ public sealed class DiagnosticContext
 
         return peak;
     }
+
+    /// <summary>
+    /// Computes the maximum weighted number of events (the sum of <see cref="ProfilerEvent.SampleWeight"/>) in any half-open
+    /// sliding window of <paramref name="windowTicks"/>, given events sorted by <see cref="ProfilerEvent.Timestamp"/>.
+    /// Unlike <see cref="PeakCount"/>, this estimates the real rate when events were sampled.
+    /// </summary>
+    public static double PeakWeight(IReadOnlyList<ProfilerEvent> sortedEvents, long windowTicks)
+    {
+        ArgumentNullException.ThrowIfNull(sortedEvents);
+        double peak = 0;
+        double sum = 0;
+        var start = 0;
+        for (var end = 0; end < sortedEvents.Count; end++)
+        {
+            sum += WeightOf(sortedEvents[end]);
+            while (sortedEvents[end].Timestamp - sortedEvents[start].Timestamp >= windowTicks)
+            {
+                sum -= WeightOf(sortedEvents[start]);
+                start++;
+            }
+
+            peak = Math.Max(peak, sum);
+        }
+
+        // Rounding removes floating-point residue from adding and subtracting fractional weights.
+        return Math.Round(peak, 6);
+    }
+
+    /// <summary>The number of occurrences an event represents: its sample weight, or one when no weight is recorded.</summary>
+    public static double WeightOf(ProfilerEvent profilerEvent)
+    {
+        ArgumentNullException.ThrowIfNull(profilerEvent);
+        return profilerEvent.SampleWeight > 0 ? profilerEvent.SampleWeight : 1;
+    }
 }
 
 /// <summary>Runs diagnostic rules over sessions.</summary>
@@ -251,6 +285,8 @@ public sealed class DiagnosticEngine
                         provider.Augment(finding);
                     }
 
+                    // Dashboards render the URL as a link; only web URLs are allowed (no javascript:, data:, and so on).
+                    finding.DocumentationUrl = IsWebUrl(finding.DocumentationUrl) ? finding.DocumentationUrl : null;
                     finding.Suppression = Suppressions.Match(finding);
                     findings.Add(finding);
                 }
@@ -287,4 +323,7 @@ public sealed class DiagnosticEngine
             AnalysisMs = Math.Round(Stopwatch.GetElapsedTime(start).TotalMilliseconds, 3),
         };
     }
+
+    private static bool IsWebUrl(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
 }

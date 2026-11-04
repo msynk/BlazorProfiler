@@ -12,16 +12,18 @@
 - **Cross-site request forgery.** Every state-changing request (start, pause, clear, remove, import, suppress) must carry the
   `X-Blazor-Profiler` header, which cross-site forms cannot add. Responses are `Cache-Control: no-store` and `nosniff`.
 
-> **Warning:** the local-machine check uses the connection's remote address. Behind a reverse proxy on the same machine all
-> requests may look local. This exemption only applies in Development; configure `AuthorizationPolicy` for any shared
-> environment.
+> **Warning:** a request only counts as local when it arrives over a loopback connection, addresses the app by a local host
+> name (`localhost`, a loopback address, or the machine name), and carries no forwarding headers (`Forwarded`,
+> `X-Forwarded-*`, `X-Original-*`, `X-Real-IP`, and similar). This rejects traffic relayed by Dev Tunnels, ngrok, or a
+> typical reverse proxy, but a relay that strips those headers and rewrites `Host` would still look local. The exemption
+> only applies in Development; configure `AuthorizationPolicy` whenever the app is reachable from other machines.
 
 ## Access levels and isolation
 
 | Access | Granted by | Sees | Can |
 |---|---|---|---|
 | Full | `AuthorizationPolicy`, or local requests in Development | All sessions, all circuits, process-wide health and runtime | Everything, including import |
-| Own circuits | `OwnCircuitPolicy` | Only sessions restricted to circuits the same user opened; process health without counters | Start sessions for own circuits, control them, suppress findings |
+| Own circuits | `OwnCircuitPolicy` | Only sessions restricted to circuits the same user opened (including retained sessions of their closed circuits); process health without counters | Start sessions for own circuits and control them. Not import, and not suppressions, which apply to every user |
 | None | — | Nothing (404) | Nothing |
 
 Circuit ownership is determined when the circuit opens, from the circuit's `AuthenticationStateProvider` (name identifier
@@ -30,7 +32,13 @@ are never written to events or traces. Sessions restricted to a circuit never re
 enforced in the session itself and covered by tests.
 
 The WebAssembly bridge uses a same-origin `BroadcastChannel`: only pages from the same origin as the app can query it, and
-the data never leaves the browser unless the user exports it.
+the data never leaves the browser unless the user exports it. On Blazor Server the bridge is off by default; when enabled
+(`EnableDashboardBridge="true"`), each request is authorized for the circuit's user with `AuthorizationPolicy` and
+`OwnCircuitPolicy`, exactly like the HTTP API, except that the Development loopback grant never applies (a circuit cannot
+prove where a request comes from). Anonymous users get no access through the bridge.
+
+The dashboard only loads data from its own origin (`?api=` must be a same-origin path) and only renders `http`/`https` links
+from findings, so a crafted link or trace file cannot inject script links into the app's origin.
 
 ## What is never collected
 
@@ -55,7 +63,9 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
 - Bounded queue (events beyond capacity are dropped and counted, never buffered without limit).
 - Per-session limits on events, memory, and age; bounded aggregation keys and tracked instances.
 - Bounded number of sessions.
-- Browser batches are limited to 1,000 entries and 512 KB per call.
+- Browser batches are limited to 1,000 entries and 512 KB per call; larger batches are discarded and counted as collector
+  errors. On Blazor Server the browser module keeps each batch under 16,000 characters so it stays within SignalR's default
+  32 KB message limit.
 - Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 20
   known event types are accepted; no type names from the input are resolved and no code is executed.
 

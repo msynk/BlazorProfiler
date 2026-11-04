@@ -28,20 +28,18 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
 
         foreach (var type in renders.Keys.Union(parameters.Keys))
         {
-            var instrumented = renders.TryGetValue(type, out var events);
-            if (!instrumented)
-            {
-                events = parameters[type];
-            }
+            var instrumented = renders.TryGetValue(type, out var rendered);
+            var events = instrumented ? rendered! : parameters[type];
 
-            if (events!.Count < options.MinimumRenderSamples)
+            // Counts are weighted: under sampling each retained event stands for several renders.
+            if (Weighted(events) < options.MinimumRenderSamples)
             {
                 continue;
             }
 
-            var timestamps = SortedTimestamps(events);
-            var peak = PeakCount(timestamps, second);
-            var sustained = SecondsAtOrAbove(timestamps, second, options.HighRenderRatePerSecond);
+            var sorted = SortedByTimestamp(events);
+            var peak = PeakRate(sorted, second);
+            var sustained = SecondsAtOrAbove(sorted, second, options.HighRenderRatePerSecond);
             if (peak < options.HighRenderRatePerSecond || (sustained < 2 && peak < options.HighRenderRatePerSecond * 3))
             {
                 continue;
@@ -67,8 +65,8 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
             var evidence = new List<FindingEvidence>
             {
                 Evidence(instrumented ? "Renders" : "Parameter updates (render proxy)", FormatNumber(Weighted(events)), instrumented ? Core.ValueQualityFor(events) : ValueQuality.Inferred),
-                Evidence("Peak rate", FormatNumber(peak) + " per second"),
-                Evidence("Seconds at or above " + FormatNumber(options.HighRenderRatePerSecond) + "/s", FormatNumber(sustained)),
+                Evidence("Peak rate", FormatNumber(peak) + " per second", Core.ValueQualityFor(events)),
+                Evidence("Seconds at or above " + FormatNumber(options.HighRenderRatePerSecond) + "/s", FormatNumber(sustained), Core.ValueQualityFor(events)),
                 Evidence(instrumented ? "Total render time (BuildRenderTree)" : "Total SetParametersAsync time", FormatMs(totalMs)),
             };
 
@@ -151,7 +149,7 @@ public sealed class LargeRenderBatchRule : DiagnosticRule
             yield break;
         }
 
-        var handlers = context.OfType<EventHandlerEvent>().Where(h => h.OperationId != 0).GroupBy(h => h.OperationId).ToDictionary(g => g.Key, g => g.First());
+        var handlers = HandlersByOperation(context);
         var groups = large
             .GroupBy(b => b.OperationId != 0 && handlers.TryGetValue(b.OperationId, out var h) ? HandlerName(h) : "(no correlated interaction)")
             .Select(g => (Name: g.Key, Batches: g.ToList(), Max: g.Max(b => b.UpdatedComponentCount)))
@@ -393,7 +391,7 @@ public sealed class ExcessiveComponentInstancesRule : DiagnosticRule
         foreach (var component in context.Summary.Components.OrderByDescending(c => c.Created))
         {
             created.TryGetValue(component.ComponentType, out var events);
-            var peak = events is null ? 0 : PeakCount(SortedTimestamps(events), context.Clock.Frequency);
+            var peak = events is null ? 0 : PeakRate(SortedByTimestamp(events), context.Clock.Frequency);
             if (component.Created < threshold && peak < burstThreshold)
             {
                 continue;
