@@ -1,0 +1,20 @@
+@page "/"
+<PageTitle>Blazor Profiler samples</PageTitle>
+<h1>Blazor Profiler samples</h1>
+<p>This page is statically server-rendered. Each demo reproduces a performance problem that one or more diagnostic rules detect,
+   in both render modes:</p>
+<ul>
+    <li><a href="server">Interactive Server demos</a> — data is collected on the server. Open the <a href="_blazor-profiler/" target="_blank" rel="noopener">server dashboard</a>.</li>
+    <li><a href="wasm">Interactive WebAssembly demos</a> — data is collected in the browser. Open the dashboard from the demo page (Alt+Shift+P or the Profiler button); it connects to the app tab through a same-origin channel.</li>
+</ul>
+<table>
+    <thead><tr><th>Demo</th><th>Rules it triggers</th></tr></thead>
+    <tbody>
+        @foreach (var demo in DemoCatalog.All)
+        {
+            <tr><td>@demo.Title</td><td>@demo.Rules</td></tr>
+        }
+    </tbody>
+</table>
+<p>Suggested workflow: start a demo, open the dashboard, read the finding, apply the suggested fix, then record a new session and use
+   <em>Sessions → Compare</em> to verify the improvement.</p>

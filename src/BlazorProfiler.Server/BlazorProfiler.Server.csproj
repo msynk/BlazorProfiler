@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Blazor Server and Blazor Web App integration for the Blazor Render &amp; Performance Profiler: circuit lifecycle and inbound activity collection, per-circuit isolation, authorization, and the HTTP API used by the dashboard.</Description>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorProfiler\BlazorProfiler.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BlazorProfiler.Server.Tests" />
+  </ItemGroup>
+
+</Project>

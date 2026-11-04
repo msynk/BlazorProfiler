@@ -1,0 +1,13 @@
+@inherits ProfiledComponentBase
+@inject HttpClient Http
+<p>@status</p>
+@code {
+    string status = "loading";
+    protected override void OnInitialized() => System.Threading.Thread.Sleep(30);
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.Yield();
+        using var response = await Http.GetAsync("https://api.test/items/42?token=secret");
+        status = ((int)response.StatusCode).ToString();
+    }
+}

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Blazor Profiler</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="brand" aria-label="Blazor Profiler">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 13h4l3-8 4 14 3-6h4v2h-3l-4 8-4-14-2 6H3z"/></svg>
+      <span>Blazor Profiler</span>
+    </div>
+    <div class="source" id="source-picker" aria-live="polite"></div>
+    <div class="session-picker">
+      <label for="session-select" class="sr-only">Session</label>
+      <select id="session-select" aria-label="Session"></select>
+      <span id="mode-badge" class="badge"></span>
+    </div>
+    <div class="top-actions">
+      <button type="button" id="live-toggle" class="btn" aria-pressed="true" title="Pause or resume live updates">Live</button>
+      <button type="button" id="settings-toggle" class="btn ghost" aria-expanded="false" aria-controls="settings">Settings</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidenav" aria-label="Profiler sections">
+      <ul role="list">
+        <li><a href="#overview" data-view="overview">Overview</a></li>
+        <li><a href="#components" data-view="components">Components</a></li>
+        <li><a href="#timeline" data-view="timeline">Timeline</a></li>
+        <li><a href="#network" data-view="network">Network</a></li>
+        <li><a href="#interop" data-view="interop">Interop</a></li>
+        <li><a href="#runtime" data-view="runtime">Runtime</a></li>
+        <li><a href="#circuits" data-view="circuits">Circuits</a></li>
+        <li><a href="#diagnostics" data-view="diagnostics">Diagnostics <span id="finding-count" class="count"></span></a></li>
+        <li><a href="#sessions" data-view="sessions">Sessions</a></li>
+        <li><a href="#health" data-view="health">Profiler health</a></li>
+      </ul>
+    </nav>
+
+    <main id="main" tabindex="-1">
+      <section id="settings" class="panel settings" hidden aria-label="Settings">
+        <h2>Settings</h2>
+        <div class="settings-grid">
+          <label>Time unit
+            <select id="setting-time-unit">
+              <option value="auto">Automatic</option>
+              <option value="ms">Milliseconds</option>
+              <option value="s">Seconds</option>
+            </select>
+          </label>
+          <label>Byte unit
+            <select id="setting-byte-unit">
+              <option value="binary">KiB / MiB (1024)</option>
+              <option value="decimal">kB / MB (1000)</option>
+            </select>
+          </label>
+          <label>Time range
+            <select id="setting-range">
+              <option value="30">Last 30 seconds</option>
+              <option value="60">Last minute</option>
+              <option value="300">Last 5 minutes</option>
+              <option value="0" selected>Whole session</option>
+            </select>
+          </label>
+          <label>Refresh interval
+            <select id="setting-refresh">
+              <option value="1000" selected>1 second</option>
+              <option value="2000">2 seconds</option>
+              <option value="5000">5 seconds</option>
+            </select>
+          </label>
+          <label>Theme
+            <select id="setting-theme">
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div id="view" aria-live="off"></div>
+    </main>
+  </div>
+
+  <div id="drawer" class="drawer" role="dialog" aria-modal="false" aria-labelledby="drawer-title" hidden>
+    <div class="drawer-head">
+      <h2 id="drawer-title">Details</h2>
+      <button type="button" class="btn ghost" id="drawer-close" aria-label="Close details">Close</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </div>
+
+  <input type="file" id="import-file" accept=".bptrace,.json,.gz,application/json,application/gzip" hidden>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      benchmarks:
+        description: Run the benchmark suite
+        type: boolean
+        default: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Restore
+        run: dotnet restore
+      - name: Build
+        run: dotnet build --no-restore -c Release
+      - name: Unit and integration tests
+        run: |
+          dotnet test tests/BlazorProfiler.Core.Tests --no-build -c Release
+          dotnet test tests/BlazorProfiler.Tests --no-build -c Release
+          dotnet test tests/BlazorProfiler.Server.Tests --no-build -c Release
+      - name: Install Playwright Chromium
+        run: pwsh tests/BlazorProfiler.E2E.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: End-to-end tests
+        run: dotnet test tests/BlazorProfiler.E2E.Tests --no-build -c Release
+      - name: Pack
+        run: dotnet pack src --no-build -c Release -o artifacts/packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/packages
+
+  benchmarks:
+    if: github.event_name == 'workflow_dispatch' && inputs.benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Run benchmarks
+        run: dotnet run -c Release --project benchmarks/BlazorProfiler.Benchmarks -- --job short --filter "*" --exporters github
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: BenchmarkDotNet.Artifacts/results

@@ -1,0 +1,8 @@
+@page "/wasm"
+@page "/wasm/{Demo}"
+@rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
+<PageTitle>WebAssembly demos — Blazor Profiler</PageTitle>
+<DemoHost Demo="@Demo" BasePath="wasm" ModeLabel="Interactive WebAssembly" />
+@code {
+    [Parameter] public string? Demo { get; set; }
+}

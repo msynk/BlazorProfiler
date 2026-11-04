@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/BlazorProfiler.Benchmarks/BlazorProfiler.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/BlazorProfiler.Samples.Client/BlazorProfiler.Samples.Client.csproj" />
+    <Project Path="samples/BlazorProfiler.Samples/BlazorProfiler.Samples.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/BlazorProfiler.Core/BlazorProfiler.Core.csproj" />
+    <Project Path="src/BlazorProfiler.Server/BlazorProfiler.Server.csproj" />
+    <Project Path="src/BlazorProfiler.WebAssembly/BlazorProfiler.WebAssembly.csproj" />
+    <Project Path="src/BlazorProfiler/BlazorProfiler.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BlazorProfiler.Core.Tests/BlazorProfiler.Core.Tests.csproj" />
+    <Project Path="tests/BlazorProfiler.E2E.Tests/BlazorProfiler.E2E.Tests.csproj" />
+    <Project Path="tests/BlazorProfiler.Server.Tests/BlazorProfiler.Server.Tests.csproj" />
+    <Project Path="tests/BlazorProfiler.Tests/BlazorProfiler.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,16 @@
+@inject HttpClient Http
+<span class="badge">@(settings?.Currency ?? "…")</span>
+@code {
+    [Parameter] public int Key { get; set; }
+    private Settings? settings;
+    private int loadedKey = -1;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedKey != Key)
+        {
+            loadedKey = Key;
+            settings = await Http.GetFromJsonAsync<Settings>("api/settings");
+        }
+    }
+}

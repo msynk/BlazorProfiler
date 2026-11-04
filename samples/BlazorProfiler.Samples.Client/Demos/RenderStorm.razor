@@ -1,0 +1,30 @@
+@implements IDisposable
+<h2>Render storm</h2>
+<p>A timer ticks every 20 ms, but the clock shows whole seconds, so most renders of this component change nothing.
+   Each row receives a new lambda on every render, so all rows re-render too.</p>
+<button id="storm-toggle" @onclick="Toggle">@(running ? "Stop" : "Start")</button>
+<p>Elapsed: <ClockFace Seconds="@(elapsed / 1000)" /> · picked row @picked</p>
+<ul class="rows">
+  @for (var i = 0; i < 20; i++)
+  {
+    var index = i;
+    <StormRow Index="index" OnPick="() => Pick(index)" />
+  }
+</ul>
+@code {
+    private Timer? timer;
+    private int elapsed;
+    private bool running;
+    private int picked = -1;
+
+    private void Toggle()
+    {
+        running = !running;
+        timer?.Dispose();
+        timer = running ? new Timer(_ => InvokeAsync(() => { elapsed += 20; StateHasChanged(); }), null, 0, 20) : null;
+    }
+
+    private void Pick(int index) => picked = index;
+
+    public void Dispose() => timer?.Dispose();
+}

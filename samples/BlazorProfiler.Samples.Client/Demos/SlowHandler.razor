@@ -1,0 +1,32 @@
+@inject HttpClient Http
+<h2>Slow handlers</h2>
+<p>The first button blocks the UI thread (or the circuit) for 250 ms. The second awaits a slow endpoint for 1.2 s.
+   The section below does 80 ms of synchronous work in OnParametersSet.</p>
+<button id="block" @onclick="Block">Compute (blocking)</button>
+<button id="slow-load" @onclick="LoadAsync">Load report (async)</button>
+<p id="slow-status">@status</p>
+<SlowSection Version="@version" />
+@code {
+    private string status = "Idle";
+    private int version;
+
+    private void Block()
+    {
+        var until = DateTime.UtcNow.AddMilliseconds(250);
+        var spins = 0L;
+        while (DateTime.UtcNow < until)
+        {
+            spins++;
+        }
+
+        version++;
+        status = $"Computed ({spins:N0} iterations)";
+    }
+
+    private async Task LoadAsync()
+    {
+        status = "Loading…";
+        var text = await Http.GetStringAsync("api/slow?ms=1200");
+        status = $"Loaded {text.Length} characters";
+    }
+}

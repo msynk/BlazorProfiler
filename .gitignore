@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+TestResults/
+BenchmarkDotNet.Artifacts/
+artifacts/
+*.trx
+node_modules/

@@ -1,0 +1,14 @@
+@inherits ProfiledComponentBase
+<p>@Value:@string.Join(",", Calls)</p>
+@code {
+    [Parameter] public int Value { get; set; }
+    [Parameter] public bool Suppress { get; set; }
+    public List<string> Calls { get; } = new();
+    protected override void OnInitialized() => Calls.Add("init");
+    protected override async Task OnInitializedAsync() { Calls.Add("initAsync"); await Task.Yield(); Calls.Add("initAsyncDone"); }
+    protected override void OnParametersSet() => Calls.Add("params");
+    protected override Task OnParametersSetAsync() { Calls.Add("paramsAsync"); return Task.CompletedTask; }
+    protected override bool ShouldRender() => !Suppress;
+    protected override void OnAfterRender(bool firstRender) => Calls.Add(firstRender ? "after1" : "after");
+    public void Refresh() => StateHasChanged();
+}

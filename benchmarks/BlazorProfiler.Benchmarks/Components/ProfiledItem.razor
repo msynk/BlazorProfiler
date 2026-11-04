@@ -1,0 +1,6 @@
+@inherits BlazorProfiler.Instrumentation.ProfiledComponentBase
+<div class="item"><span>@Index</span> <b>@Version</b></div>
+@code {
+    [Parameter] public int Index { get; set; }
+    [Parameter] public int Version { get; set; }
+}

@@ -1,0 +1,61 @@
+@implements IAsyncDisposable
+@inject IProfiledJSRuntime JS
+<h2>Interop chatter</h2>
+<p>Plots 120 points with one JavaScript call each, sends a large array in one call, and awaits a slow JavaScript promise.</p>
+<button id="chatter" @onclick="ChatterAsync">Plot point by point</button>
+<button id="batched" @onclick="BatchedAsync">Plot in one call</button>
+<button id="slow-js" @onclick="SlowJsAsync">Slow JavaScript</button>
+<p id="interop-status">@status</p>
+@code {
+    private IJSObjectReference? module;
+    private string status = "";
+
+    private async Task<IJSObjectReference> ModuleAsync() =>
+        module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./demo.js");
+
+    private async Task ChatterAsync()
+    {
+        var m = await ModuleAsync();
+        for (var i = 0; i < 120; i++)
+        {
+            await m.InvokeAsync<double>("plot", i, i * 2);
+        }
+
+        status = "Plotted 120 points with 120 calls";
+    }
+
+    private async Task BatchedAsync()
+    {
+        var m = await ModuleAsync();
+        var points = Enumerable.Range(0, 20_000).Select(i => new Point(i, i * 2)).ToArray();
+        var count = await m.InvokeAsync<int>("plotMany", points);
+        status = $"Plotted {count} points with one call";
+    }
+
+    private async Task SlowJsAsync()
+    {
+        var m = await ModuleAsync();
+        for (var i = 0; i < 3; i++)
+        {
+            await m.InvokeAsync<int>("wait", 160);
+        }
+
+        status = "Slow JavaScript done";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (module is not null)
+        {
+            try
+            {
+                await module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
+
+    public sealed record Point(int x, int y);
+}

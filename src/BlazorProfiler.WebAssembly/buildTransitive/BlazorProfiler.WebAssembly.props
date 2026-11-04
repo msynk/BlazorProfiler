@@ -1,0 +1,9 @@
+<Project>
+  <!--
+    The profiler reads Blazor's built-in metrics, which require System.Diagnostics.Metrics. Keep it enabled unless the
+    application explicitly disables it (set BlazorProfilerEnableMetrics to false to opt out of this default).
+  -->
+  <PropertyGroup Condition="'$(BlazorProfilerEnableMetrics)' != 'false'">
+    <MetricsSupport Condition="'$(MetricsSupport)' == ''">true</MetricsSupport>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorProfiler.Samples.Client\BlazorProfiler.Samples.Client.csproj" />
+    <ProjectReference Include="..\..\src\BlazorProfiler.Server\BlazorProfiler.Server.csproj" />
+  </ItemGroup>
+</Project>

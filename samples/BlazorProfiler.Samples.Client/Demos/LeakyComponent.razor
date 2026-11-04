@@ -1,0 +1,42 @@
+@implements IDisposable
+@inject IProfiledJSRuntime JS
+<h2>Leaky component</h2>
+<p>Subscribes to a static event and starts a timer, but never unsubscribes. Each visit keeps a 2 MB buffer alive and
+   keeps calling JavaScript after the component is disposed. Navigate away and back several times.</p>
+<p id="leaky-status">Subscribers: @DemoEvents.SubscriberCount</p>
+<button id="tick" @onclick="DemoEvents.Raise">Raise event</button>
+@code {
+    private readonly byte[] buffer = new byte[2 * 1024 * 1024];
+    private Timer? timer;
+
+    protected override void OnInitialized()
+    {
+        buffer[0] = 1;
+        DemoEvents.Tick += OnTick;
+
+        // Deliberately never disposed: keeps calling JavaScript after the component is gone.
+        timer = new Timer(_ => _ = InvokeAsync(TickAsync), null, 200, 200);
+    }
+
+    private async Task TickAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("console.debug", "leaky tick");
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private void OnTick() => InvokeAsync(StateHasChanged);
+
+    // The bug: Dispose neither unsubscribes from DemoEvents.Tick nor stops the timer.
+    public void Dispose()
+    {
+        GC.KeepAlive(timer);
+    }
+}

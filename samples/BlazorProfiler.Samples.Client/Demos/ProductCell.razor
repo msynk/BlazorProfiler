@@ -1,0 +1,4 @@
+<div class="cell" style="height:22px">@Product.Name — @Product.Price.ToString("0.00")</div>
+@code {
+    [Parameter, EditorRequired] public Product Product { get; set; } = default!;
+}

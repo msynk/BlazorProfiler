@@ -1,0 +1,8 @@
+@page "/server"
+@page "/server/{Demo}"
+@rendermode InteractiveServer
+<PageTitle>Server demos — Blazor Profiler</PageTitle>
+<DemoHost Demo="@Demo" BasePath="server" ModeLabel="Interactive Server" />
+@code {
+    [Parameter] public string? Demo { get; set; }
+}

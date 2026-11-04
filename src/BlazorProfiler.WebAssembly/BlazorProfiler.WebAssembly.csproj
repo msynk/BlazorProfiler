@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Blazor WebAssembly integration for the Blazor Render &amp; Performance Profiler: environment-aware activation, component metrics and tracing registration, JavaScript interop profiling, and the same-origin dashboard bridge.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorProfiler\BlazorProfiler.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="buildTransitive\BlazorProfiler.WebAssembly.props" Pack="true" PackagePath="buildTransitive\BlazorProfiler.WebAssembly.props" />
+  </ItemGroup>
+
+</Project>

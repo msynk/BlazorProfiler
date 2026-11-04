@@ -1,0 +1,86 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{json,xml,csproj,props,targets,slnx,yml,yaml}]
+indent_size = 2
+
+[*.{js,css,html}]
+indent_size = 2
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_using_directive_placement = outside_namespace
+dotnet_sort_system_directives_first = true
+
+# The profiler intentionally catches broad exceptions at collector boundaries so a failing
+# collector can never crash the host application.
+dotnet_diagnostic.CA1031.severity = none
+# Event and option types expose collections intentionally for configuration binding.
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA1002.severity = none
+# Logging through LoggerMessage is used on hot paths only; diagnostic messages elsewhere are rare.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+# Public types use the "Profiler" prefix consistently; nested namespaces are intentional.
+dotnet_diagnostic.CA1716.severity = none
+dotnet_diagnostic.CA1724.severity = none
+# Culture-invariant formatting is applied explicitly where text is user-visible.
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA1307.severity = none
+dotnet_diagnostic.CA1309.severity = none
+dotnet_diagnostic.CA1310.severity = none
+dotnet_diagnostic.CA1311.severity = none
+dotnet_diagnostic.CA1304.severity = none
+# Members are intentionally instance-level for future extensibility of collectors.
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1819.severity = none
+dotnet_diagnostic.CA1063.severity = none
+dotnet_diagnostic.CA1816.severity = none
+dotnet_diagnostic.CA1056.severity = none
+dotnet_diagnostic.CA1054.severity = none
+dotnet_diagnostic.CA1055.severity = none
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1003.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1200.severity = none
+dotnet_diagnostic.CA1508.severity = none
+dotnet_diagnostic.CA1513.severity = none
+dotnet_diagnostic.CA1512.severity = none
+dotnet_diagnostic.CA1510.severity = none
+dotnet_diagnostic.CA1854.severity = suggestion
+dotnet_diagnostic.CA1859.severity = suggestion
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA1869.severity = suggestion
+dotnet_diagnostic.CA1805.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA1030.severity = none
+dotnet_diagnostic.CA1034.severity = none
+dotnet_diagnostic.CA1028.severity = none
+dotnet_diagnostic.CA1008.severity = none
+dotnet_diagnostic.CA1027.severity = none
+dotnet_diagnostic.CA1720.severity = none
+dotnet_diagnostic.CA1711.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1725.severity = none
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA2201.severity = none
+dotnet_diagnostic.CA1032.severity = none
+dotnet_diagnostic.CA1064.severity = none
+dotnet_diagnostic.CA2225.severity = none
+dotnet_diagnostic.CA1814.severity = none
+dotnet_diagnostic.CA1050.severity = none
+dotnet_diagnostic.CA5394.severity = none
+dotnet_diagnostic.CA1040.severity = none
+
+# BL0006: RenderTree types are used only behind an explicit, opt-in instrumentation adapter.
+dotnet_diagnostic.BL0006.severity = none

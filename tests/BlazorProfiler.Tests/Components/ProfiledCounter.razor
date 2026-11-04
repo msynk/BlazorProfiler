@@ -1,0 +1,17 @@
+@inherits ProfiledComponentBase
+<button @onclick="Increment">Count @count</button>
+<ProfiledChild Value="@count" OnSelect="() => Selected()" />
+<ProfiledChild Value="1" OnSelect="() => Selected()" />
+@if (ShowExtra)
+{
+    <ProfiledChild Value="2" />
+}
+@code {
+    int count;
+    [Parameter] public bool ShowExtra { get; set; }
+    public int AfterRenderCalls { get; private set; }
+    void Increment() => count++;
+    void Selected() { }
+    public void Touch() => StateHasChanged();
+    protected override void OnAfterRender(bool firstRender) => AfterRenderCalls++;
+}

@@ -1,0 +1,15 @@
+<p>Section version @Version (computed in @lastMs ms)</p>
+@code {
+    [Parameter] public int Version { get; set; }
+    private long lastMs;
+
+    protected override void OnParametersSet()
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < 80)
+        {
+        }
+
+        lastMs = watch.ElapsedMilliseconds;
+    }
+}

@@ -1,0 +1,32 @@
+@inject HttpClient Http
+<h2>Request patterns</h2>
+<p>The list loads products, then every row loads its own details (N+1). Two widgets load the same settings, and
+   “Reload” fetches settings twice and then profile and orders one after another.</p>
+<button id="reload" @onclick="ReloadAsync">Reload</button>
+<SettingsBadge Key="@generation" />
+<SettingsBadge Key="@generation" />
+<p id="requests-status">@status</p>
+<ul>
+  @foreach (var product in products)
+  {
+    <ProductRow @key="(product.Id, generation)" ProductId="product.Id" />
+  }
+</ul>
+@code {
+    private List<Product> products = [];
+    private string status = "";
+    private int generation;
+
+    protected override async Task OnInitializedAsync() => products = await Http.GetFromJsonAsync<List<Product>>("api/products") ?? [];
+
+    private async Task ReloadAsync()
+    {
+        generation++;
+        var settings = await Http.GetFromJsonAsync<Settings>("api/settings");
+        var again = await Http.GetFromJsonAsync<Settings>("api/settings");
+        var profile = await Http.GetStringAsync("api/profile");
+        var orders = await Http.GetStringAsync("api/orders");
+        products = await Http.GetFromJsonAsync<List<Product>>("api/products") ?? [];
+        status = $"Reloaded ({settings?.Currency}, {again?.PageSize}, {profile.Length + orders.Length} bytes)";
+    }
+}

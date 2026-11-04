@@ -1,0 +1,6 @@
+@inherits ProfiledComponentBase
+<span>@Value</span>
+@code {
+    [Parameter] public int Value { get; set; }
+    [Parameter] public Action? OnSelect { get; set; }
+}

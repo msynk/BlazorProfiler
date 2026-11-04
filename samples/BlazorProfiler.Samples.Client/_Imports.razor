@@ -1,0 +1,15 @@
+@using System.Net.Http
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.JSInterop
+@using BlazorProfiler.Browser
+@using BlazorProfiler.Interop
+@using BlazorProfiler.Instrumentation
+@using BlazorProfiler.Samples.Client
+@using BlazorProfiler.Samples.Client.Demos
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@* Every component in this project is instrumented for per-instance render, lifecycle, and parameter-change data. *@
+@inherits ProfiledComponentBase

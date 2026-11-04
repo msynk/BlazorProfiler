@@ -1,0 +1,8 @@
+@for (var i = 0; i < Count; i++)
+{
+    <PlainItem Index="i" Version="Version" />
+}
+@code {
+    [Parameter] public int Count { get; set; }
+    [Parameter] public int Version { get; set; }
+}

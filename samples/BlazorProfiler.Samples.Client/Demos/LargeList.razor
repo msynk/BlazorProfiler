@@ -1,0 +1,28 @@
+<h2>Large list</h2>
+<p>Sorting re-renders 1,000 row components in one batch. Switch to &lt;Virtualize&gt; to render only the visible rows.</p>
+<label><input type="checkbox" @bind="virtualize" /> Use Virtualize</label>
+<button id="sort" @onclick="Sort">Sort (@(ascending ? "descending" : "ascending"))</button>
+<div class="list" style="height:300px;overflow:auto">
+  @if (virtualize)
+  {
+    <Virtualize Items="items" Context="item" ItemSize="22"><ProductCell Product="item" /></Virtualize>
+  }
+  else
+  {
+    @foreach (var item in items)
+    {
+      <ProductCell Product="item" />
+    }
+  }
+</div>
+@code {
+    private List<Product> items = Enumerable.Range(1, 1000).Select(i => new Product(i, $"Product {i:0000}", i * 1.5m)).ToList();
+    private bool ascending = true;
+    private bool virtualize;
+
+    private void Sort()
+    {
+        ascending = !ascending;
+        items = ascending ? items.OrderBy(p => p.Id).ToList() : items.OrderByDescending(p => p.Id).ToList();
+    }
+}

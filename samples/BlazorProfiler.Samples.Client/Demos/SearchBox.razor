@@ -1,0 +1,20 @@
+<h2>Search as you type</h2>
+<p>Every keystroke runs the handler and re-renders the result list. Type quickly to produce a rapid event stream.</p>
+<input id="search" placeholder="Search products" @oninput="OnInput" />
+<p>@matches.Count matches</p>
+<ul>
+  @foreach (var item in matches.Take(50))
+  {
+    <li>@item</li>
+  }
+</ul>
+@code {
+    private static readonly string[] All = Enumerable.Range(1, 5000).Select(i => "Product " + i.ToString("0000") + (i % 7 == 0 ? " blue" : " red")).ToArray();
+    private List<string> matches = All.ToList();
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        var term = e.Value?.ToString() ?? string.Empty;
+        matches = All.Where(p => p.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+}

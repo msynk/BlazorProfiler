@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+  <PropertyGroup>
+    <NoDefaultLaunchSettingsFile>true</NoDefaultLaunchSettingsFile>
+    <StaticWebAssetProjectMode>Default</StaticWebAssetProjectMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BlazorProfiler.WebAssembly\BlazorProfiler.WebAssembly.csproj" />
+  </ItemGroup>
+  <!-- Referencing the project (not the package) needs the package's buildTransitive default explicitly. -->
+  <Import Project="..\..\src\BlazorProfiler.WebAssembly\buildTransitive\BlazorProfiler.WebAssembly.props" />
+</Project>

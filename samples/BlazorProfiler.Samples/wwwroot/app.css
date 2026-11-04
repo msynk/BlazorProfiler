@@ -1,0 +1,14 @@
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; color: #1c2330; background: #fafafa; }
+header.site { display: flex; gap: 24px; align-items: center; padding: 10px 20px; background: #fff; border-bottom: 1px solid #ddd; }
+header.site nav { display: flex; gap: 14px; }
+.brand { font-weight: 650; color: #5b3fd1; text-decoration: none; }
+main { padding: 20px; max-width: 1100px; }
+table { border-collapse: collapse; }
+td, th { border-bottom: 1px solid #ddd; padding: 4px 10px; text-align: left; }
+.demo-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.demo-nav a { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; text-decoration: none; color: inherit; background: #fff; }
+.demo-nav a.active { border-color: #5b3fd1; color: #5b3fd1; }
+.demo-nav small { color: #777; display: block; font-size: 11px; }
+.demo { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+button { font: inherit; padding: 6px 12px; margin: 2px; cursor: pointer; }
+.badge { display: inline-block; padding: 0 6px; border: 1px solid #ccc; border-radius: 10px; margin-right: 4px; }

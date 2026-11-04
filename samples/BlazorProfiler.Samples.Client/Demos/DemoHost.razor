@@ -1,0 +1,32 @@
+@* Shared shell for the interactive demos. Hosts the profiler client so browser data and the dashboard bridge work. *@
+<BlazorProfilerClient ShowLauncher="true" />
+<div class="demo-shell">
+  <p class="mode">Render mode: <strong>@ModeLabel</strong> · <a href="@DashboardUrl" target="_blank" rel="noopener">Open dashboard</a> (or press Alt+Shift+P)</p>
+  <nav class="demo-nav" aria-label="Demos">
+    @foreach (var demo in DemoCatalog.All)
+    {
+      <a href="@($"{BasePath}/{demo.Key}")" class="@(demo.Key == Demo ? "active" : null)" aria-current="@(demo.Key == Demo ? "page" : null)">@demo.Title <small>@demo.Rules</small></a>
+    }
+  </nav>
+  <section class="demo">
+    @switch (Demo)
+    {
+      case "render-storm": <RenderStorm /> break;
+      case "large-list": <LargeList /> break;
+      case "slow-handler": <SlowHandler /> break;
+      case "search": <SearchBox /> break;
+      case "requests": <RequestPatterns /> break;
+      case "flaky": <FlakyEndpoint /> break;
+      case "interop": <InteropChatter /> break;
+      case "allocations": <AllocationSpike /> break;
+      case "leaky": <LeakyComponent /> break;
+      default: <p>Pick a demo. Each one reproduces a performance problem that a diagnostic rule detects.</p> break;
+    }
+  </section>
+</div>
+@code {
+    [Parameter] public string? Demo { get; set; }
+    [Parameter] public string BasePath { get; set; } = "wasm";
+    [Parameter] public string ModeLabel { get; set; } = "";
+    private string DashboardUrl => BasePath == "server" ? "_blazor-profiler/" : "_content/BlazorProfiler/dashboard/index.html?source=bridge";
+}

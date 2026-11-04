@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <Description>Blazor Render &amp; Performance Profiler: collectors for component rendering, event handlers, navigation, HTTP, JavaScript interop, runtime metrics and browser performance, opt-in component instrumentation, and the profiler dashboard.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorProfiler.Core\BlazorProfiler.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BlazorProfiler.Tests" />
+    <InternalsVisibleTo Include="BlazorProfiler.Server" />
+    <InternalsVisibleTo Include="BlazorProfiler.WebAssembly" />
+    <InternalsVisibleTo Include="BlazorProfiler.Benchmarks" />
+  </ItemGroup>
+
+</Project>

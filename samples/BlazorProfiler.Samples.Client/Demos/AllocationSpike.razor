@@ -1,0 +1,24 @@
+<h2>Allocation spike</h2>
+<p>Allocates roughly 150 MB of short-lived strings in one handler.</p>
+<button id="allocate" @onclick="Allocate">Allocate</button>
+<p id="alloc-status">@status</p>
+@code {
+    private string status = "";
+
+    private void Allocate()
+    {
+        long total = 0;
+        for (var round = 0; round < 30; round++)
+        {
+            var list = new List<string>(10_000);
+            for (var i = 0; i < 10_000; i++)
+            {
+                list.Add(new string('x', 250));
+            }
+
+            total += list.Count;
+        }
+
+        status = $"Allocated {total:N0} strings";
+    }
+}

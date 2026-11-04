@@ -1,0 +1,8 @@
+@inject HttpClient Http
+<li>@(details?.Name ?? "…") <small>@details?.Stock in stock</small></li>
+@code {
+    [Parameter] public int ProductId { get; set; }
+    private ProductDetails? details;
+
+    protected override async Task OnInitializedAsync() => details = await Http.GetFromJsonAsync<ProductDetails>($"api/products/{ProductId}");
+}

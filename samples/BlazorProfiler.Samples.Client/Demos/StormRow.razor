@@ -1,0 +1,5 @@
+<li><button @onclick="() => OnPick?.Invoke()">Row @Index</button></li>
+@code {
+    [Parameter] public int Index { get; set; }
+    [Parameter] public Action? OnPick { get; set; }
+}

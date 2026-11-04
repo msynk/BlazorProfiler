@@ -1,0 +1,37 @@
+@using BlazorProfiler.Http
+@inject HttpClient Http
+<h2>Failing endpoint</h2>
+<p>Calls an endpoint that always fails, retrying three times (each retry is tagged with its attempt number), and calls a slow endpoint.</p>
+<button id="flaky" @onclick="CallAsync">Call flaky API</button>
+<button id="slow-endpoint" @onclick="SlowAsync">Call slow endpoint</button>
+<p id="flaky-status">@status</p>
+@code {
+    private string status = "";
+
+    private async Task CallAsync()
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "api/flaky");
+            request.Options.Set(ProfilerHttpMessageHandler.RetryAttemptKey, attempt);
+            using var response = await Http.SendAsync(request);
+            status = $"Attempt {attempt + 1}: {(int)response.StatusCode}";
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            await Task.Delay(50 * (attempt + 1));
+        }
+    }
+
+    private async Task SlowAsync()
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            await Http.GetStringAsync("api/slow?ms=1100");
+        }
+
+        status = "Slow endpoint done";
+    }
+}
