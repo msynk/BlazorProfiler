@@ -31,7 +31,7 @@ public class SampleApp : IAsyncLifetime
         var assembly = typeof(SampleApp).Assembly;
         string Metadata(string key) => assembly.GetCustomAttributes<AssemblyMetadataAttribute>().Single(a => a.Key == key).Value!;
         var projectDirectory = Path.GetFullPath(Metadata("SampleDirectory"));
-        var dll = Path.Combine(projectDirectory, "bin", Metadata("Configuration"), "net10.0", "BlazorProfiler.Samples.dll");
+        var dll = Path.Combine(projectDirectory, "bin", Metadata("Configuration"), "net10.0", "BlazorProfiler.Demo.Server.dll");
         if (!File.Exists(dll))
         {
             throw new InvalidOperationException($"Sample not built: {dll}");

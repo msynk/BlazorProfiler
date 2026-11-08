@@ -1,4 +1,4 @@
-namespace BlazorProfiler.Samples.Client;
+namespace BlazorProfiler.Demo.Client;
 
 public sealed record Product(int Id, string Name, decimal Price);
 

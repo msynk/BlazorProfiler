@@ -93,12 +93,12 @@ See [Getting started](docs/getting-started.md) for authorization, configuration 
 
 ## Samples
 
-`samples/BlazorProfiler.Samples` is a Blazor Web App with static SSR, Interactive Server, and Interactive WebAssembly pages.
+`demo/Server` is a Blazor Web App with static SSR, Interactive Server, and Interactive WebAssembly pages.
 Each demo reproduces a problem that specific rules detect (render storms, large lists, slow handlers, rapid input, N+1 and
 duplicate requests, failing endpoints, interop chatter, allocation spikes, leaky components).
 
 ```bash
-dotnet run --project samples/BlazorProfiler.Samples
+dotnet run --project demo/Server
 ```
 
 ## Building and testing

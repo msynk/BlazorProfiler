@@ -1,6 +1,6 @@
 using BlazorProfiler;
-using BlazorProfiler.Samples;
-using BlazorProfiler.Samples.Components;
+using BlazorProfiler.Demo.Server;
+using BlazorProfiler.Demo.Server.Components;
 using BlazorProfiler.Server;
 using Microsoft.AspNetCore.Components;
 
@@ -49,7 +49,7 @@ app.MapBlazorProfiler();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode()
     .AddInteractiveWebAssemblyRenderMode()
-    .AddAdditionalAssemblies(typeof(BlazorProfiler.Samples.Client.Product).Assembly);
+    .AddAdditionalAssemblies(typeof(BlazorProfiler.Demo.Client.Product).Assembly);
 
 app.Run();
 

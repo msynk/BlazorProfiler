@@ -1,6 +1,6 @@
-using BlazorProfiler.Samples.Client;
+using BlazorProfiler.Demo.Client;
 
-namespace BlazorProfiler.Samples;
+namespace BlazorProfiler.Demo.Server;
 
 /// <summary>A small API used by the demos. Delays simulate realistic server latency.</summary>
 internal static class DemoApi

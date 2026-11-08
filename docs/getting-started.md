@@ -110,5 +110,5 @@ Profiler.Mark("Cache warmed");
 
 ## Samples
 
-`samples/BlazorProfiler.Samples` contains one demo per problem category in both Interactive Server and Interactive
-WebAssembly modes. Run it with `dotnet run --project samples/BlazorProfiler.Samples` and open `http://localhost:5199`.
+`demo/Server` contains one demo per problem category in both Interactive Server and Interactive
+WebAssembly modes. Run it with `dotnet run --project demo/Server` and open `http://localhost:5199`.

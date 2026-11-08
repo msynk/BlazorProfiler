@@ -10,7 +10,7 @@ suppression key is `RuleId:Subject`, or `RuleId:*` for a whole rule.
 Severity scale (value ÷ threshold): below 1× Info, 1–2× Low, 2–5× Medium, 5–20× High, 20× and above Critical. Rules whose
 evidence is weak cap severity (noted below).
 
-Sample demos (`samples/BlazorProfiler.Samples`) are listed for rules they reproduce.
+Sample demos (`demo/Server`) are listed for rules they reproduce.
 
 ## Rendering
 

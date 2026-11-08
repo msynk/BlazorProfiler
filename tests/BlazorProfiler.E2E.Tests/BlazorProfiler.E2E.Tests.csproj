@@ -4,10 +4,10 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Built so the tests can start it; not referenced as a library. -->
-    <ProjectReference Include="..\..\samples\BlazorProfiler.Samples\BlazorProfiler.Samples.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\demo\Server\BlazorProfiler.Demo.Server.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <PropertyGroup>
-    <SampleDirectory>$(MSBuildThisFileDirectory)..\..\samples\BlazorProfiler.Samples\</SampleDirectory>
+    <SampleDirectory>$(MSBuildThisFileDirectory)..\..\demo\Server\</SampleDirectory>
   </PropertyGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
