@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using BlazorProfiler.Correlation;
 using BlazorProfiler.Events;
@@ -27,14 +28,16 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     // A render batch waits for its size, which the framework records right after the duration on the same thread. The
     // ambient correlation (synchronization context and operation frame) is captured with it, because a batch that never
     // receives a size is emitted later from whatever work runs next on the thread, possibly for another circuit.
-    [ThreadStatic]
-    private static RenderBatchEvent? t_pendingBatch;
+    // Every thread's slot is also registered so that stopping can clear them all: otherwise idle pool threads would keep
+    // closed circuits' contexts alive and emit their stale batches into a later recording. Slots of exited threads are
+    // pruned as new threads register, so the registry stays proportional to the live threads.
+    private const int PruneInterval = 64;
+    private readonly ThreadLocal<PendingSlot> _pending;
+    private readonly ConcurrentDictionary<PendingSlot, byte> _slots = new();
+    private int _registrations;
 
-    [ThreadStatic]
-    private static SynchronizationContext? t_pendingContext;
-
-    [ThreadStatic]
-    private static OperationFrame? t_pendingFrame;
+    // Incremented on start and stop; a pending batch from another run (stored concurrently with a stop) is discarded.
+    private int _generation;
 
     private readonly ComponentInstanceRegistry _registry;
     private readonly ProfilerHostingInfo _hosting;
@@ -53,6 +56,7 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
         _registry = registry;
         _hosting = hosting;
         _meterFactory = meterFactory;
+        _pending = new(RegisterSlot);
     }
 
     /// <inheritdoc />
@@ -79,6 +83,7 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     /// <inheritdoc />
     protected override void OnStart(ProfilerCollectorContext context)
     {
+        Interlocked.Increment(ref _generation);
         var listener = new MeterListener
         {
             InstrumentPublished = (instrument, l) =>
@@ -103,7 +108,38 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     {
         _listener?.Dispose();
         _listener = null;
-        ClearPendingBatch();
+
+        // Clear every thread's pending batch, not only this thread's, so no closed circuit's context or frame is retained.
+        Interlocked.Increment(ref _generation);
+        foreach (var slot in _slots.Keys)
+        {
+            Interlocked.Exchange(ref slot.Batch, null);
+        }
+
+        PruneSlots();
+    }
+
+    private PendingSlot RegisterSlot()
+    {
+        var slot = new PendingSlot(Thread.CurrentThread);
+        _slots.TryAdd(slot, 0);
+        if (Interlocked.Increment(ref _registrations) % PruneInterval == 0)
+        {
+            PruneSlots();
+        }
+
+        return slot;
+    }
+
+    private void PruneSlots()
+    {
+        foreach (var slot in _slots.Keys)
+        {
+            if (!slot.Thread.IsAlive)
+            {
+                _slots.TryRemove(slot, out _);
+            }
+        }
     }
 
     private void OnDouble(Instrument instrument, double measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
@@ -149,9 +185,9 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
                         ApplyError(e, tags);
 
                         // The batch size is recorded immediately after the duration on the same thread.
-                        t_pendingBatch = e;
-                        t_pendingContext = SynchronizationContext.Current;
-                        t_pendingFrame = ProfilerContext.Current;
+                        Volatile.Write(
+                            ref _pending.Value!.Batch,
+                            new PendingBatch(e, SynchronizationContext.Current, ProfilerContext.Current, Volatile.Read(ref _generation)));
                         break;
                     }
 
@@ -193,10 +229,7 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
             return;
         }
 
-        var pending = t_pendingBatch;
-        var context = t_pendingContext;
-        var frame = t_pendingFrame;
-        ClearPendingBatch();
+        var pending = TakePendingBatch();
         if (pending is null || Profiler is not { IsRecording: true })
         {
             return;
@@ -204,8 +237,8 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
 
         try
         {
-            pending.UpdatedComponentCount = measurement;
-            EmitInContext(pending, context, frame);
+            pending.Batch.UpdatedComponentCount = measurement;
+            EmitInContext(pending.Batch, pending.Context, pending.Frame);
         }
         catch (Exception ex)
         {
@@ -248,21 +281,17 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
     private void FlushPendingBatch()
     {
         // A batch whose size was never reported is emitted without one, attributed to the context it was recorded in.
-        var pending = t_pendingBatch;
-        if (pending is not null)
+        if (TakePendingBatch() is { } pending)
         {
-            var context = t_pendingContext;
-            var frame = t_pendingFrame;
-            ClearPendingBatch();
-            EmitInContext(pending, context, frame);
+            EmitInContext(pending.Batch, pending.Context, pending.Frame);
         }
     }
 
-    private static void ClearPendingBatch()
+    /// <summary>Removes and returns this thread's pending batch, unless it was recorded during another collection run.</summary>
+    private PendingBatch? TakePendingBatch()
     {
-        t_pendingBatch = null;
-        t_pendingContext = null;
-        t_pendingFrame = null;
+        var pending = Interlocked.Exchange(ref _pending.Value!.Batch, null);
+        return pending is not null && pending.Generation == Volatile.Read(ref _generation) ? pending : null;
     }
 
     /// <summary>
@@ -316,5 +345,16 @@ public sealed class ComponentMetricsCollector : ProfilerCollectorBase
         }
 
         return null;
+    }
+
+    /// <summary>A render batch waiting for its size, with the ambient correlation it was recorded under.</summary>
+    private sealed record PendingBatch(RenderBatchEvent Batch, SynchronizationContext? Context, OperationFrame? Frame, int Generation);
+
+    /// <summary>A thread's pending batch. Owned by the thread, but cleared by any thread when collection stops.</summary>
+    private sealed class PendingSlot(Thread thread)
+    {
+        public readonly Thread Thread = thread;
+
+        public PendingBatch? Batch;
     }
 }

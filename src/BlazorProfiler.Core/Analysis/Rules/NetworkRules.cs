@@ -20,7 +20,12 @@ public sealed class DuplicateRequestsRule : DiagnosticRule
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
         var window = context.Ticks(context.Options.DuplicateRequestWindowMs);
-        var results = new List<(DiagnosticFinding Finding, int Count)>();
+        var windowText = FormatMs(context.Options.DuplicateRequestWindowMs);
+
+        // Duplicates are detected per URL, but reported per subject (the endpoint template): distinct URLs of one endpoint
+        // (/products/1 and /products/2 as /products/{id}) share the finding's fingerprint, which suppressions and links
+        // use, and their redacted URLs are indistinguishable.
+        var bySubject = new Dictionary<string, List<(List<HttpRequestEvent> Requests, List<HttpRequestEvent> Duplicates, int Overlapping)>>(StringComparer.Ordinal);
         foreach (var group in context.OfType<HttpRequestEvent>()
                      .Where(r => r.UrlHash != 0 && r.Method is "GET" or "HEAD")
                      .GroupBy(r => r.UrlHash))
@@ -51,24 +56,48 @@ public sealed class DuplicateRequestsRule : DiagnosticRule
                 continue;
             }
 
+            var subject = requests[0].Endpoint ?? requests[0].Url ?? "(unknown)";
+            if (!bySubject.TryGetValue(subject, out var urls))
+            {
+                urls = [];
+                bySubject[subject] = urls;
+            }
+
+            urls.Add((requests, duplicates, overlapping));
+        }
+
+        var results = new List<(DiagnosticFinding Finding, int Count)>();
+        foreach (var (subject, urls) in bySubject)
+        {
+            var requestCount = urls.Sum(u => u.Requests.Count);
+            var duplicates = urls.SelectMany(u => u.Duplicates).OrderBy(r => r.Timestamp).ToList();
+            var overlapping = urls.Sum(u => u.Overlapping);
             var wastedMs = duplicates.Sum(r => context.Ms(r.Duration));
             var origins = duplicates.Select(r => r.OriginComponentType).Where(t => t is not null).Distinct().Select(ShortType).Take(4).ToList();
-            var url = requests[0].Url ?? requests[0].Endpoint ?? "(unknown)";
+            var first = urls[0].Requests[0];
+            var url = first.Url ?? first.Endpoint ?? "(unknown)";
+            var title = urls.Count == 1
+                ? $"{url} requested {duplicates.Count + 1} times within {windowText}"
+                : $"{FormatNumber(urls.Count)} URLs of {subject} each requested again within {windowText}";
+            var summary = urls.Count == 1
+                ? $"The same URL was requested {requestCount} times; {duplicates.Count} request(s) followed an identical one within {windowText}, {overlapping} of them while the previous request was still in flight."
+                : $"{FormatNumber(urls.Count)} distinct URLs of this endpoint were requested {requestCount} times in total; {duplicates.Count} request(s) followed an identical one within {windowText}, {overlapping} of them while the previous request was still in flight.";
             results.Add((Create(
-                $"{url} requested {duplicates.Count + 1} times within {FormatMs(context.Options.DuplicateRequestWindowMs)}",
+                title,
                 Scale(duplicates.Count, 2),
                 DiagnosticConfidence.High,
-                $"The same URL was requested {requests.Count} times; {duplicates.Count} request(s) followed an identical one within {FormatMs(context.Options.DuplicateRequestWindowMs)}, {overlapping} of them while the previous request was still in flight.",
+                summary,
                 "Repeated identical reads cost network round trips and server work without new information. They are typically caused by several components fetching the same data, lifecycle methods that run more than once (prerendering followed by interactive rendering, OnParametersSetAsync), or re-renders that restart loading.",
                 "Cache the response (in a scoped or singleton service, or with HTTP caching headers), share in-flight requests (store the Task, not just the result), use persistent component state to reuse prerendered data, and load data in OnInitializedAsync rather than OnParametersSetAsync unless it depends on parameters.",
                 [
-                    Evidence("Requests", FormatNumber(requests.Count)),
+                    Evidence("Requests", FormatNumber(requestCount)),
+                    Evidence("Distinct URLs with duplicates", FormatNumber(urls.Count)),
                     Evidence("Duplicates within window", FormatNumber(duplicates.Count)),
                     Evidence("Overlapping (in-flight) duplicates", FormatNumber(overlapping)),
                     Evidence("Originating components", origins.Count > 0 ? string.Join(", ", origins) : "unknown", origins.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
                 ],
                 new ImpactEstimate { TotalMs = Math.Round(wastedMs, 3), Occurrences = duplicates.Count, Method = "Sum of durations of requests that repeated an identical request within the window.", Quality = ValueQuality.Measured },
-                subject: requests[0].Endpoint ?? url,
+                subject: subject,
                 caveats: ["Polling and intentionally refreshed data are expected to repeat.", "URLs are compared by a hash of the full original URL, including query values."],
                 related: duplicates), duplicates.Count));
         }

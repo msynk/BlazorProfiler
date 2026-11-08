@@ -171,6 +171,48 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
     }
 
     [Fact]
+    public async Task ServerDashboardDetailsDrawerOpensAndCloses()
+    {
+        var session = await app.StartSessionAsync("drawer");
+        var demo = await OpenAsync("server/requests");
+        await ClickWhenInteractiveAsync(demo, "#reload", "Reloaded", "#requests-status");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Any(e => e.Str("type") == "http"), 20_000, "No request was recorded.");
+
+        var dashboard = await OpenAsync("_blazor-profiler/");
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        Assert.False(await dashboard.IsVisibleAsync("#drawer"));
+
+        // Close button and Escape both hide the details drawer.
+        await dashboard.ClickAsync("a[data-view=components]");
+        await dashboard.ClickAsync("table[aria-label=Components] tbody tr");
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Visible });
+        await dashboard.ClickAsync("#drawer-close");
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Hidden });
+        await dashboard.ClickAsync("table[aria-label=Components] tbody tr");
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Visible });
+        await dashboard.Keyboard.PressAsync("Escape");
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Hidden });
+
+        // Request rows start directly under the list header and open event details.
+        await dashboard.ClickAsync("a[data-view=network]");
+        var firstRow = await dashboard.WaitForSelectorAsync("[aria-label=Requests] .vrow[data-index='0']");
+        var gap = await dashboard.EvaluateAsync<double>("""
+            () => {
+              const list = document.querySelector('[aria-label=Requests]');
+              return list.querySelector('.vrow[data-index="0"]').getBoundingClientRect().top - list.querySelector('.vrow.header').getBoundingClientRect().bottom;
+            }
+            """);
+        Assert.InRange(gap, -1, 1);
+        await firstRow!.ClickAsync();
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Visible });
+        Assert.Contains("http", await dashboard.InnerTextAsync("#drawer-body"), StringComparison.Ordinal);
+        await dashboard.ClickAsync("#drawer-close");
+        await dashboard.WaitForSelectorAsync("#drawer", new() { State = WaitForSelectorState.Hidden });
+        await demo.CloseAsync();
+        await dashboard.CloseAsync();
+    }
+
+    [Fact]
     public async Task StateChangingRequestsRequireTheProfilerHeader()
     {
         using var response = await app.Http.PostAsync("_blazor-profiler/api/sessions", null);

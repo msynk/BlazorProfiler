@@ -152,8 +152,11 @@ public interface IProfilerSession : IDisposable
     /// <summary>Returns retained events matching a query.</summary>
     List<ProfilerEvent> GetEvents(EventQuery query);
 
-    /// <summary>Returns retained events after a sequence cursor.</summary>
-    List<ProfilerEvent> GetEventsAfter(long afterSequence, int max, out long lastSequence);
+    /// <summary>
+    /// Returns up to <paramref name="max"/> retained events after a sequence cursor, together with the cursor's state
+    /// (cleared, evicted), all read atomically.
+    /// </summary>
+    EventRange GetEventsAfter(long afterSequence, int max);
 
     /// <summary>Returns the retained events of one operation.</summary>
     IReadOnlyList<ProfilerEvent> GetOperationEvents(long operationId);
@@ -203,6 +206,7 @@ public sealed class ProfilerSession : IProfilerSession
     private SessionAggregates _aggregates;
     private ProfilerSessionState _state;
     private long? _stopTimestamp;
+    private long _lastViewedTicks = long.MinValue;
 
     internal ProfilerSession(
         string id,
@@ -324,13 +328,24 @@ public sealed class ProfilerSession : IProfilerSession
     }
 
     /// <summary>Returns whether the session accepts an event (state and scope).</summary>
-    public bool Accepts(ProfilerEvent profilerEvent)
-    {
-        if (_state != ProfilerSessionState.Recording)
-        {
-            return false;
-        }
+    public bool Accepts(ProfilerEvent profilerEvent) => _state == ProfilerSessionState.Recording && InScope(profilerEvent);
 
+    /// <summary>
+    /// Returns whether the most recent read through <see cref="Api.ProfilerApi"/> (a dashboard viewing the session)
+    /// happened within <paramref name="window"/>. Used to avoid removing sessions automatically while someone inspects them.
+    /// </summary>
+    public bool WasViewedWithin(TimeSpan window)
+    {
+        var viewed = Volatile.Read(ref _lastViewedTicks);
+        return viewed != long.MinValue && Environment.TickCount64 - viewed <= (long)window.TotalMilliseconds;
+    }
+
+    /// <summary>Records that a dashboard read the session.</summary>
+    internal void MarkViewed() => Volatile.Write(ref _lastViewedTicks, Environment.TickCount64);
+
+    /// <summary>Returns whether an event falls within the session's scope (circuit and kinds), regardless of state.</summary>
+    private bool InScope(ProfilerEvent profilerEvent)
+    {
         if (Options.CircuitId is { } circuitId && !string.Equals(profilerEvent.CircuitId, circuitId, StringComparison.Ordinal))
         {
             var processMetric = profilerEvent.CircuitId is null && Options.IncludeProcessMetrics && profilerEvent.Kind == ProfilerEventKind.RuntimeSample;
@@ -381,6 +396,12 @@ public sealed class ProfilerSession : IProfilerSession
     /// </summary>
     internal bool TryReplace(HttpRequestEvent original, HttpRequestEvent replacement)
     {
+        // An event outside the session's scope was never appended, so there is no need to search the store for it.
+        if (IsImported || !InScope(original))
+        {
+            return false;
+        }
+
         lock (_lock)
         {
             if (_state == ProfilerSessionState.Disposed || !_store.Replace(original, replacement))
@@ -418,11 +439,11 @@ public sealed class ProfilerSession : IProfilerSession
     }
 
     /// <inheritdoc />
-    public List<ProfilerEvent> GetEventsAfter(long afterSequence, int max, out long lastSequence)
+    public EventRange GetEventsAfter(long afterSequence, int max)
     {
         lock (_lock)
         {
-            return _store.GetAfter(afterSequence, max, out lastSequence);
+            return _store.GetAfter(afterSequence, max);
         }
     }
 

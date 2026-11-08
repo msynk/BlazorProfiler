@@ -36,7 +36,10 @@ public sealed class RuntimeSampleEvent : ProfilerEvent
     /// <summary>Generation 2 collections during the interval.</summary>
     public int? Gen2Collections { get; set; }
 
-    /// <summary>Time the runtime was paused for garbage collection during the interval, in clock ticks.</summary>
+    /// <summary>
+    /// Time the runtime was paused for garbage collection during the interval, in clock ticks; <see langword="null"/> when the
+    /// runtime does not report it (WebAssembly).
+    /// </summary>
     public long? GcPauseTicks { get; set; }
 
     /// <summary>Process CPU time consumed during the interval, in clock ticks (server only).</summary>

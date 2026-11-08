@@ -38,7 +38,7 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
             }
 
             var sorted = SortedByTimestamp(events);
-            var peak = PeakRate(sorted, second);
+            var peak = PeakWeight(sorted, second);
             var sustained = SecondsAtOrAbove(sorted, second, options.HighRenderRatePerSecond);
             if (peak < options.HighRenderRatePerSecond || (sustained < 2 && peak < options.HighRenderRatePerSecond * 3))
             {
@@ -49,7 +49,9 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
             var unchangedOutputRatio = summary is { RendersWithOutputComparison: > 0 } ? summary.RendersWithUnchangedOutput / summary.RendersWithOutputComparison : (double?)null;
             var parameterSets = summary?.ParametersSets.Count ?? 0;
             var unchangedParameterRatio = parameterSets > 0 ? (summary!.ParametersUnchanged + summary.ParametersChangedByReferenceOnly) / parameterSets : (double?)null;
-            var totalMs = context.Ms(events.Sum(e => e.Duration));
+            // Weighted like the counts, so impact is not under-estimated under sampling.
+            var totalMs = WeightedMs(context, events);
+            var quality = Core.ValueQualityFor(events);
 
             var confidence = unchangedOutputRatio >= 0.5
                 ? DiagnosticConfidence.High
@@ -64,10 +66,10 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
             var what = instrumented ? "renders" : "parameter updates";
             var evidence = new List<FindingEvidence>
             {
-                Evidence(instrumented ? "Renders" : "Parameter updates (render proxy)", FormatNumber(Weighted(events)), instrumented ? Core.ValueQualityFor(events) : ValueQuality.Inferred),
-                Evidence("Peak rate", FormatNumber(peak) + " per second", Core.ValueQualityFor(events)),
-                Evidence("Seconds at or above " + FormatNumber(options.HighRenderRatePerSecond) + "/s", FormatNumber(sustained), Core.ValueQualityFor(events)),
-                Evidence(instrumented ? "Total render time (BuildRenderTree)" : "Total SetParametersAsync time", FormatMs(totalMs)),
+                Evidence(instrumented ? "Renders" : "Parameter updates (render proxy)", FormatNumber(Weighted(events)), instrumented ? quality : ValueQuality.Inferred),
+                Evidence("Peak rate", FormatNumber(peak) + " per second", quality),
+                Evidence("Seconds at or above " + FormatNumber(options.HighRenderRatePerSecond) + "/s", FormatNumber(sustained), quality),
+                Evidence(instrumented ? "Total render time (BuildRenderTree)" : "Total SetParametersAsync time", FormatMs(totalMs), quality),
             };
 
             if (unchangedOutputRatio is { } outputRatio)
@@ -101,8 +103,8 @@ public sealed class HighFrequencyRenderingRule : DiagnosticRule
                 {
                     TotalMs = Math.Round(totalMs, 3),
                     Occurrences = Weighted(events),
-                    Method = instrumented ? "Sum of measured BuildRenderTree durations (excludes diffing and DOM updates)." : "Sum of SetParametersAsync durations from framework metrics (includes awaited lifecycle work).",
-                    Quality = instrumented ? ValueQuality.Measured : ValueQuality.Inferred,
+                    Method = instrumented ? "Sum of measured BuildRenderTree durations, weighted by sampling (excludes diffing and DOM updates)." : "Sum of SetParametersAsync durations from framework metrics, weighted by sampling (includes awaited lifecycle work).",
+                    Quality = instrumented ? quality : ValueQuality.Inferred,
                 },
                 componentType: type,
                 subject: type,
@@ -303,20 +305,24 @@ public sealed class SlowLifecycleRule : DiagnosticRule
         {
             var events = group.ToList();
             var maxMs = context.Ms(events.Max(e => e.SynchronousDuration));
-            var totalMs = context.Ms(events.Sum(e => e.SynchronousDuration));
+
+            // Counts and totals are weighted: under sampling each retained event stands for several calls.
+            var count = Weighted(events);
+            var totalMs = WeightedMs(context, events, static e => ((LifecycleMethodEvent)e).SynchronousDuration);
+            var quality = Core.ValueQualityFor(events);
             results.Add(Create(
                 $"{ShortType(group.Key.ComponentType)}.{group.Key.Method} blocks for up to {FormatMs(maxMs)}",
                 Scale(maxMs, context.Options.SlowLifecycleMs),
                 DiagnosticConfidence.High,
-                $"{events.Count} call(s) of {group.Key.Method} spent at least {FormatMs(context.Options.SlowLifecycleMs)} running synchronously (max {FormatMs(maxMs)}).",
+                $"{FormatNumber(count)} call(s) of {group.Key.Method} spent at least {FormatMs(context.Options.SlowLifecycleMs)} running synchronously (max {FormatMs(maxMs)}).",
                 "Synchronous lifecycle code runs on the renderer's dispatcher: in WebAssembly it blocks the browser's UI thread, and on Blazor Server it blocks the circuit so no other events or renders for that user can be processed.",
                 "Move expensive computation out of lifecycle methods (precompute, cache, or compute lazily), make I/O asynchronous, and avoid synchronous waits such as .Result or .Wait().",
                 [
-                    Evidence("Slow calls", FormatNumber(events.Count)),
+                    Evidence("Slow calls", FormatNumber(count), quality),
                     Evidence("Maximum synchronous time", FormatMs(maxMs)),
-                    Evidence("Total synchronous time", FormatMs(totalMs)),
+                    Evidence("Total synchronous time", FormatMs(totalMs), quality),
                 ],
-                new ImpactEstimate { TotalMs = Math.Round(totalMs, 3), Occurrences = events.Count, Method = "Sum of measured synchronous durations.", Quality = ValueQuality.Measured },
+                new ImpactEstimate { TotalMs = Math.Round(totalMs, 3), Occurrences = count, Method = "Sum of measured synchronous durations, weighted by sampling.", Quality = quality },
                 componentType: group.Key.ComponentType,
                 subject: $"{group.Key.ComponentType}.{group.Key.Method}",
                 related: events));
@@ -326,16 +332,18 @@ public sealed class SlowLifecycleRule : DiagnosticRule
         {
             var events = group.ToList();
             var maxMs = context.Ms(events.Max(e => e.Duration));
-            var totalMs = context.Ms(events.Sum(e => e.Duration));
+            var count = Weighted(events);
+            var totalMs = WeightedMs(context, events);
+            var quality = Core.ValueQualityFor(events);
             results.Add(Create(
                 $"{ShortType(group.Key)} BuildRenderTree takes up to {FormatMs(maxMs)}",
                 Scale(maxMs, context.Options.SlowLifecycleMs),
                 DiagnosticConfidence.High,
-                $"{events.Count} render(s) of {ShortType(group.Key)} spent at least {FormatMs(context.Options.SlowLifecycleMs)} building the render tree.",
+                $"{FormatNumber(count)} render(s) of {ShortType(group.Key)} spent at least {FormatMs(context.Options.SlowLifecycleMs)} building the render tree.",
                 "Building the render tree is synchronous. Slow renders usually come from expensive expressions in markup (LINQ over large collections, formatting, sorting) or very large markup.",
                 "Compute derived data once when inputs change (OnParametersSet) instead of in markup, split large markup into child components with ShouldRender, and virtualize long lists.",
-                [Evidence("Slow renders", FormatNumber(events.Count)), Evidence("Maximum", FormatMs(maxMs)), Evidence("Total", FormatMs(totalMs))],
-                new ImpactEstimate { TotalMs = Math.Round(totalMs, 3), Occurrences = events.Count, Method = "Sum of measured BuildRenderTree durations.", Quality = ValueQuality.Measured },
+                [Evidence("Slow renders", FormatNumber(count), quality), Evidence("Maximum", FormatMs(maxMs)), Evidence("Total", FormatMs(totalMs), quality)],
+                new ImpactEstimate { TotalMs = Math.Round(totalMs, 3), Occurrences = count, Method = "Sum of measured BuildRenderTree durations, weighted by sampling.", Quality = quality },
                 componentType: group.Key,
                 subject: group.Key + ".BuildRenderTree",
                 related: events));
@@ -349,15 +357,17 @@ public sealed class SlowLifecycleRule : DiagnosticRule
         {
             var events = group.ToList();
             var maxMs = context.Ms(events.Max(e => e.Duration));
+            var count = Weighted(events);
+            var quality = Core.ValueQualityFor(events);
             results.Add(Create(
                 $"{ShortType(group.Key)} parameter updates take up to {FormatMs(maxMs)}",
                 Cap(Scale(maxMs, context.Options.SlowLifecycleMs), DiagnosticSeverity.Medium),
                 DiagnosticConfidence.Medium,
-                $"{events.Count} SetParametersAsync call(s) of {ShortType(group.Key)} took at least {FormatMs(context.Options.SlowLifecycleMs)} until their task completed (max {FormatMs(maxMs)}).",
+                $"{FormatNumber(count)} SetParametersAsync call(s) of {ShortType(group.Key)} took at least {FormatMs(context.Options.SlowLifecycleMs)} until their task completed (max {FormatMs(maxMs)}).",
                 "Framework metrics measure until SetParametersAsync's task completes, which includes awaited work in OnInitializedAsync and OnParametersSetAsync (for example HTTP calls). Awaited I/O does not block the UI, but the component shows incomplete data until it finishes. Synchronous time cannot be separated without instrumentation.",
                 "Inherit ProfiledComponentBase (for example with @inherits in _Imports.razor) to separate synchronous from awaited time. Show a loading state for slow data, cache results, and start independent requests concurrently.",
-                [Evidence("Slow parameter updates", FormatNumber(events.Count)), Evidence("Maximum (including awaited work)", FormatMs(maxMs))],
-                new ImpactEstimate { Occurrences = events.Count, Method = "Count of SetParametersAsync durations above the threshold.", Quality = ValueQuality.Measured },
+                [Evidence("Slow parameter updates", FormatNumber(count), quality), Evidence("Maximum (including awaited work)", FormatMs(maxMs))],
+                new ImpactEstimate { Occurrences = count, Method = "Count of SetParametersAsync durations above the threshold, weighted by sampling.", Quality = quality },
                 componentType: group.Key,
                 subject: group.Key + ".SetParametersAsync",
                 caveats: ["The duration includes asynchronous waiting and is not necessarily blocking time."],
@@ -391,7 +401,7 @@ public sealed class ExcessiveComponentInstancesRule : DiagnosticRule
         foreach (var component in context.Summary.Components.OrderByDescending(c => c.Created))
         {
             created.TryGetValue(component.ComponentType, out var events);
-            var peak = events is null ? 0 : PeakRate(SortedByTimestamp(events), context.Clock.Frequency);
+            var peak = events is null ? 0 : PeakWeight(SortedByTimestamp(events), context.Clock.Frequency);
             if (component.Created < threshold && peak < burstThreshold)
             {
                 continue;

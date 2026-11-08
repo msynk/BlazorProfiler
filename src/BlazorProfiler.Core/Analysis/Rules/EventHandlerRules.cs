@@ -175,7 +175,7 @@ public sealed class RapidEventStreamRule : DiagnosticRule
                 continue;
             }
 
-            var peak = PeakRate(SortedByTimestamp(events), context.Clock.Frequency);
+            var peak = PeakWeight(SortedByTimestamp(events), context.Clock.Frequency);
             if (peak < options.RapidEventsPerSecond)
             {
                 continue;

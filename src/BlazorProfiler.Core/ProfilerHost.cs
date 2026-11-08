@@ -141,6 +141,9 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
     private readonly object _collectorGate = new();
 
     private ProfilerSession[] _recording = [];
+
+    // The sessions offered the event currently being processed (consumer only, or under _processLock).
+    private ProfilerSession[] _processingSessions = [];
     private Task? _consumer;
     private bool _collectorsRunning;
     private bool _started;
@@ -184,7 +187,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         [
             new FilterProcessor(options.Filters),
             new RedactionProcessor(RedactionPolicy),
-            new BrowserResourceMergeProcessor(Clock, ReplaceStoredEvent),
+            new BrowserResourceMergeProcessor(Clock, () => _processingSessions, ReplaceStoredEvent),
             .. processors ?? [],
         ];
         Diagnostics = new DiagnosticEngine(options.Diagnostics, rules ?? BuiltInRules.Create(), recommendationProviders);
@@ -648,6 +651,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         try
         {
             var sessions = _recording;
+            _processingSessions = sessions;
             ReportDroppedEvents(sessions);
 
             foreach (var processor in _processors)
@@ -680,16 +684,15 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
     /// <summary>
     /// Replaces an event that sessions already stored with an enriched copy (runs on the consumer, inside processing).
     /// </summary>
-    private void ReplaceStoredEvent(HttpRequestEvent original, HttpRequestEvent replacement)
+    /// <param name="original">The stored event.</param>
+    /// <param name="replacement">The enriched copy.</param>
+    /// <param name="recipients">
+    /// The sessions the original was offered to; no other session can hold it. They may have been paused, stopped, or
+    /// removed since, and are searched regardless of their current state (removed sessions ignore the request).
+    /// </param>
+    private static void ReplaceStoredEvent(HttpRequestEvent original, HttpRequestEvent replacement, ProfilerSession[] recipients)
     {
-        ProfilerSession[] sessions;
-        lock (_gate)
-        {
-            // Include paused and stopped sessions: they may hold the original even though they no longer record.
-            sessions = [.. _sessions];
-        }
-
-        foreach (var session in sessions)
+        foreach (var session in recipients)
         {
             session.TryReplace(original, replacement);
         }

@@ -77,6 +77,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Author display rules (for example .drawer's flex layout) would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); }
 a { color: var(--accent); }
@@ -239,7 +241,8 @@ ul.compact { margin: 0; padding-left: 18px; }
 .dropzone.over { border-color: var(--accent); color: var(--accent); }
 
 @media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
+  /* minmax(0, …): a plain 1fr track grows to the min-content width of the horizontally scrolling nav. */
+  .layout { grid-template-columns: minmax(0, 1fr); }
   .sidenav { border-right: 0; border-bottom: 1px solid var(--border); }
   .sidenav ul { grid-auto-flow: column; overflow-x: auto; }
   .grid.cols-2 { grid-template-columns: 1fr; }

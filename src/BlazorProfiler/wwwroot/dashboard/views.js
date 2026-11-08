@@ -11,9 +11,10 @@ function d(summary) {
   return summary || { count: 0, totalMs: 0, meanMs: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 };
 }
 
-function inRange(ctx, events) {
+/** The events within the configured time range. Always returns a new array, so callers may keep it while polling appends to the source. */
+export function inRange(ctx, events) {
   if (!settings.rangeSeconds) {
-    return events;
+    return events.slice();
   }
 
   const cutoff = ctx.maxMs() - settings.rangeSeconds * 1000;
@@ -80,7 +81,7 @@ export function overview(ctx) {
     tile('Event handlers', fmtNum(handlerCount), `p95 ${fmtMs(handlerP95)}`),
     tile('HTTP requests', fmtNum(requests), failures ? `${fmtNum(failures)} failed` : 'no failures'),
     tile('JS interop calls', fmtNum(interop)),
-    tile('Allocated', runtime.samples ? fmtBytes(runtime.allocatedBytes) : '—', runtime.samples ? `GC pauses ${fmtMs(runtime.gcPauseMs)}` : 'runtime collector off'),
+    tile('Allocated', runtime.samples ? fmtBytes(runtime.allocatedBytes) : '—', !runtime.samples ? 'runtime collector off' : runtime.gcPauseUnavailable ? `${fmtNum(runtime.gen0Collections + runtime.gen1Collections + runtime.gen2Collections)} GCs` : `GC pauses ${fmtMs(runtime.gcPauseMs)}`),
     tile('Circuits', fmtNum((s.circuits || []).length), (s.circuits || []).length ? `${fmtNum(s.circuits.filter(c => c.connected && !c.closed).length)} connected` : 'not a server session'),
     tile('Browser interactions', fmtNum(s.browserInteractions?.count), s.browserInteractions?.count ? `p95 ${fmtMs(s.browserInteractions.p95Ms)}` : 'needs BlazorProfilerClient'),
     tile('Dropped events', fmtNum(health ? health.droppedQueueFull : s.droppedEventsReported), health ? `profiler overhead ${fmtNum(health.emitMicrosecondsPerEvent, 2)} µs/event` : null, 'Events dropped because the profiler queue was full.'),
@@ -262,36 +263,71 @@ function componentTree(ctx, s) {
     children.get(parent).push(i);
   }
 
-  const renderLevel = (parentId, depth) => {
-    const list = h('ul', { class: depth === 0 ? 'tree root' : 'tree', role: depth === 0 ? 'tree' : 'group' });
-    for (const node of (children.get(parentId) || []).slice(0, 500)) {
-      const kids = children.get(node.instanceId) || [];
-      const li = h('li', { role: 'treeitem', 'aria-expanded': kids.length ? 'false' : null });
-      const label = h('button', {
-        type: 'button',
-        class: `node${node.disposedTimestamp ? ' disposed' : ''}`,
-        title: node.componentType,
-        onclick: () => {
-          if (kids.length) {
-            const open = li.getAttribute('aria-expanded') === 'true';
-            li.setAttribute('aria-expanded', open ? 'false' : 'true');
-            if (open) {
-              li.querySelector(':scope > ul')?.remove();
-            } else {
-              li.appendChild(renderLevel(node.instanceId, depth + 1));
-            }
-          }
-        },
-      }, `${kids.length ? (li.getAttribute('aria-expanded') === 'true' ? '▾ ' : '▸ ') : '• '}${shortType(node.componentType)} #${node.instanceId}`,
-      h('span', { class: 'muted' }, ` · ${node.renders} renders · ${fmtMs(node.renderMs)}${kids.length ? ` · ${kids.length} children` : ''}`));
-      li.appendChild(label);
-      list.appendChild(li);
+  const LIMIT = 500;
+  const kidsOf = id => children.get(id) || [];
+  // An expandable node: the children list is built on first expansion, so large trees stay cheap.
+  const branch = (labelText, detail, title, className, buildChildren) => {
+    const li = h('li', { role: 'treeitem', 'aria-expanded': 'false' });
+    const marker = h('span', { 'aria-hidden': 'true' }, '▸ ');
+    li.appendChild(h('button', {
+      type: 'button',
+      class: className,
+      title,
+      onclick: () => {
+        const open = li.getAttribute('aria-expanded') === 'true';
+        li.setAttribute('aria-expanded', open ? 'false' : 'true');
+        marker.textContent = open ? '▸ ' : '▾ ';
+        if (open) {
+          li.querySelector(':scope > ul')?.remove();
+        } else {
+          li.appendChild(buildChildren());
+        }
+      },
+    }, marker, labelText, h('span', { class: 'muted' }, detail)));
+    return li;
+  };
+
+  const nodeItem = node => {
+    const kids = kidsOf(node.instanceId);
+    const label = `${shortType(node.componentType)} #${node.instanceId}`;
+    const detail = ` · ${node.renders} renders · ${fmtMs(node.renderMs)}${kids.length ? ` · ${kids.length} children` : ''}`;
+    const className = `node${node.disposedTimestamp ? ' disposed' : ''}`;
+    if (kids.length) {
+      return branch(label, detail, node.componentType, className, () => level(kids, 'group'));
+    }
+
+    return h('li', { role: 'treeitem' }, h('button', { type: 'button', class: className, title: node.componentType },
+      h('span', { 'aria-hidden': 'true' }, '• '), label, h('span', { class: 'muted' }, detail)));
+  };
+
+  const level = (nodes, role) => {
+    const list = h('ul', { class: role === 'tree' ? 'tree root' : 'tree', role });
+    for (const node of nodes.slice(0, LIMIT)) {
+      list.appendChild(nodeItem(node));
+    }
+
+    if (nodes.length > LIMIT) {
+      list.appendChild(h('li', { class: 'muted' }, `… ${fmtNum(nodes.length - LIMIT)} more not shown`));
     }
 
     return list;
   };
 
-  return renderLevel(0, 0);
+  // Roots with tracked children first. Childless roots are usually prerendered instances (static rendering never runs
+  // OnAfterRender, where children are discovered) or children of non-instrumented components: list them separately so
+  // they do not bury the real hierarchy.
+  const roots = kidsOf(0);
+  const parents = roots.filter(n => kidsOf(n.instanceId).length);
+  const loose = roots.filter(n => !kidsOf(n.instanceId).length);
+  const tree = level(parents, 'tree');
+  if (loose.length) {
+    tree.appendChild(branch(`${fmtNum(loose.length)} instance(s) without a tracked parent`,
+      ' · prerendered, children of non-instrumented components, or not rendered interactively yet',
+      'Children are discovered after interactive renders of instrumented parents (OnAfterRender), which static prerendering never runs.',
+      'node', () => level(loose, 'group')));
+  }
+
+  return tree;
 }
 
 // ----------------------------------------------------------------------------------------------- Timeline
@@ -373,7 +409,24 @@ export function timeline(ctx, params) {
   return root;
 }
 
-export function eventList(ctx, events, height = 420) {
+export function eventList(ctx, events, height = 420, { compact = false } = {}) {
+  if (compact) {
+    // For narrow hosts such as the details drawer: the description gets the space instead of fixed-width columns.
+    return virtualList({
+      rows: events,
+      label: 'Events',
+      height,
+      columns: '72px minmax(0,1fr) 76px',
+      header: ['Start', 'Event', 'Duration'],
+      renderRow: e => [
+        h('span', { class: 'mono' }, fmtMs(ctx.toMs(e.timestamp))),
+        h('span', { title: `${e.type}: ${describeShort(e)}${e.correlation ? ` (${e.correlation})` : ''}` }, h('span', { class: 'muted' }, `${e.type} · `), describeShort(e)),
+        h('span', { class: 'mono' }, e.duration ? fmtMs(ctx.ticksToMs(e.duration)) : '—'),
+      ],
+      onSelect: e => ctx.showEvent(e),
+    });
+  }
+
   return virtualList({
     rows: events,
     label: 'Events',
@@ -476,7 +529,9 @@ export function network(ctx) {
   }
 
   render();
-  root.appendChild(panel(`Requests (${fmtNum(requests.length)})`, h('div', { class: 'toolbar' }, filterText, status, minDuration, component), listHost));
+  root.appendChild(panel(`Requests (${fmtNum(requests.length)})`, requests.length
+    ? [h('div', { class: 'toolbar' }, filterText, status, minDuration, component), listHost]
+    : emptyState('No HttpClient requests', 'Only browser resource timing was recorded (see below).')));
 
   const endpoints = ctx.state.summary?.endpoints || [];
   root.appendChild(panel('Endpoints', sortableTable({
@@ -590,7 +645,9 @@ export function runtime(ctx) {
     tile('Heap size', fmtBytes(last.heapSizeBytes ?? last.totalMemoryBytes)),
     tile('Allocated (session)', fmtBytes(r.allocatedBytes)),
     tile('GC collections', `${fmtNum(r.gen0Collections)} / ${fmtNum(r.gen1Collections)} / ${fmtNum(r.gen2Collections)}`, 'gen0 / gen1 / gen2'),
-    tile('GC pause time', fmtMs(r.gcPauseMs), r.sampledMs ? `${fmtPct(r.gcPauseMs / r.sampledMs)} of sampled time` : null),
+    r.gcPauseUnavailable
+      ? tile('GC pause time', 'unavailable', 'not reported by the WebAssembly runtime')
+      : tile('GC pause time', fmtMs(r.gcPauseMs), r.sampledMs ? `${fmtPct(r.gcPauseMs / r.sampledMs)} of sampled time` : null),
     tile('Working set', browser ? 'unavailable' : fmtBytes(last.workingSetBytes)),
     tile('Thread pool', browser ? 'unavailable' : `${fmtNum(last.threadPoolThreads)} threads`, browser ? null : `${fmtNum(last.threadPoolQueueLength)} queued`),
   ));
@@ -917,12 +974,20 @@ function compareTable(a, b) {
     ['HTTP time', x => sum(x.endpoints, c => c.durations.totalMs), fmtMs],
     ['Interop calls', x => sum(x.interop, c => c.durations.count), fmtNum],
     ['Allocated', x => x.runtime.allocatedBytes, fmtBytes],
-    ['GC pause', x => x.runtime.gcPauseMs, fmtMs],
+    ['GC pause', x => (x.runtime.gcPauseUnavailable ? null : x.runtime.gcPauseMs), fmtMs],
   ];
 
   const row = ([label, get, format]) => {
-    const va = get(a) || 0;
-    const vb = get(b) || 0;
+    const ra = get(a);
+    const rb = get(b);
+    if (ra === null || rb === null) {
+      // Not measured in one of the sessions (for example GC pause time in WebAssembly): no meaningful change.
+      return h('tr', null, h('td', null, label), h('td', { class: 'num' }, ra === null ? 'unavailable' : format(ra || 0)),
+        h('td', { class: 'num' }, rb === null ? 'unavailable' : format(rb || 0)), h('td', { class: 'num' }, '—'));
+    }
+
+    const va = ra || 0;
+    const vb = rb || 0;
     const delta = va ? (vb - va) / va : (vb ? 1 : 0);
     return h('tr', null, h('td', null, label), h('td', { class: 'num' }, format(va)), h('td', { class: 'num' }, format(vb)),
       h('td', { class: `num ${delta > 0.05 ? 'compare-up' : delta < -0.05 ? 'compare-down' : ''}` }, va || vb ? `${delta > 0 ? '+' : ''}${(delta * 100).toFixed(0)}%` : '—'));
@@ -1032,7 +1097,7 @@ export function eventDetails(ctx, e, related) {
 
   if (related) {
     root.appendChild(h('h3', null, `Operation #${e.operationId}: ${related.length} related event(s)`));
-    root.appendChild(related.length ? eventList(ctx, related.sort((a, b) => a.timestamp - b.timestamp), 260) : emptyState('No retained events for this operation'));
+    root.appendChild(related.length ? eventList(ctx, related.sort((a, b) => a.timestamp - b.timestamp), 260, { compact: true }) : emptyState('No retained events for this operation'));
   }
 
   return root;

@@ -85,14 +85,16 @@ public sealed class CircuitRegistry
 
     /// <summary>
     /// Records that the automatic session of a closed circuit is retained, so its owner keeps access to it, and returns the
-    /// sessions to remove (oldest first) to stay within <paramref name="limit"/> retained sessions.
+    /// sessions to remove (oldest first) to stay within <paramref name="limit"/> retained sessions. Sessions in use (for
+    /// example open in a dashboard) are never returned; the limit is then exceeded until they are no longer in use.
     /// </summary>
     /// <param name="circuitId">The closed circuit.</param>
     /// <param name="ownerKey">The circuit's owner key, if any.</param>
     /// <param name="sessionId">The circuit's automatic session.</param>
     /// <param name="limit">The maximum number of retained sessions.</param>
     /// <param name="sessionExists">Returns whether a session still exists; entries of removed sessions are discarded.</param>
-    internal List<string> RetainClosedCircuit(string circuitId, string? ownerKey, string sessionId, int limit, Func<string, bool> sessionExists)
+    /// <param name="inUse">Returns whether a session is in use and must not be removed automatically.</param>
+    internal List<string> RetainClosedCircuit(string circuitId, string? ownerKey, string sessionId, int limit, Func<string, bool> sessionExists, Func<string, bool> inUse)
     {
         var evicted = new List<string>();
         lock (_retainedGate)
@@ -109,30 +111,37 @@ public sealed class CircuitRegistry
             }
 
             _retained.AddLast(new RetainedCircuit(circuitId, ownerKey, sessionId));
-            while (_retained.Count > Math.Max(0, limit))
+            while (_retained.Count > Math.Max(0, limit) && TakeOldest(inUse) is { } oldest)
             {
-                evicted.Add(_retained.First!.Value.SessionId);
-                _retained.RemoveFirst();
+                evicted.Add(oldest);
             }
         }
 
         return evicted;
     }
 
-    /// <summary>Removes and returns the oldest retained closed-circuit session, if any.</summary>
-    internal string? TakeOldestRetainedSession()
+    /// <summary>Removes and returns the oldest retained closed-circuit session that is not in use, if any.</summary>
+    /// <param name="inUse">Returns whether a session is in use and must not be removed automatically.</param>
+    internal string? TakeOldestRetainedSession(Func<string, bool> inUse)
     {
         lock (_retainedGate)
         {
-            var first = _retained.First;
-            if (first is null)
-            {
-                return null;
-            }
-
-            _retained.RemoveFirst();
-            return first.Value.SessionId;
+            return TakeOldest(inUse);
         }
+    }
+
+    private string? TakeOldest(Func<string, bool> inUse)
+    {
+        for (var node = _retained.First; node is not null; node = node.Next)
+        {
+            if (!inUse(node.Value.SessionId))
+            {
+                _retained.Remove(node);
+                return node.Value.SessionId;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Returns live circuits, optionally restricted to a set of identifiers.</summary>
@@ -348,9 +357,9 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
             }
             catch (InvalidOperationException)
             {
-                // Session limit reached: make room by removing the oldest session retained from a closed circuit. When none
-                // is left, circuit data remains available in process-wide sessions.
-                if (_registry.TakeOldestRetainedSession() is not { } retained)
+                // Session limit reached: make room by removing the oldest session retained from a closed circuit that nobody
+                // is viewing. When none is left, circuit data remains available in process-wide sessions.
+                if (_registry.TakeOldestRetainedSession(id => IsInUse(profiler, id)) is not { } retained)
                 {
                     return null;
                 }
@@ -387,7 +396,13 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
 
             // Keep a bounded number of closed circuits' sessions (and their owners' access to them); remove the rest so
             // they neither hold memory nor count toward the session limit indefinitely.
-            var evicted = _registry.RetainClosedCircuit(circuit.Id, _ownerKey, _sessionId, _options.RetainedCircuitSessions, id => profiler.GetSession(id) is not null);
+            var evicted = _registry.RetainClosedCircuit(
+                circuit.Id,
+                _ownerKey,
+                _sessionId,
+                _options.RetainedCircuitSessions,
+                id => profiler.GetSession(id) is not null,
+                id => IsInUse(profiler, id));
             foreach (var id in evicted)
             {
                 profiler.RemoveSession(id);
@@ -397,6 +412,13 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
         _sessionId = null;
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Returns whether a dashboard read the session recently (dashboards poll the session they show every few seconds), in
+    /// which case it is not removed automatically: it must not disappear while someone inspects it.
+    /// </summary>
+    private static bool IsInUse(IProfiler profiler, string sessionId) =>
+        profiler.GetSession(sessionId) is ProfilerSession session && session.WasViewedWithin(ProfilerServerOptions.RetainedSessionViewWindow);
 
     /// <inheritdoc />
     public override Func<CircuitInboundActivityContext, Task> CreateInboundActivityHandler(Func<CircuitInboundActivityContext, Task> next) =>

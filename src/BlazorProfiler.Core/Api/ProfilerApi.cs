@@ -202,6 +202,9 @@ public sealed class ProfilerApi
     /// <summary>The maximum events returned per page.</summary>
     public const int MaxPageSize = 10_000;
 
+    /// <summary>The maximum length of a serialized request handled by <see cref="HandleAsync(string, ProfilerApiAccess, CancellationToken)"/>.</summary>
+    public const int MaxRequestLength = 96 * 1024 * 1024;
+
     private readonly IProfiler _profiler;
     private readonly string _source;
     private readonly TraceImportOptions _importOptions;
@@ -241,8 +244,12 @@ public sealed class ProfilerApi
     {
         var session = GetSession(access, sessionId);
         max = Math.Clamp(max, 1, MaxPageSize);
-        var events = session.GetEventsAfter(after, max + 1, out var cursor);
-        var statistics = session.GetStatistics();
+
+        // The reset and gap flags are computed in the same read as the events, so a concurrent clear or eviction can never
+        // make them disagree with the returned events.
+        var range = session.GetEventsAfter(after, max + 1);
+        var events = range.Events;
+        var cursor = range.LastSequence;
         var hasMore = events.Count > max;
         if (hasMore)
         {
@@ -250,17 +257,12 @@ public sealed class ProfilerApi
             cursor--;
         }
 
-        // Sequence numbers are never reused, so a cursor below the last clear (or ahead of the session) means the caller's
-        // data no longer exists. A fresh reader (cursor 0) has nothing to discard.
-        var reset = after > statistics.LastSequence || (after > 0 && after < statistics.ClearedSequence);
-        var effectiveAfter = reset || after < statistics.ClearedSequence ? statistics.ClearedSequence : after;
-        var oldest = statistics.LastSequence - statistics.StoredEvents + 1;
         return new EventPage
         {
             Events = events,
             Cursor = cursor,
-            Gap = effectiveAfter + 1 < oldest && statistics.StoredEvents > 0,
-            Reset = reset,
+            Gap = range.Gap,
+            Reset = range.Reset,
             HasMore = hasMore,
         };
     }
@@ -423,7 +425,7 @@ public sealed class ProfilerApi
         ProfilerApiResponse response;
         try
         {
-            if (requestJson.Length > 96 * 1024 * 1024)
+            if (requestJson.Length > MaxRequestLength)
             {
                 throw new ProfilerApiException("The request is too large.");
             }
@@ -509,6 +511,8 @@ public sealed class ProfilerApi
             throw new ProfilerApiException("Session not found.") { StatusCode = 404 };
         }
 
+        // Hosts use this to keep sessions that someone is inspecting from being removed automatically.
+        (session as ProfilerSession)?.MarkViewed();
         return session;
     }
 

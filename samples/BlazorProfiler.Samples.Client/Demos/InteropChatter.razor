@@ -28,7 +28,9 @@
     {
         var m = await ModuleAsync();
         var points = Enumerable.Range(0, 20_000).Select(i => new Point(i, i * 2)).ToArray();
-        var count = await m.InvokeAsync<int>("plotMany", points);
+        // Wrapped explicitly: a Point[] would otherwise bind to the params object?[] argument list (array covariance) and
+        // be sent as 20,000 separate arguments.
+        var count = await m.InvokeAsync<int>("plotMany", new object?[] { points });
         status = $"Plotted {count} points with one call";
     }
 

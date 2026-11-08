@@ -45,6 +45,7 @@ public sealed class SessionAggregates
     private long _runtimeGen1;
     private long _runtimeGen2;
     private long _runtimePauseTicks;
+    private long _runtimePauseSamples;
     private long _runtimeSampleTicks;
     private long _droppedReported;
     private long _errors;
@@ -62,7 +63,7 @@ public sealed class SessionAggregates
     /// <summary>Updates the aggregates with an event.</summary>
     public void Add(ProfilerEvent e)
     {
-        var weight = e.SampleWeight > 0 ? e.SampleWeight : 1;
+        var weight = e.Weight;
         if (weight > 1)
         {
             _sampled = true;
@@ -318,7 +319,7 @@ public sealed class SessionAggregates
 
             case HttpRequestEvent http:
                 {
-                    var key = http.Endpoint ?? http.Url ?? "(unknown)";
+                    var key = EndpointKey(http);
                     var aggregate = GetOrAdd(_endpoints, key, k => new EndpointAggregate(k, http.Method));
                     aggregate.Durations.Add(http.Duration, weight);
                     if (http.Outcome != ProfilerOutcome.Success || http.StatusCode >= 400)
@@ -382,6 +383,7 @@ public sealed class SessionAggregates
                     _runtimeGen1 += runtime.Gen1Collections ?? 0;
                     _runtimeGen2 += runtime.Gen2Collections ?? 0;
                     _runtimePauseTicks += runtime.GcPauseTicks ?? 0;
+                    _runtimePauseSamples += runtime.GcPauseTicks is null ? 0 : 1;
                     _runtimeSampleTicks += runtime.Duration;
                     if (bucket is not null)
                     {
@@ -449,13 +451,13 @@ public sealed class SessionAggregates
             return;
         }
 
-        var key = before.Endpoint ?? before.Url ?? "(unknown)";
-        if (!_endpoints.TryGetValue(key, out var aggregate) && !_endpoints.TryGetValue(OverflowKey, out aggregate))
+        // Same key and weight as Add, so the correction lands on the aggregate that counted the original.
+        if (Find(_endpoints, EndpointKey(before)) is not { } aggregate)
         {
             return;
         }
 
-        var weight = before.SampleWeight > 0 ? before.SampleWeight : 1;
+        var weight = before.Weight;
         aggregate.ResponseBytes += (after.ResponseBytes ?? 0) - (before.ResponseBytes ?? 0);
         aggregate.CacheHits += ((after.FromCache == true ? 1 : 0) - (before.FromCache == true ? 1 : 0)) * weight;
     }
@@ -566,6 +568,7 @@ public sealed class SessionAggregates
             Gen1Collections = _runtimeGen1,
             Gen2Collections = _runtimeGen2,
             GcPauseMs = Math.Round(_clock.ToMilliseconds(_runtimePauseTicks), 3),
+            GcPauseUnavailable = _kindCounts[(int)ProfilerEventKind.RuntimeSample] > 0 && _runtimePauseSamples == 0,
             SampledMs = Math.Round(_clock.ToMilliseconds(_runtimeSampleTicks), 3),
             HeapSizeBytes = _lastRuntime?.HeapSizeBytes,
             TotalMemoryBytes = _lastRuntime?.TotalMemoryBytes,
@@ -655,6 +658,17 @@ public sealed class SessionAggregates
         _instances[id] = instance;
         return instance;
     }
+
+    /// <summary>The aggregation key of an HTTP request (shared by <see cref="Add"/> and <see cref="Replace"/>).</summary>
+    private static string EndpointKey(HttpRequestEvent http) => http.Endpoint ?? http.Url ?? "(unknown)";
+
+    /// <summary>
+    /// Returns the entry that <see cref="GetOrAdd{TValue}"/> used for <paramref name="key"/>: the key's own entry, or the
+    /// overflow entry when the key was not added because the map was full. Does not add anything.
+    /// </summary>
+    private static TValue? Find<TValue>(Dictionary<string, TValue> map, string key)
+        where TValue : class =>
+        map.TryGetValue(key, out var value) || map.TryGetValue(OverflowKey, out value) ? value : null;
 
     private TValue GetOrAdd<TValue>(Dictionary<string, TValue> map, string key, Func<string, TValue> factory)
     {

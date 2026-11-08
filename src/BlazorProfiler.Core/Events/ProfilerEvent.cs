@@ -86,6 +86,12 @@ public abstract class ProfilerEvent
     /// </summary>
     public double SampleWeight { get; set; } = 1;
 
+    /// <summary>
+    /// The number of occurrences the event represents: <see cref="SampleWeight"/>, or one when no valid weight is recorded.
+    /// Every count derived from events (aggregates, diagnostics) uses this, so they agree under sampling.
+    /// </summary>
+    internal double Weight => SampleWeight > 0 ? SampleWeight : 1;
+
     /// <summary>W3C trace identifier of the ambient <see cref="System.Diagnostics.Activity"/>, when captured.</summary>
     public string? TraceId { get; set; }
 

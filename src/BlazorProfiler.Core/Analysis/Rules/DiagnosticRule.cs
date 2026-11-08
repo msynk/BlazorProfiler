@@ -47,33 +47,10 @@ public abstract class DiagnosticRule : IDiagnosticRule
     protected static long[] Operations(IEnumerable<ProfilerEvent> events, int max = 20) =>
         events.Where(e => e.OperationId != 0).Select(e => e.OperationId).Distinct().Take(max).ToArray();
 
-    /// <summary>Sorted start timestamps.</summary>
-    protected static List<long> SortedTimestamps(IEnumerable<ProfilerEvent> events)
-    {
-        var list = events.Select(e => e.Timestamp).ToList();
-        list.Sort();
-        return list;
-    }
-
-    /// <summary>Counts the seconds in which at least <paramref name="threshold"/> events occurred.</summary>
-    protected static int SecondsAtOrAbove(IReadOnlyList<long> sortedTimestamps, long frequency, double threshold)
-    {
-        if (sortedTimestamps.Count == 0)
-        {
-            return 0;
-        }
-
-        var counts = new Dictionary<long, int>();
-        foreach (var ts in sortedTimestamps)
-        {
-            var second = ts / frequency;
-            counts[second] = counts.TryGetValue(second, out var c) ? c + 1 : 1;
-        }
-
-        return counts.Values.Count(c => c >= threshold);
-    }
-
-    /// <summary>Events sorted by start timestamp.</summary>
+    /// <summary>
+    /// Events sorted by start timestamp, as required by <see cref="DiagnosticContext.PeakWeight"/> (the peak rate in a
+    /// sliding window).
+    /// </summary>
     protected static List<ProfilerEvent> SortedByTimestamp(IEnumerable<ProfilerEvent> events)
     {
         var list = events.ToList();
@@ -82,13 +59,9 @@ public abstract class DiagnosticRule : IDiagnosticRule
     }
 
     /// <summary>
-    /// The peak weighted number of events in any one window of <paramref name="windowTicks"/> (events sorted by timestamp).
-    /// Sampled events count for the occurrences they represent, so rates are not under-estimated under sampling.
+    /// Counts the seconds in which the weighted number of events (see <see cref="DiagnosticContext.WeightOf"/>) reached
+    /// <paramref name="threshold"/>.
     /// </summary>
-    protected static double PeakRate(IReadOnlyList<ProfilerEvent> sortedEvents, long windowTicks) =>
-        DiagnosticContext.PeakWeight(sortedEvents, windowTicks);
-
-    /// <summary>Counts the seconds in which the weighted number of events reached <paramref name="threshold"/>.</summary>
     protected static int SecondsAtOrAbove(IReadOnlyList<ProfilerEvent> events, long frequency, double threshold)
     {
         ArgumentNullException.ThrowIfNull(events);
@@ -110,6 +83,17 @@ public abstract class DiagnosticRule : IDiagnosticRule
 
     /// <summary>The weighted count of events: the number of occurrences they represent when sampled.</summary>
     protected static double Weighted(IEnumerable<ProfilerEvent> events) => events.Sum(DiagnosticContext.WeightOf);
+
+    /// <summary>
+    /// The weighted total duration of events in milliseconds: each duration counts for the occurrences its event represents
+    /// when sampled, consistent with <see cref="Weighted"/>.
+    /// </summary>
+    protected static double WeightedMs(DiagnosticContext context, IEnumerable<ProfilerEvent> events, Func<ProfilerEvent, long>? duration = null)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        duration ??= static e => e.Duration;
+        return events.Sum(e => context.Ms(duration(e)) * DiagnosticContext.WeightOf(e));
+    }
 
     /// <summary>Estimates a percentile of event durations in ticks.</summary>
     protected static long PercentileTicks(IEnumerable<ProfilerEvent> events, double percentile)

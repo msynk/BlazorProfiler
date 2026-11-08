@@ -12,11 +12,24 @@
 - **Cross-site request forgery.** Every state-changing request (start, pause, clear, remove, import, suppress) must carry the
   `X-Blazor-Profiler` header, which cross-site forms cannot add. Responses are `Cache-Control: no-store` and `nosniff`.
 
-> **Warning:** a request only counts as local when it arrives over a loopback connection, addresses the app by a local host
-> name (`localhost`, a loopback address, or the machine name), and carries no forwarding headers (`Forwarded`,
-> `X-Forwarded-*`, `X-Original-*`, `X-Real-IP`, and similar). This rejects traffic relayed by Dev Tunnels, ngrok, or a
-> typical reverse proxy, but a relay that strips those headers and rewrites `Host` would still look local. The exemption
-> only applies in Development; configure `AuthorizationPolicy` whenever the app is reachable from other machines.
+> **Warning:** a request only counts as local when all of the following hold:
+>
+> - it arrives over a loopback connection (or from the address the connection arrived on);
+> - it addresses the app by a local host name (`localhost`, the machine name or its fully qualified name, a loopback or
+>   local address);
+> - it does not use HTTP/1.0, which browsers never send but nginx's default `proxy_pass` does;
+> - every client address reported in forwarding headers (`Forwarded`, `X-Forwarded-For`, `X-Original-For`, `X-Real-IP`,
+>   `X-Cluster-Client-IP`, and similar) is this machine, every reported host is a local name, and a relayed request
+>   (`Via`, `X-Forwarded-Server`, `X-Forwarded-Proto`, ...) reports its client at all. Local hops such as IIS or IIS
+>   Express out-of-process hosting therefore still qualify;
+> - when sent by a browser, its `Origin` and (for same-origin requests) `Referer` name a local host.
+>
+> This rejects remote clients relayed by Dev Tunnels, ngrok, and reverse proxies that report the client, and remote
+> browsers behind any relay. It cannot reject a non-browser client behind a relay that speaks HTTP/1.1, adds no forwarding
+> headers, and rewrites `Host` to a local name (for example nginx with `proxy_http_version 1.1` and no
+> `proxy_set_header` lines): such a request is indistinguishable from a local one. The exemption only applies in
+> Development; never expose a Development app through such a relay, and configure `AuthorizationPolicy` whenever the app is
+> reachable from other machines.
 
 ## Access levels and isolation
 
@@ -35,10 +48,13 @@ The WebAssembly bridge uses a same-origin `BroadcastChannel`: only pages from th
 the data never leaves the browser unless the user exports it. On Blazor Server the bridge is off by default; when enabled
 (`EnableDashboardBridge="true"`), each request is authorized for the circuit's user with `AuthorizationPolicy` and
 `OwnCircuitPolicy`, exactly like the HTTP API, except that the Development loopback grant never applies (a circuit cannot
-prove where a request comes from). Anonymous users get no access through the bridge.
+prove where a request comes from). Anonymous users get no access through the bridge. Access is checked before a streamed
+request (a trace import larger than one circuit message) is read, and the request's work runs off the circuit's dispatcher.
 
 The dashboard only loads data from its own origin (`?api=` must be a same-origin path) and only renders `http`/`https` links
-from findings, so a crafted link or trace file cannot inject script links into the app's origin.
+and same-origin paths from findings, so a crafted link or trace file cannot inject script links into the app's origin.
+Recommendation providers may link to absolute `http`/`https` URLs or same-origin paths; any other link is replaced with the
+built-in rule reference.
 
 ## What is never collected
 
@@ -64,8 +80,10 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
 - Per-session limits on events, memory, and age; bounded aggregation keys and tracked instances.
 - Bounded number of sessions.
 - Browser batches are limited to 1,000 entries and 512 KB per call; larger batches are discarded and counted as collector
-  errors. On Blazor Server the browser module keeps each batch under 16,000 characters so it stays within SignalR's default
-  32 KB message limit.
+  errors. On Blazor Server the browser module keeps each batch under 16,000 UTF-8 bytes (measured as escaped for the
+  interop call), so it stays within SignalR's default 32 KB message limit even when the JSON hub protocol escapes it again.
+  Dashboard bridge requests above that size (trace imports) are streamed in chunks instead of sent as one message, up to
+  96 MB.
 - Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 20
   known event types are accepted; no type names from the input are resolved and no code is executed.
 

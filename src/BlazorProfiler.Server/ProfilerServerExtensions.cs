@@ -39,10 +39,13 @@ public sealed class ProfilerServerOptions
     /// <see cref="AuthorizationPolicy"/> is configured. Never applies in other environments.
     /// </summary>
     /// <remarks>
-    /// A request only counts as local when it arrives on a loopback connection, addresses the app by a local host name, and
-    /// carries no forwarding headers (<c>Forwarded</c>, <c>X-Forwarded-*</c>, and similar). Traffic relayed by a reverse
-    /// proxy or a tunnel (for example Dev Tunnels or ngrok) therefore never qualifies; configure
-    /// <see cref="AuthorizationPolicy"/> when the app is reachable from other machines.
+    /// A request only counts as local when it arrives on a loopback connection (or from the machine's own address),
+    /// addresses the app by a local host name, does not use HTTP/1.0, reports only this machine as the client in any
+    /// forwarding headers (<c>Forwarded</c>, <c>X-Forwarded-For</c>, and similar; local hops such as IIS Express qualify),
+    /// and, when sent by a browser, comes from a page on a local host name. Traffic that relays remote clients through a
+    /// reverse proxy or a tunnel (for example Dev Tunnels, ngrok, or nginx) is therefore rejected, except for non-browser
+    /// clients behind a relay that adds no forwarding headers and rewrites <c>Host</c>, which cannot be told apart from local
+    /// ones. Configure <see cref="AuthorizationPolicy"/> when the app is reachable from other machines.
     /// </remarks>
     public bool AllowLoopbackInDevelopment { get; set; } = true;
 
@@ -56,7 +59,18 @@ public sealed class ProfilerServerOptions
     /// <see cref="RetentionOptions.MaxSessions"/>. Zero removes a circuit's session as soon as the circuit closes.
     /// Defaults to 4.
     /// </summary>
+    /// <remarks>
+    /// A retained session that a dashboard has shown within <see cref="RetainedSessionViewWindow"/> is never removed
+    /// automatically, so it cannot disappear while someone inspects it; the limit is exceeded until it is no longer viewed.
+    /// Sessions can always be removed explicitly.
+    /// </remarks>
     public int RetainedCircuitSessions { get; set; } = 4;
+
+    /// <summary>
+    /// How long after a dashboard last read a retained circuit session it is protected from automatic removal (see
+    /// <see cref="RetainedCircuitSessions"/>).
+    /// </summary>
+    public static TimeSpan RetainedSessionViewWindow { get; } = TimeSpan.FromMinutes(5);
 
     /// <summary>The maximum size of an uploaded trace.</summary>
     public long MaxImportBytes { get; set; } = 64L * 1024 * 1024;
@@ -203,52 +217,185 @@ public sealed class ProfilerAccessEvaluator
         return result.Succeeded;
     }
 
-    // Headers added by reverse proxies, tunnels, and CDNs (and by ForwardedHeadersMiddleware after it consumed them).
-    private static readonly string[] s_forwardingHeaders =
+    // Headers in which proxies, tunnels, and CDNs report the client's address (X-Original-For is written by
+    // ForwardedHeadersMiddleware with the proxy's address after it consumed X-Forwarded-For).
+    private static readonly string[] s_clientAddressHeaders =
     [
-        "Forwarded",
         "X-Forwarded-For",
-        "X-Forwarded-Host",
-        "X-Forwarded-Proto",
         "X-Original-For",
-        "X-Original-Host",
-        "X-Original-Proto",
         "X-Real-IP",
         "X-Client-IP",
+        "X-Cluster-Client-IP",
         "True-Client-IP",
         "CF-Connecting-IP",
+        "Fastly-Client-IP",
+        "X-Azure-ClientIP",
+        "X-Azure-SocketIP",
     ];
+
+    // Headers in which relays report the host name the client used.
+    private static readonly string[] s_clientHostHeaders = ["X-Forwarded-Host", "X-Original-Host"];
+
+    // Headers that show a request was relayed without saying by whom it was sent.
+    private static readonly string[] s_relayHeaders = ["Via", "X-Forwarded-Server", "X-Forwarded-Proto", "X-Original-Proto"];
+
+    private static readonly Lazy<string?> s_fullyQualifiedHostName = new(GetFullyQualifiedHostName);
 
     /// <summary>
     /// Returns whether a request comes from a browser on this machine. A loopback connection alone is not enough: a local
-    /// reverse proxy or tunnel (Dev Tunnels, ngrok) also connects over loopback while relaying remote clients, so relayed
-    /// requests (forwarding headers, or a Host that is not a local name) are rejected.
+    /// reverse proxy or tunnel (Dev Tunnels, ngrok, nginx) also connects over loopback while relaying remote clients.
     /// </summary>
+    /// <remarks>
+    /// <para>A request counts as local only when all of the following hold:</para>
+    /// <list type="bullet">
+    /// <item>It does not use HTTP/1.0, which browsers never send but proxies do by default (nginx's <c>proxy_pass</c>).</item>
+    /// <item>It addresses the app by a local host name: <c>localhost</c>, the machine name, a loopback or local address.</item>
+    /// <item>
+    /// When it carries forwarding headers, every client address they report is this machine and every reported host is a
+    /// local name. This accepts local hops such as IIS or IIS Express out-of-process hosting, and rejects relays of remote
+    /// clients. A relay that reports no client address (<c>Via</c> alone, for example) is rejected.
+    /// </item>
+    /// <item>
+    /// The <c>Origin</c> and, for same-origin requests, <c>Referer</c> headers sent by browsers name a local host, so a remote
+    /// browser is rejected even behind a relay that strips forwarding headers and rewrites <c>Host</c>.
+    /// </item>
+    /// <item>The connection comes from a loopback address, or from the address it arrived on.</item>
+    /// </list>
+    /// <para>
+    /// A non-browser client behind a relay that speaks HTTP/1.1, adds no forwarding headers, and rewrites <c>Host</c> to a
+    /// local name remains indistinguishable from a local one; the grant only applies in Development for that reason.
+    /// </para>
+    /// </remarks>
     internal static bool IsLocal(HttpContext context)
     {
-        foreach (var header in s_forwardingHeaders)
-        {
-            if (context.Request.Headers.ContainsKey(header))
-            {
-                return false;
-            }
-        }
-
-        var local = context.Connection.LocalIpAddress;
-        if (!IsLocalHostName(context.Request.Host.Host, local))
+        var request = context.Request;
+        if (HttpProtocol.IsHttp10(request.Protocol))
         {
             return false;
         }
 
-        var remote = context.Connection.RemoteIpAddress;
+        var local = Normalize(context.Connection.LocalIpAddress);
+        if (!IsLocalHostName(request.Host.Host, local) || !IsRelayedFromLocalClient(request.Headers, local) || !IsLocalBrowserOrigin(request.Headers, local))
+        {
+            return false;
+        }
+
+        var remote = Normalize(context.Connection.RemoteIpAddress);
         if (remote is null)
         {
             // In-memory test servers have no remote address.
             return local is null;
         }
 
-        return IPAddress.IsLoopback(remote) || remote.Equals(local);
+        return IsLocalAddress(remote, local);
     }
+
+    /// <summary>
+    /// Returns whether forwarding headers, if any, report only this machine as the client: the request is either direct or
+    /// relayed by a local hop on behalf of a local browser.
+    /// </summary>
+    private static bool IsRelayedFromLocalClient(IHeaderDictionary headers, IPAddress? local)
+    {
+        var relayed = false;
+        var clientReported = false;
+        foreach (var name in s_clientAddressHeaders)
+        {
+            if (!headers.TryGetValue(name, out var values))
+            {
+                continue;
+            }
+
+            relayed = clientReported = true;
+            foreach (var value in Split(values))
+            {
+                if (!TryParseAddress(value, out var address) || !IsLocalAddress(address, local))
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (headers.TryGetValue("Forwarded", out var forwarded))
+        {
+            // RFC 7239: comma-separated elements of semicolon-separated pairs, for example for="[::1]:1234";host=localhost.
+            relayed = true;
+            foreach (var element in Split(forwarded))
+            {
+                foreach (var pair in element.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var separator = pair.IndexOf('=', StringComparison.Ordinal);
+                    var key = separator < 0 ? pair : pair[..separator].Trim();
+                    var value = separator < 0 ? string.Empty : pair[(separator + 1)..].Trim().Trim('"');
+                    if (key.Equals("for", StringComparison.OrdinalIgnoreCase))
+                    {
+                        clientReported = true;
+                        if (!TryParseAddress(value, out var address) || !IsLocalAddress(address, local))
+                        {
+                            return false;
+                        }
+                    }
+                    else if (key.Equals("host", StringComparison.OrdinalIgnoreCase) && !IsLocalHostName(HostWithoutPort(value), local))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        foreach (var name in s_clientHostHeaders)
+        {
+            if (!headers.TryGetValue(name, out var values))
+            {
+                continue;
+            }
+
+            relayed = true;
+            foreach (var value in Split(values))
+            {
+                if (!IsLocalHostName(HostWithoutPort(value), local))
+                {
+                    return false;
+                }
+            }
+        }
+
+        foreach (var name in s_relayHeaders)
+        {
+            relayed |= headers.ContainsKey(name);
+        }
+
+        // A relayed request must say who its client is; otherwise it may come from anywhere.
+        return !relayed || clientReported;
+    }
+
+    /// <summary>
+    /// Returns whether the page that sent the request (as reported by the browser) was loaded from a local host name. Absent
+    /// headers pass: non-browser clients do not send them, and a navigation from another site carries that site's referrer.
+    /// </summary>
+    private static bool IsLocalBrowserOrigin(IHeaderDictionary headers, IPAddress? local)
+    {
+        if (headers.TryGetValue("Origin", out var origin) && !IsLocalUrl(origin.ToString(), local))
+        {
+            return false;
+        }
+
+        // The referrer of a same-origin request is the page's own URL, so its host is the one the browser used. Cross-site
+        // navigations (for example a link to the dashboard from another site) are not checked.
+        var site = headers.TryGetValue("Sec-Fetch-Site", out var fetchSite) ? fetchSite.ToString() : null;
+        if ((site is null || site.Equals("same-origin", StringComparison.OrdinalIgnoreCase))
+            && headers.TryGetValue("Referer", out var referer)
+            && !IsLocalUrl(referer.ToString(), local))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsLocalUrl(string value, IPAddress? local) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+        && IsLocalHostName(uri.Host, local);
 
     private static bool IsLocalHostName(string? host, IPAddress? localAddress)
     {
@@ -257,14 +404,75 @@ public sealed class ProfilerAccessEvaluator
             return false;
         }
 
+        host = host.TrimEnd('.');
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
-            || host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            || host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
+            || (s_fullyQualifiedHostName.Value is { } fqdn && host.Equals(fqdn, StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }
 
-        return IPAddress.TryParse(host.Trim('[', ']'), out var address) && (IPAddress.IsLoopback(address) || address.Equals(localAddress));
+        // Browsers connect to the unspecified address (0.0.0.0, [::]) on the local machine.
+        return IPAddress.TryParse(host.Trim('[', ']'), out var address)
+            && (IsLocalAddress(Normalize(address)!, localAddress) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any));
+    }
+
+    private static bool IsLocalAddress(IPAddress address, IPAddress? local) =>
+        IPAddress.IsLoopback(address) || (local is not null && address.Equals(local));
+
+    private static IPAddress? Normalize(IPAddress? address) =>
+        address is { IsIPv4MappedToIPv6: true } ? address.MapToIPv4() : address;
+
+    private static IEnumerable<string> Split(Microsoft.Extensions.Primitives.StringValues values)
+    {
+        foreach (var value in values)
+        {
+            foreach (var part in (value ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            {
+                yield return part;
+            }
+        }
+    }
+
+    /// <summary>Parses an address as reported by a proxy: <c>1.2.3.4</c>, <c>1.2.3.4:80</c>, <c>::1</c>, or <c>[::1]:80</c>.</summary>
+    private static bool TryParseAddress(string value, out IPAddress address)
+    {
+        value = value.Trim().Trim('"');
+        if (IPEndPoint.TryParse(value, out var endpoint))
+        {
+            address = Normalize(endpoint.Address)!;
+            return true;
+        }
+
+        address = IPAddress.None;
+        return false;
+    }
+
+    private static string HostWithoutPort(string value)
+    {
+        value = value.Trim().Trim('"');
+        if (value.StartsWith('['))
+        {
+            var end = value.IndexOf(']', StringComparison.Ordinal);
+            return end < 0 ? value : value[..(end + 1)];
+        }
+
+        var colon = value.IndexOf(':', StringComparison.Ordinal);
+        return colon < 0 || value.IndexOf(':', colon + 1) >= 0 ? value : value[..colon];
+    }
+
+    private static string? GetFullyQualifiedHostName()
+    {
+        try
+        {
+            var properties = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties();
+            return string.IsNullOrEmpty(properties.DomainName) ? null : properties.HostName + "." + properties.DomainName.TrimEnd('.');
+        }
+        catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or PlatformNotSupportedException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 }
 

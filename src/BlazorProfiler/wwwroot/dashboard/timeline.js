@@ -58,6 +58,8 @@ export class Timeline {
 
   destroy() {
     this.resizeObserver.disconnect();
+    window.removeEventListener('mousemove', this.onWindowMouseMove);
+    window.removeEventListener('mouseup', this.onWindowMouseUp);
   }
 
   /** Sets the events and a function converting an event timestamp to milliseconds since session start. */
@@ -310,7 +312,9 @@ export class Timeline {
         this.range = { start: ms, end: ms };
       }
     });
-    window.addEventListener('mousemove', e => {
+    // Window listeners (so a drag continues outside the canvas) are removed by destroy(); the timeline is rebuilt on
+    // every render of its view.
+    this.onWindowMouseMove = e => {
       if (!drag) {
         return;
       }
@@ -332,8 +336,8 @@ export class Timeline {
         this.follow = false;
         this.draw();
       }
-    });
-    window.addEventListener('mouseup', e => {
+    };
+    this.onWindowMouseUp = e => {
       if (!drag) {
         return;
       }
@@ -354,7 +358,9 @@ export class Timeline {
       }
 
       drag = null;
-    });
+    };
+    window.addEventListener('mousemove', this.onWindowMouseMove);
+    window.addEventListener('mouseup', this.onWindowMouseUp);
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();

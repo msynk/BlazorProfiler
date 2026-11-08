@@ -97,14 +97,52 @@ public class RuleTests
         Assert.Contains(Findings(report, "BP4001"), f => f.Subject!.Contains("Form.Save", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void DocumentationLinksMustBeWebUrls()
+    [Theory]
+    [InlineData("javascript:alert(1)", null)]
+    [InlineData("data:text/html,x", null)]
+    [InlineData("//evil.test/x", null)]
+    [InlineData("/\\evil.test/x", null)]
+    [InlineData(" https://x.test", null)]
+    [InlineData("https://wiki.example.com/perf/bp2001", "https://wiki.example.com/perf/bp2001")]
+    [InlineData("/wiki/perf/bp2001", "/wiki/perf/bp2001")]
+    public void DocumentationLinksMustBeWebUrlsOrSameOriginPaths(string link, string? expected)
     {
+        // A rejected link falls back to the built-in rule reference, like a missing one.
         var (host, session, _) = TestHost.WithSession(rules: [new SlowEndpointRule()]);
-        var engine = new DiagnosticEngine(new DiagnosticOptions(), [new SlowEndpointRule()], [new ScriptLinkProvider()]);
+        var engine = new DiagnosticEngine(new DiagnosticOptions(), [new SlowEndpointRule()], [new LinkProvider(link)]);
         host.Emit(Ev.Http("https://x.test/slow", 0, 5000));
         var finding = Assert.Single(engine.Analyze(session).Findings);
-        Assert.Null(finding.DocumentationUrl);
+        Assert.Equal(expected ?? DocumentationRecommendationProvider.BaseUrl + "bp3004", finding.DocumentationUrl);
+    }
+
+    [Fact]
+    public void BP1001_DoesNotOverCountComponentsThatAlternateWithOthersUnderSampling()
+    {
+        // A list renders B, B, B, A three times per second for 20 seconds: A renders 3 times per second. Sampled at 0.25 with
+        // one counter per kind, every retained render would be A's (weight 4), reporting A at 12 per second.
+        var events = new List<ProfilerEvent>();
+        for (var cycle = 0; cycle < 60; cycle++)
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                events.Add(Ev.Render(i == 3 ? "App.A" : "App.B", (cycle * 1000.0 / 3) + (i * 10), 0.2));
+            }
+        }
+
+        var report = Analyze(events, o => o.Sampling.Rates[ProfilerEventKind.ComponentRender] = 0.25);
+        Assert.Empty(report.RuleErrors);
+        Assert.DoesNotContain(Findings(report, "BP1001"), f => f.ComponentType == "App.A");
+    }
+
+    [Fact]
+    public void BP1001_WeightsRenderTimeLikeTheRenderCount()
+    {
+        // 400 renders of 2 ms at 30 per second, sampled at 0.25: 100 retained renders stand for 400 renders and 800 ms.
+        var events = Enumerable.Range(0, 400).Select(i => (ProfilerEvent)Ev.Render("App.Ticker", i * (1000.0 / 30), 2)).ToList();
+        var finding = Assert.Single(Findings(Analyze(events, o => o.Sampling.Rates[ProfilerEventKind.ComponentRender] = 0.25), "BP1001"));
+        Assert.Equal(400, finding.Impact!.Occurrences);
+        Assert.Equal(800, finding.Impact.TotalMs!.Value, 3);
+        Assert.Equal(ValueQuality.Estimated, finding.Impact.Quality);
     }
 
     [Fact]
@@ -247,6 +285,26 @@ public class RuleTests
     }
 
     [Fact]
+    public void BP3001_ReportsDistinctUrlsOfOneEndpointAsOneFinding()
+    {
+        // /items/1 and /items/2 share the endpoint template (the finding's subject and fingerprint), so separate findings
+        // would be indistinguishable and suppressing one would suppress the other.
+        var events = new List<ProfilerEvent>();
+        foreach (var id in new[] { 1, 2 })
+        {
+            events.Add(Ev.Http($"https://x.test/items/{id}", id * 1000, 10));
+            events.Add(Ev.Http($"https://x.test/items/{id}", (id * 1000) + 100, 10));
+        }
+
+        var report = Analyze(events);
+        var finding = Assert.Single(Findings(report, "BP3001"));
+        Assert.Equal("GET https://x.test/items/{id}", finding.Subject);
+        Assert.StartsWith("2 URLs of", finding.Title, StringComparison.Ordinal);
+        Assert.Equal(2, finding.Impact!.Occurrences);
+        Assert.Equal(report.Findings.Count, report.Findings.Select(f => f.Fingerprint).Distinct().Count());
+    }
+
+    [Fact]
     public void BP3002_ReportsNPlusOneWithinOperation()
     {
         var events = Enumerable.Range(1, 8).Select(i => (ProfilerEvent)Ev.Http($"https://x.test/api/products/{i}", i, 10, operation: 3)).ToList();
@@ -339,6 +397,23 @@ public class RuleTests
         var events = Enumerable.Range(0, 10).Select(i => (ProfilerEvent)Ev.Runtime(i * 1000, 1000, 1_000_000, gen0: 5, gen2: 1, pauseMs: 100)).ToList();
         var finding = Assert.Single(Findings(Analyze(events), "BP5001"));
         Assert.Contains("10%", finding.Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP5001_DoesNotPresentMissingPauseDataAsMeasured()
+    {
+        // WebAssembly samples carry no pause time; only the generation 2 rate is evaluated.
+        var events = Enumerable.Range(0, 10).Select(i =>
+        {
+            var sample = Ev.Runtime(i * 1000, 1000, 1_000_000, gen0: 5, gen2: 1);
+            sample.GcPauseTicks = null;
+            return (ProfilerEvent)sample;
+        }).ToList();
+        var report = Analyze(events);
+        var finding = Assert.Single(Findings(report, "BP5001"));
+        Assert.Contains("generation 2", finding.Title, StringComparison.Ordinal);
+        Assert.Null(finding.Impact!.TotalMs);
+        Assert.Equal(ValueQuality.Unavailable, finding.Evidence.Single(e => e.Label == "GC pause share").Quality);
     }
 
     [Fact]
@@ -477,9 +552,9 @@ public class RuleTests
         Assert.Equal(a, b);
     }
 
-    private sealed class ScriptLinkProvider : IDiagnosticRecommendationProvider
+    private sealed class LinkProvider(string link) : IDiagnosticRecommendationProvider
     {
-        public void Augment(DiagnosticFinding finding) => finding.DocumentationUrl = "javascript:alert(1)";
+        public void Augment(DiagnosticFinding finding) => finding.DocumentationUrl = link;
     }
 
     private sealed class ThrowingRule : IDiagnosticRule

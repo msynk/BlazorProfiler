@@ -68,16 +68,20 @@ function append(el, children) {
 }
 
 /**
- * Returns the URL when it is an absolute http(s) URL, otherwise null. Use for every link whose target comes from data
- * (findings, traces), which may be attacker-controlled: javascript:, data:, and similar schemes are never rendered.
+ * Returns the URL when it is an absolute http(s) URL or a path on the dashboard's origin (`/wiki/perf`, resolved against
+ * it), otherwise null. Use for every link whose target comes from data (findings, traces), which may be
+ * attacker-controlled: javascript:, data:, and similar schemes are never rendered. Mirrors the server-side check of
+ * documentation links.
  */
 export function safeWebUrl(value) {
-  if (typeof value !== 'string' || !value) {
+  if (typeof value !== 'string' || !value || /[\s\\\u0000-\u001f\u007f]/.test(value)) {
     return null;
   }
 
   try {
-    const url = new URL(value);
+    // Only root-relative paths are resolved (not protocol-relative ones such as //host/path).
+    const sameOrigin = value[0] === '/' && value[1] !== '/';
+    const url = sameOrigin ? new URL(value, location.origin) : new URL(value);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
   } catch {
     return null;
@@ -182,7 +186,9 @@ export function emptyState(title, text) {
 export function virtualList({ rows, rowHeight = 28, height = 460, columns, header, renderRow, onSelect, label }) {
   const container = h('div', { class: 'vlist', style: { height: `${height}px` }, role: 'grid', 'aria-label': label || 'List', 'aria-rowcount': rows.length + 1 });
   const headerRow = header ? h('div', { class: 'vrow header', role: 'row', style: { gridTemplateColumns: columns, height: `${rowHeight}px`, top: '0' } }, header.map(c => h('div', { role: 'columnheader' }, c))) : null;
-  const inner = h('div', { class: 'vlist-inner', style: { height: `${rows.length * rowHeight + (header ? rowHeight : 0)}px` } });
+  // The sticky header stays in normal flow, so the inner element (and every row positioned inside it) already starts
+  // below it: row positions are relative to the inner element and never include the header offset.
+  const inner = h('div', { class: 'vlist-inner', style: { height: `${rows.length * rowHeight}px` } });
   if (headerRow) {
     container.appendChild(headerRow);
   }
@@ -203,7 +209,7 @@ export function virtualList({ rows, rowHeight = 28, height = 460, columns, heade
         role: 'row',
         tabindex: i === focusIndex ? '0' : '-1',
         'aria-rowindex': i + 2,
-        style: { top: `${i * rowHeight + offset}px`, height: `${rowHeight}px`, gridTemplateColumns: columns },
+        style: { top: `${i * rowHeight}px`, height: `${rowHeight}px`, gridTemplateColumns: columns },
         dataset: { index: i },
       }, renderRow(rows[i], i));
       inner.appendChild(row);

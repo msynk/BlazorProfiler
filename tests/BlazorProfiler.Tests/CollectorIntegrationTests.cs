@@ -1,7 +1,9 @@
+using System.Diagnostics.Metrics;
 using BlazorProfiler.Collectors;
 using BlazorProfiler.Correlation;
 using BlazorProfiler.Events;
 using BlazorProfiler.Instrumentation;
+using BlazorProfiler.Storage;
 using BlazorProfiler.Tests.Components;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,6 +51,80 @@ public class FrameworkMetricsTests
         Assert.Equal(2, batch.UpdatedComponentCount);
         var childUpdate = f.All<ParametersSetEvent>().Last();
         Assert.Equal(handler.OperationId, childUpdate.OperationId);
+    }
+
+    [Fact]
+    public async Task PendingRenderBatchesOfOtherThreadsDoNotSurviveStoppingCollection()
+    {
+        // A batch whose size is never reported stays pending on the thread that recorded it. Stopping collection must clear
+        // it on every thread: otherwise an idle pool thread would keep the closed circuit's context alive and emit the stale
+        // batch into the next recording when it renders again.
+        await using var f = ProfilerFixture.Create();
+        using var meter = f.Root.GetService<IMeterFactory>() is { } factory
+            ? factory.Create(ComponentMetricsCollector.LifecycleMeter)
+            : new Meter(ComponentMetricsCollector.LifecycleMeter);
+        var duration = meter.CreateHistogram<double>("aspnetcore.components.render_diff.duration");
+        var size = meter.CreateHistogram<int>("aspnetcore.components.render_diff.size");
+        const double StaleSeconds = 0.123456;
+        const double FreshSeconds = 0.234567;
+
+        using var worker = new DedicatedThread();
+        worker.Run(() => duration.Record(StaleSeconds));
+        f.Session.Stop();
+
+        var next = f.Host.StartSession();
+        worker.Run(() =>
+        {
+            duration.Record(FreshSeconds);
+            size.Record(3);
+        });
+
+        var batches = next.GetEvents(new EventQuery()).OfType<RenderBatchEvent>().ToList();
+        Assert.DoesNotContain(batches, b => b.Duration == f.Host.Clock.FromSeconds(StaleSeconds));
+        var fresh = Assert.Single(batches, b => b.Duration == f.Host.Clock.FromSeconds(FreshSeconds));
+        Assert.Equal(3, fresh.UpdatedComponentCount);
+    }
+
+    /// <summary>Runs actions on one dedicated thread, like a pool thread reused by successive renders.</summary>
+    private sealed class DedicatedThread : IDisposable
+    {
+        private readonly System.Collections.Concurrent.BlockingCollection<(Action Action, TaskCompletionSource Done)> _queue = [];
+        private readonly Thread _thread;
+
+        public DedicatedThread()
+        {
+            _thread = new Thread(() =>
+            {
+                foreach (var (action, done) in _queue.GetConsumingEnumerable())
+                {
+                    try
+                    {
+                        action();
+                        done.SetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        done.SetException(ex);
+                    }
+                }
+            })
+            { IsBackground = true };
+            _thread.Start();
+        }
+
+        public void Run(Action action)
+        {
+            var done = new TaskCompletionSource();
+            _queue.Add((action, done));
+            done.Task.GetAwaiter().GetResult();
+        }
+
+        public void Dispose()
+        {
+            _queue.CompleteAdding();
+            _thread.Join();
+            _queue.Dispose();
+        }
     }
 
     [Fact]

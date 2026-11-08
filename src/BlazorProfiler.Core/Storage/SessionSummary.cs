@@ -293,6 +293,12 @@ public sealed class RuntimeSummary
     /// <summary>Total GC pause time in milliseconds.</summary>
     public double GcPauseMs { get; set; }
 
+    /// <summary>
+    /// Whether samples exist but none reported GC pause time (the WebAssembly runtime does not track it), so
+    /// <see cref="GcPauseMs"/> is not a measurement.
+    /// </summary>
+    public bool GcPauseUnavailable { get; set; }
+
     /// <summary>Total time covered by samples in milliseconds.</summary>
     public double SampledMs { get; set; }
 

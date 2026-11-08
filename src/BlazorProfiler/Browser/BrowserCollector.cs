@@ -66,14 +66,19 @@ public sealed class BrowserCollector : ProfilerCollectorBase
     public const int MaxPayloadLength = 512 * 1024;
 
     /// <summary>
-    /// The batch size budget, in characters, used by the browser module on Blazor Server. Batches are sent over the circuit,
-    /// whose SignalR connection rejects (and closes on) incoming messages above <c>HubOptions.MaximumReceiveMessageSize</c>
-    /// (32 KB by default); the budget leaves room for escaping and the invocation envelope.
+    /// The batch size budget used by the browser module on Blazor Server, in UTF-8 bytes of the batch as escaped into the
+    /// interop arguments (which is what SignalR measures). Batches are sent over the circuit, whose SignalR connection
+    /// rejects (and closes on) incoming messages above <c>HubOptions.MaximumReceiveMessageSize</c> (32 KB by default). The
+    /// JSON hub protocol escapes the arguments once more, which at most doubles their size, so the budget leaves room for
+    /// that and the invocation envelope. Larger dashboard bridge requests are streamed instead.
     /// </summary>
-    public const int ServerMaxBatchLength = 16_000;
+    public const int ServerMaxBatchBytes = 16_000;
 
-    /// <summary>The batch size budget, in characters, used by the browser module in WebAssembly (in-process calls).</summary>
-    public const int WebAssemblyMaxBatchLength = MaxPayloadLength / 2;
+    /// <summary>
+    /// The batch size budget used by the browser module in WebAssembly (in-process calls), in UTF-8 bytes. A batch within it
+    /// is always shorter than <see cref="MaxPayloadLength"/> characters.
+    /// </summary>
+    public const int WebAssemblyMaxBatchBytes = MaxPayloadLength / 2;
 
     /// <inheritdoc />
     public override CollectorDescriptor Descriptor { get; } = new()

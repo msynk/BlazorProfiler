@@ -1,4 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using BlazorProfiler.Analysis;
+using BlazorProfiler.Api;
 using BlazorProfiler.Browser;
 using BlazorProfiler.Collectors;
 using BlazorProfiler.Correlation;
@@ -194,13 +199,134 @@ public class BrowserIngestionTests
         Assert.Equal(1, collector.GetStatus().Errors);
     }
 
-    [Fact]
-    public void ServerBatchBudgetFitsTheDefaultSignalRMessageLimit()
+    [Theory]
+    [InlineData('x')]
+    [InlineData('"')] // escaped in the arguments and again by the JSON hub protocol: the worst case for escaping
+    [InlineData('中')] // three UTF-8 bytes per UTF-16 code unit
+    [InlineData('\u0001')] // escaped as \u0001: six bytes in the arguments, seven in the hub message
+    public void ServerBatchBudgetFitsTheDefaultSignalRMessageLimit(char fill)
     {
-        // The browser module escapes the batch again when sending it, so the budget must leave room for that and for
-        // multi-byte characters within SignalR's default 32 KB MaximumReceiveMessageSize.
-        Assert.True(BrowserCollector.ServerMaxBatchLength * 2 <= 32 * 1024);
-        Assert.True(BrowserCollector.WebAssemblyMaxBatchLength <= BrowserCollector.MaxPayloadLength);
+        // Models blazor-profiler.js: each entry costs the UTF-8 length of its JSON-escaped form (the batch travels as a
+        // string argument) and a batch is filled up to the budget. The resulting hub message must stay within SignalR's
+        // default 32 KB MaximumReceiveMessageSize, which Blazor Server enforces by closing the circuit.
+        var stringify = new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        var entry = JsonSerializer.Serialize(new { k = "l", n = "long-animation-frame", t = 1730000000000.5, d = 120.5, s = new string(fill, 512) }, stringify);
+        var cost = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(entry, stringify)) - 1;
+        var count = (BrowserCollector.ServerMaxBatchBytes - 2) / cost;
+        Assert.True(count > 0);
+        var batch = "[" + string.Join(",", Enumerable.Repeat(entry, count)) + "]";
+
+        // BeginInvokeDotNetFromJS(callId, assembly, method, objectId, argsJson), sent with the JSON hub protocol (the
+        // MessagePack-based protocol does not escape argsJson again, so it is smaller).
+        var argsJson = JsonSerializer.Serialize(new[] { batch }, stringify);
+        var message = JsonSerializer.Serialize(new { type = 1, target = "BeginInvokeDotNetFromJS", arguments = new object?[] { "4294967295", null, "BlazorProfiler.Ingest", 2147483647, argsJson } }, stringify);
+        Assert.True(Encoding.UTF8.GetByteCount(message) + 1 <= 32 * 1024, $"Hub message of {Encoding.UTF8.GetByteCount(message)} bytes.");
+
+        // In WebAssembly a batch within the byte budget is always within the .NET-side length limit (in characters).
+        Assert.True(BrowserCollector.WebAssemblyMaxBatchBytes <= BrowserCollector.MaxPayloadLength);
+    }
+}
+
+public class DashboardBridgeTests
+{
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task HandlesStreamedRequests(bool offload)
+    {
+        // Requests above the circuit's message size limit (trace imports) are streamed instead of sent as one message.
+        await using var f = ProfilerFixture.Create();
+        var callbacks = Callbacks(f, ProfilerApiAccess.Full, offload);
+        var request = new BytesStreamReference(Encoding.UTF8.GetBytes($$"""{"op":"info","name":"{{new string('x', 100_000)}}"}"""));
+        using var response = JsonDocument.Parse(await callbacks.HandleApiStreamRequest(request));
+        Assert.True(response.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains(response.RootElement.GetProperty("info").GetProperty("sessions").EnumerateArray(), s => s.GetProperty("id").GetString() == f.Session.Id);
+        Assert.True(request.Disposed);
+    }
+
+    [Fact]
+    public async Task DoesNotReadStreamsOfUnauthorizedCallers()
+    {
+        await using var f = ProfilerFixture.Create();
+        var callbacks = Callbacks(f, access: null, offload: true);
+        var request = new BytesStreamReference(Encoding.UTF8.GetBytes("""{"op":"info"}"""));
+        Assert.Contains("Not authorized", await callbacks.HandleApiStreamRequest(request), StringComparison.Ordinal);
+        Assert.False(request.Opened);
+        Assert.True(request.Disposed);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OffloadedRequestsDoNotRunOnTheCallingContext(bool offload)
+    {
+        // On the server, bridge requests arrive on the circuit's dispatcher: analysis must not run inline on it, or it would
+        // block the user's UI. In WebAssembly (no offload) there is only one thread anyway.
+        var probe = new ContextProbeRule();
+        await using var f = ProfilerFixture.Create(services: s => s.AddSingleton<IDiagnosticRule>(probe));
+        var callbacks = Callbacks(f, ProfilerApiAccess.Full, offload);
+        var dispatcher = new SynchronizationContext();
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(dispatcher);
+        try
+        {
+            var json = await callbacks.HandleApiRequest($$"""{"op":"findings","sessionId":"{{f.Session.Id}}"}""");
+            using var response = JsonDocument.Parse(json);
+            Assert.True(response.RootElement.GetProperty("ok").GetBoolean());
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
+        Assert.True(probe.Evaluated);
+        Assert.Equal(offload, !ReferenceEquals(dispatcher, probe.Context));
+    }
+
+    private static BlazorProfilerClient.BrowserCallbacks Callbacks(ProfilerFixture f, ProfilerApiAccess? access, bool offload) =>
+        new(f.Root.GetRequiredService<BrowserCollector>(), f.Root.GetRequiredService<ProfilerApi>(), new FixedAccess(access), offload);
+
+    private sealed class FixedAccess(ProfilerApiAccess? access) : IProfilerBridgeAccessProvider
+    {
+        public ValueTask<ProfilerApiAccess?> GetAccessAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult(access);
+    }
+
+    private sealed class ContextProbeRule : IDiagnosticRule
+    {
+        public DiagnosticRuleDescriptor Descriptor { get; } = new() { Id = "TESTPROBE", Title = "Probe", Description = "Records where rules run." };
+
+        public bool Evaluated { get; private set; }
+
+        public SynchronizationContext? Context { get; private set; }
+
+        public IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+        {
+            Evaluated = true;
+            Context = SynchronizationContext.Current;
+            return [];
+        }
+    }
+
+    private sealed class BytesStreamReference(byte[] data) : IJSStreamReference
+    {
+        public bool Opened { get; private set; }
+
+        public bool Disposed { get; private set; }
+
+        public long Length => data.Length;
+
+        public ValueTask<Stream> OpenReadStreamAsync(long maxAllowedSize = 512000, CancellationToken cancellationToken = default)
+        {
+            Assert.True(maxAllowedSize >= data.Length);
+            Opened = true;
+            return ValueTask.FromResult<Stream>(new MemoryStream(data));
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
     }
 }
 

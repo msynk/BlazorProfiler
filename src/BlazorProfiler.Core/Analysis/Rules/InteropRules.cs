@@ -37,7 +37,7 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
             var quality = Core.ValueQualityFor(list);
             var name = handlers.TryGetValue(operation.Key, out var handler) ? HandlerName(handler) : "operation " + operation.Key;
             var top = list.GroupBy(c => c.Identifier).Select(g => (g.Key, Weight: Weighted(g))).OrderByDescending(g => g.Weight).Take(3).Select(g => $"{g.Key} ×{FormatNumber(g.Weight)}");
-            var totalMs = Math.Round(list.Sum(c => context.Ms(c.Duration) * DiagnosticContext.WeightOf(c)), 3);
+            var totalMs = Math.Round(WeightedMs(context, list), 3);
             yield return Create(
                 $"{name} makes {FormatNumber(count)} interop calls",
                 Scale(count, options.ExcessiveInteropCallsPerOperation),
@@ -53,7 +53,7 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
                 related: list);
         }
 
-        var peak = PeakRate(SortedByTimestamp(calls), context.Clock.Frequency);
+        var peak = PeakWeight(SortedByTimestamp(calls), context.Clock.Frequency);
         if (peak >= options.ExcessiveInteropCallsPerSecond)
         {
             var top = calls.GroupBy(c => c.Identifier).Select(g => (g.Key, Weight: Weighted(g))).OrderByDescending(g => g.Weight).Take(3).Select(g => $"{g.Key} ×{FormatNumber(g.Weight)}");
@@ -113,7 +113,7 @@ public sealed class BatchableInteropRule : DiagnosticRule
                 "Repeated calls to the same function in one operation usually iterate over items one at a time. Each call pays the interop crossing cost.",
                 "Send all items in one call (an array argument) and loop in JavaScript, or move the loop entirely into JavaScript.",
                 [Evidence("Calls", FormatNumber(total), quality), Evidence("Max per operation", FormatNumber(perOperation), quality), Evidence("Mean duration", FormatMs(meanMs))],
-                new ImpactEstimate { TotalMs = Math.Round(calls.Sum(c => context.Ms(c.Duration) * DiagnosticContext.WeightOf(c)), 3), Occurrences = total, Method = "Sum of measured durations of the repeated calls (weighted by sampling).", Quality = quality },
+                new ImpactEstimate { TotalMs = Math.Round(WeightedMs(context, calls), 3), Occurrences = total, Method = "Sum of measured durations of the repeated calls (weighted by sampling).", Quality = quality },
                 subject: identifier.Key,
                 caveats: ["Calls whose order or intermediate results matter may not be batchable."],
                 related: calls);

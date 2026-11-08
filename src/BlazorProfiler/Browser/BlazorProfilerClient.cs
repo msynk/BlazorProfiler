@@ -37,6 +37,10 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     private bool _started;
     private bool _disposed;
 
+    // Identifies this client to the browser module, which is shared by the whole document: when a client is disposed after
+    // its replacement started (for example on an enhanced navigation), its stop call must not stop the replacement.
+    private readonly string _owner = Guid.NewGuid().ToString("N");
+
     [Inject]
     private IServiceProvider Services { get; set; } = default!;
 
@@ -117,18 +121,26 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
 
         try
         {
-            _callbacks = DotNetObjectReference.Create(new BrowserCallbacks(collector, api, access));
+            // On the server, bridge requests arrive on the circuit's dispatcher; their work (analysis, serializing large pages)
+            // is moved off it so that it never blocks the user's UI. WebAssembly has a single thread, so there is nothing to
+            // gain there.
+            _callbacks = DotNetObjectReference.Create(new BrowserCallbacks(collector, api, access, offload: !hosting.IsWebAssembly));
             _module = await js.InvokeAsync<IJSObjectReference>("import", "./_content/BlazorProfiler/blazor-profiler.js");
             var options = profiler.Options.Collectors;
             var clientNow = await _module.InvokeAsync<double>("start", _callbacks, SerializeOptions(
                 options.Browser,
                 Math.Max(16, options.BrowserInteractionThresholdMs),
-                hosting.IsWebAssembly ? BrowserCollector.WebAssemblyMaxBatchLength : BrowserCollector.ServerMaxBatchLength,
+                hosting.IsWebAssembly ? BrowserCollector.WebAssemblyMaxBatchBytes : BrowserCollector.ServerMaxBatchBytes,
+
+                // Bridge requests above this size are streamed: on the server a single message above SignalR's limit
+                // would close the circuit. WebAssembly calls are in-process and have no such limit (0).
+                hosting.IsWebAssembly ? 0 : BrowserCollector.ServerMaxBatchBytes,
                 bridge,
                 hosting.Source,
                 Shortcut ?? string.Empty,
                 ShowLauncher,
-                DashboardUrl ?? hosting.DashboardUrl));
+                DashboardUrl ?? hosting.DashboardUrl,
+                _owner));
 
             _callbacks.Value.ClockOffsetMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - clientNow;
         }
@@ -146,7 +158,7 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
         {
             try
             {
-                await _module.InvokeVoidAsync("stop");
+                await _module.InvokeVoidAsync("stop", _owner);
                 await _module.DisposeAsync();
             }
             catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or ObjectDisposedException)
@@ -157,7 +169,7 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
         _callbacks?.Dispose();
     }
 
-    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchChars, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl)
+    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner)
     {
         // Serialized explicitly (no reflection) so the payload is trimming-safe in WebAssembly.
         using var buffer = new MemoryStream();
@@ -167,12 +179,14 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
             writer.WriteBoolean("collect", collect);
             writer.WriteNumber("interactionThresholdMs", thresholdMs);
             writer.WriteNumber("flushIntervalMs", 2000);
-            writer.WriteNumber("maxBatchChars", maxBatchChars);
+            writer.WriteNumber("maxBatchBytes", maxBatchBytes);
+            writer.WriteNumber("maxRequestBytes", maxRequestBytes);
             writer.WriteBoolean("bridge", bridge);
             writer.WriteString("source", source);
             writer.WriteString("shortcut", shortcut);
             writer.WriteBoolean("showLauncher", showLauncher);
             writer.WriteString("dashboardUrl", dashboardUrl);
+            writer.WriteString("owner", owner);
             writer.WriteEndObject();
         }
 
@@ -184,16 +198,19 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     {
         private const string BridgeDisabled = "{\"ok\":false,\"error\":\"The dashboard bridge is disabled.\"}";
         private const string NotAuthorized = "{\"ok\":false,\"error\":\"Not authorized to access the profiler.\"}";
+        private const string TooLarge = "{\"ok\":false,\"error\":\"The request is too large.\"}";
 
         private readonly BrowserCollector _collector;
         private readonly ProfilerApi? _api;
         private readonly IProfilerBridgeAccessProvider? _access;
+        private readonly bool _offload;
 
-        internal BrowserCallbacks(BrowserCollector collector, ProfilerApi? api, IProfilerBridgeAccessProvider? access)
+        internal BrowserCallbacks(BrowserCollector collector, ProfilerApi? api, IProfilerBridgeAccessProvider? access, bool offload)
         {
             _collector = collector;
             _api = api;
             _access = access;
+            _offload = offload;
         }
 
         internal double ClockOffsetMs { get; set; }
@@ -213,8 +230,50 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
             }
 
             var access = await _access.GetAccessAsync();
-            return access is null ? NotAuthorized : await _api.HandleAsync(json, access);
+            return access is null ? NotAuthorized : await RunAsync(_api, json, access);
         }
+
+        /// <summary>
+        /// Handles a dashboard request too large for one interop message (for example a trace import), streamed from the
+        /// browser. On Blazor Server, a message above SignalR's <c>MaximumReceiveMessageSize</c> would close the circuit,
+        /// whereas a stream is transferred in chunks that respect it.
+        /// </summary>
+        /// <remarks>Access is evaluated before anything is read, so unauthorized callers cannot make the server buffer data.</remarks>
+        [JSInvokable("BlazorProfiler.ApiStream")]
+        public async Task<string> HandleApiStreamRequest(IJSStreamReference request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            await using (request)
+            {
+                if (_api is null || _access is null)
+                {
+                    return BridgeDisabled;
+                }
+
+                var access = await _access.GetAccessAsync();
+                if (access is null)
+                {
+                    return NotAuthorized;
+                }
+
+                if (request.Length > ProfilerApi.MaxRequestLength)
+                {
+                    return TooLarge;
+                }
+
+                string json;
+                await using (var stream = await request.OpenReadStreamAsync(ProfilerApi.MaxRequestLength))
+                using (var reader = new StreamReader(stream, System.Text.Encoding.UTF8))
+                {
+                    json = await reader.ReadToEndAsync();
+                }
+
+                return await RunAsync(_api, json, access);
+            }
+        }
+
+        private Task<string> RunAsync(ProfilerApi api, string json, ProfilerApiAccess access) =>
+            _offload ? Task.Run(() => api.HandleAsync(json, access)) : api.HandleAsync(json, access);
     }
 
     /// <summary>Bridge access in WebAssembly, where the profiler only contains the current browser's own data.</summary>

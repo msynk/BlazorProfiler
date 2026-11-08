@@ -64,6 +64,28 @@ public sealed class EventQuery
     }
 }
 
+/// <summary>Events read after a sequence cursor, with the cursor's state determined in the same read.</summary>
+public sealed class EventRange
+{
+    /// <summary>The events, in storage order.</summary>
+    public required List<ProfilerEvent> Events { get; init; }
+
+    /// <summary>
+    /// The sequence number of the last returned event: the cursor for the next read. When no event is returned, the
+    /// effective cursor (the clear's sequence number after a reset).
+    /// </summary>
+    public long LastSequence { get; init; }
+
+    /// <summary>
+    /// The cursor predates the last clear or was not produced by the store, so data the caller loaded with it no longer
+    /// exists and must be discarded. Reading restarted at the first event after the clear.
+    /// </summary>
+    public bool Reset { get; init; }
+
+    /// <summary>Events after the cursor were evicted by retention limits before they could be read.</summary>
+    public bool Gap { get; init; }
+}
+
 /// <summary>Stores the raw events of one session.</summary>
 /// <remarks>Implementations are not required to be thread-safe; the owning session serializes access.</remarks>
 public interface IProfilerEventStore
@@ -115,10 +137,10 @@ public interface IProfilerEventStore
 
     /// <summary>
     /// Returns up to <paramref name="max"/> events whose sequence number is greater than <paramref name="afterSequence"/>,
-    /// together with the sequence number of the last returned event. A cursor that is ahead of the store (not produced by
-    /// it) restarts at the oldest event retained since the last clear.
+    /// together with the sequence number of the last returned event and the state of the cursor. A cursor that is ahead of
+    /// the store (not produced by it) or predates the last clear restarts at the oldest event retained since the clear.
     /// </summary>
-    List<ProfilerEvent> GetAfter(long afterSequence, int max, out long lastSequence);
+    EventRange GetAfter(long afterSequence, int max);
 
     /// <summary>Returns the retained events of one operation.</summary>
     IReadOnlyList<ProfilerEvent> GetOperation(long operationId);
@@ -295,19 +317,21 @@ public sealed class BoundedEventStore : IProfilerEventStore
     }
 
     /// <inheritdoc />
-    public List<ProfilerEvent> GetAfter(long afterSequence, int max, out long lastSequence)
+    public EventRange GetAfter(long afterSequence, int max)
     {
+        // Sequence numbers are never reused, so a cursor ahead of the store (not produced by it) or below the last clear
+        // means the caller's data no longer exists. A fresh reader (cursor 0) has nothing to discard.
+        var reset = afterSequence > _lastSequence || (afterSequence > 0 && afterSequence < _clearedSequence);
         if (afterSequence > _lastSequence || afterSequence < _clearedSequence)
         {
-            // The cursor was not produced by this store (ahead of it) or predates the last clear: restart at the clear, so
-            // every event appended since is returned.
+            // Restart at the clear, so every event appended since is returned.
             afterSequence = _clearedSequence;
         }
 
         var oldest = OldestSequence;
         var startSequence = Math.Max(afterSequence + 1, oldest);
         var results = new List<ProfilerEvent>(Math.Clamp((int)Math.Min(max, _lastSequence - startSequence + 1), 0, 4096));
-        lastSequence = afterSequence;
+        var lastSequence = afterSequence;
         for (var sequence = startSequence; sequence <= _lastSequence && results.Count < max; sequence++)
         {
             var logical = (int)(sequence - oldest);
@@ -315,7 +339,15 @@ public sealed class BoundedEventStore : IProfilerEventStore
             lastSequence = sequence;
         }
 
-        return results;
+        return new EventRange
+        {
+            Events = results,
+            LastSequence = lastSequence,
+            Reset = reset,
+
+            // Events between the cursor and the oldest retained event were evicted before the caller could read them.
+            Gap = _count > 0 && afterSequence + 1 < oldest,
+        };
     }
 
     /// <inheritdoc />

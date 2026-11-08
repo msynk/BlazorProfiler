@@ -1,4 +1,7 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using BlazorProfiler.Events;
+using BlazorProfiler.Sessions;
 
 namespace BlazorProfiler.Pipeline;
 
@@ -15,11 +18,25 @@ public interface IProfilerEventProcessor
     bool Process(ProfilerEvent profilerEvent);
 }
 
-/// <summary>Deterministic per-kind head sampler.</summary>
+/// <summary>
+/// Deterministic head sampler. For each kind it keeps one event in every 1/rate, counted separately per subject (the
+/// component type, and the method for lifecycle events, or the interop identifier), so every subject is sampled at the
+/// configured rate however its events interleave with others.
+/// </summary>
+/// <remarks>
+/// A single counter per kind aliases with periodic patterns: when a list renders B, B, B, A repeatedly with a rate of 0.25,
+/// every kept render is A's, so A would be over-counted four times and B never counted. Per-subject counters keep each
+/// subject's weighted counts and rates within one sampling interval of the real values.
+/// </remarks>
 internal sealed class EventSampler
 {
+    /// <summary>The maximum number of per-subject counters; subjects beyond it share their kind's counter.</summary>
+    internal const int MaxSubjects = 4096;
+
     private readonly double[] _rates;
     private readonly long[] _counters;
+    private readonly ConcurrentDictionary<(ProfilerEventKind Kind, string Subject, int Detail), StrongBox<long>> _subjectCounters = new();
+    private int _subjectCount;
 
     public EventSampler(SamplingOptions options)
     {
@@ -58,8 +75,8 @@ internal sealed class EventSampler
             return false;
         }
 
-        // Keep an event whenever the cumulative expected count crosses an integer boundary.
-        var n = Interlocked.Increment(ref _counters[index]) - 1;
+        // Keep an event whenever the subject's cumulative expected count crosses an integer boundary.
+        var n = Interlocked.Increment(ref CounterFor(index, profilerEvent)) - 1;
         var keep = (long)((n + 1) * rate) > (long)(n * rate);
         if (keep)
         {
@@ -67,6 +84,44 @@ internal sealed class EventSampler
         }
 
         return keep;
+    }
+
+    private ref long CounterFor(int index, ProfilerEvent profilerEvent)
+    {
+        var (subject, detail) = profilerEvent switch
+        {
+            LifecycleMethodEvent lifecycle => (lifecycle.ComponentType, (int)lifecycle.Method),
+            ComponentEvent component => (component.ComponentType, 0),
+            JSInteropEvent interop => (interop.Identifier, 0),
+            _ => (null, 0),
+        };
+
+        if (subject is null)
+        {
+            return ref _counters[index];
+        }
+
+        var key = (profilerEvent.Kind, subject, detail);
+        if (!_subjectCounters.TryGetValue(key, out var counter))
+        {
+            if (Volatile.Read(ref _subjectCount) >= MaxSubjects)
+            {
+                return ref _counters[index];
+            }
+
+            var created = new StrongBox<long>();
+            if (_subjectCounters.TryAdd(key, created))
+            {
+                Interlocked.Increment(ref _subjectCount);
+                counter = created;
+            }
+            else
+            {
+                counter = _subjectCounters[key];
+            }
+        }
+
+        return ref counter.Value;
     }
 
     private static bool IsNeverSampled(ProfilerEvent profilerEvent) =>
@@ -210,7 +265,7 @@ internal sealed class RedactionProcessor : IProfilerEventProcessor
 /// <para>
 /// The matching request has usually been stored and aggregated already, and readers may be serializing it, so it is never
 /// mutated: an enriched copy is passed to the replacement callback, which swaps it into the sessions that hold the original
-/// and updates their aggregates.
+/// and updates their aggregates. Only the sessions the original was offered to are searched.
 /// </para>
 /// </remarks>
 internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
@@ -219,16 +274,26 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
     private const int Capacity = 512;
 
     private readonly IProfilerClock _clock;
-    private readonly Action<HttpRequestEvent, HttpRequestEvent> _replace;
+    private readonly Func<ProfilerSession[]> _recipients;
+    private readonly Action<HttpRequestEvent, HttpRequestEvent, ProfilerSession[]> _replace;
     private readonly HttpRequestEvent?[] _recent = new HttpRequestEvent?[Capacity];
+    private readonly ProfilerSession[]?[] _recentRecipients = new ProfilerSession[]?[Capacity];
     private int _next;
 
     /// <summary>Creates the processor.</summary>
     /// <param name="clock">The clock.</param>
-    /// <param name="replace">Called with the original request and its enriched copy when a browser entry matches.</param>
-    public BrowserResourceMergeProcessor(IProfilerClock clock, Action<HttpRequestEvent, HttpRequestEvent> replace)
+    /// <param name="recipients">Returns the sessions that the event being processed is offered to.</param>
+    /// <param name="replace">
+    /// Called when a browser entry matches, with the original request, its enriched copy, and the sessions the original was
+    /// offered to.
+    /// </param>
+    public BrowserResourceMergeProcessor(
+        IProfilerClock clock,
+        Func<ProfilerSession[]> recipients,
+        Action<HttpRequestEvent, HttpRequestEvent, ProfilerSession[]> replace)
     {
         _clock = clock;
+        _recipients = recipients;
         _replace = replace;
     }
 
@@ -236,7 +301,10 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
     {
         if (profilerEvent is HttpRequestEvent http && http.CircuitId is null)
         {
+            // Remember which sessions the request is offered to, so a later replacement only searches those: never
+            // imported sessions, sessions created afterwards, or sessions that were not recording.
             _recent[_next] = http;
+            _recentRecipients[_next] = _recipients();
             _next = (_next + 1) % Capacity;
             return true;
         }
@@ -274,7 +342,7 @@ internal sealed class BrowserResourceMergeProcessor : IProfilerEventProcessor
                     resource.TransferSize > 0 ? resource.TransferSize : null,
                     resource.FromCache);
                 _recent[best] = enriched;
-                _replace(original, enriched);
+                _replace(original, enriched, _recentRecipients[best] ?? []);
                 return false;
             }
         }

@@ -24,7 +24,11 @@ public interface IDiagnosticRule
 /// <summary>Augments findings with recommendations or documentation, for example organization-specific guidance.</summary>
 public interface IDiagnosticRecommendationProvider
 {
-    /// <summary>Augments a finding. Implementations may set <see cref="DiagnosticFinding.DocumentationUrl"/>.</summary>
+    /// <summary>
+    /// Augments a finding. Implementations may set <see cref="DiagnosticFinding.DocumentationUrl"/> to an absolute
+    /// <c>http</c>/<c>https</c> URL or a same-origin path (<c>/wiki/perf/bp1001</c>); other links are replaced with the
+    /// built-in rule reference.
+    /// </summary>
     void Augment(DiagnosticFinding finding);
 }
 
@@ -162,30 +166,9 @@ public sealed class DiagnosticContext
     }
 
     /// <summary>
-    /// Computes the maximum number of events in any half-open sliding window of <paramref name="windowTicks"/>,
-    /// given timestamps sorted ascending.
-    /// </summary>
-    public static int PeakCount(IReadOnlyList<long> sortedTimestamps, long windowTicks)
-    {
-        var peak = 0;
-        var start = 0;
-        for (var end = 0; end < sortedTimestamps.Count; end++)
-        {
-            while (sortedTimestamps[end] - sortedTimestamps[start] >= windowTicks)
-            {
-                start++;
-            }
-
-            peak = Math.Max(peak, end - start + 1);
-        }
-
-        return peak;
-    }
-
-    /// <summary>
     /// Computes the maximum weighted number of events (the sum of <see cref="ProfilerEvent.SampleWeight"/>) in any half-open
     /// sliding window of <paramref name="windowTicks"/>, given events sorted by <see cref="ProfilerEvent.Timestamp"/>.
-    /// Unlike <see cref="PeakCount"/>, this estimates the real rate when events were sampled.
+    /// Sampled events count for the occurrences they represent, so the peak rate is not under-estimated under sampling.
     /// </summary>
     public static double PeakWeight(IReadOnlyList<ProfilerEvent> sortedEvents, long windowTicks)
     {
@@ -213,7 +196,7 @@ public sealed class DiagnosticContext
     public static double WeightOf(ProfilerEvent profilerEvent)
     {
         ArgumentNullException.ThrowIfNull(profilerEvent);
-        return profilerEvent.SampleWeight > 0 ? profilerEvent.SampleWeight : 1;
+        return profilerEvent.Weight;
     }
 }
 
@@ -222,6 +205,9 @@ public sealed class DiagnosticEngine
 {
     private readonly DiagnosticOptions _options;
     private readonly IDiagnosticRule[] _rules;
+    private static readonly DocumentationRecommendationProvider s_defaultDocumentation = new();
+
+    // Custom providers; the built-in rule reference is applied after them, to findings left without a valid link.
     private readonly IDiagnosticRecommendationProvider[] _recommendationProviders;
 
     /// <summary>Creates an engine.</summary>
@@ -235,7 +221,7 @@ public sealed class DiagnosticEngine
             throw new ArgumentException($"Duplicate diagnostic rule identifier '{duplicate.Key}'.", nameof(rules));
         }
 
-        _recommendationProviders = [.. recommendationProviders ?? [], new DocumentationRecommendationProvider()];
+        _recommendationProviders = [.. recommendationProviders ?? []];
     }
 
     /// <summary>The suppressions applied to findings.</summary>
@@ -285,8 +271,14 @@ public sealed class DiagnosticEngine
                         provider.Augment(finding);
                     }
 
-                    // Dashboards render the URL as a link; only web URLs are allowed (no javascript:, data:, and so on).
-                    finding.DocumentationUrl = IsWebUrl(finding.DocumentationUrl) ? finding.DocumentationUrl : null;
+                    // Dashboards render the URL as a link, so only web URLs and same-origin paths are kept (no javascript:,
+                    // data:, and so on). A rejected link falls back to the built-in rule reference, like a missing one.
+                    if (!IsSafeDocumentationUrl(finding.DocumentationUrl))
+                    {
+                        finding.DocumentationUrl = null;
+                    }
+
+                    s_defaultDocumentation.Augment(finding);
                     finding.Suppression = Suppressions.Match(finding);
                     findings.Add(finding);
                 }
@@ -324,6 +316,23 @@ public sealed class DiagnosticEngine
         };
     }
 
-    private static bool IsWebUrl(string? url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+    /// <summary>
+    /// Returns whether a documentation link is safe to render: an absolute <c>http</c>/<c>https</c> URL, or a path on the
+    /// dashboard's own origin (<c>/wiki/perf</c>; not protocol-relative). Whitespace, control characters, and backslashes,
+    /// which browsers normalize in surprising ways, are never accepted.
+    /// </summary>
+    internal static bool IsSafeDocumentationUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || url.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || c == '\\'))
+        {
+            return false;
+        }
+
+        if (url[0] == '/')
+        {
+            return url.Length == 1 || url[1] != '/';
+        }
+
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+    }
 }

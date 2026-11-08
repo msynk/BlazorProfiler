@@ -110,6 +110,42 @@ public class SamplingAndFilterTests
     }
 
     [Fact]
+    public void SamplesEachComponentTypeAtTheConfiguredRateWhateverTheInterleaving()
+    {
+        // With a single counter per kind, a list rendering B, B, B, A repeatedly at a rate of 0.25 keeps every render of A
+        // (each weighted 4) and none of B, over-counting A four times.
+        var (host, session, _) = TestHost.WithSession(o => o.Sampling.Rates[ProfilerEventKind.ComponentRender] = 0.25);
+        for (var i = 0; i < 400; i++)
+        {
+            host.Emit(Ev.Render(i % 4 == 3 ? "App.A" : "App.B", i));
+        }
+
+        var weights = session.GetEvents(new EventQuery()).OfType<ComponentRenderEvent>()
+            .GroupBy(e => e.ComponentType!)
+            .ToDictionary(g => g.Key, g => g.Sum(e => e.SampleWeight));
+        Assert.Equal(100, weights["App.A"]);
+        Assert.Equal(300, weights["App.B"]);
+    }
+
+    [Fact]
+    public void SamplesEachLifecycleMethodSeparately()
+    {
+        // A component's lifecycle methods repeat in a fixed order on every render; counting them together would alias.
+        var (host, session, _) = TestHost.WithSession(o => o.Sampling.Rates[ProfilerEventKind.LifecycleMethod] = 0.25);
+        LifecycleMethod[] cycle = [LifecycleMethod.OnParametersSet, LifecycleMethod.OnParametersSet, LifecycleMethod.OnParametersSet, LifecycleMethod.OnAfterRender];
+        for (var i = 0; i < 400; i++)
+        {
+            host.Emit(new LifecycleMethodEvent { ComponentType = "App.A", Method = cycle[i % 4], Timestamp = Ev.T(i) });
+        }
+
+        var weights = session.GetEvents(new EventQuery()).OfType<LifecycleMethodEvent>()
+            .GroupBy(e => e.Method)
+            .ToDictionary(g => g.Key, g => g.Sum(e => e.SampleWeight));
+        Assert.Equal(300, weights[LifecycleMethod.OnParametersSet]);
+        Assert.Equal(100, weights[LifecycleMethod.OnAfterRender]);
+    }
+
+    [Fact]
     public void NeverSamplesOperationsOrErrors()
     {
         var (host, session, _) = TestHost.WithSession(o =>
@@ -197,22 +233,29 @@ public class StoreTests
             store.Append(Ev.Parameters("A", i), 0);
         }
 
-        var first = store.GetAfter(0, 3, out var cursor);
-        Assert.Equal(3, first.Count);
-        Assert.Equal(3, cursor);
-        var second = store.GetAfter(cursor, 100, out cursor);
-        Assert.Equal(2, second.Count);
-        Assert.Equal(5, cursor);
+        var first = store.GetAfter(0, 3);
+        Assert.Equal(3, first.Events.Count);
+        Assert.Equal(3, first.LastSequence);
+        Assert.False(first.Reset);
+        Assert.False(first.Gap);
+        var second = store.GetAfter(first.LastSequence, 100);
+        Assert.Equal(2, second.Events.Count);
+        Assert.Equal(5, second.LastSequence);
 
         for (var i = 0; i < 20; i++)
         {
             store.Append(Ev.Parameters("A", 100 + i), 0);
         }
 
-        var third = store.GetAfter(cursor, 100, out cursor);
-        Assert.Equal(10, third.Count);
-        Assert.Equal(25, cursor);
-        Assert.Empty(store.GetAfter(cursor, 100, out _));
+        // Events 6..15 were evicted before they could be read: the read reports the gap with the events it returns.
+        var third = store.GetAfter(second.LastSequence, 100);
+        Assert.Equal(10, third.Events.Count);
+        Assert.Equal(25, third.LastSequence);
+        Assert.True(third.Gap);
+        Assert.False(third.Reset);
+        var fourth = store.GetAfter(third.LastSequence, 100);
+        Assert.Empty(fourth.Events);
+        Assert.False(fourth.Gap);
     }
 
     [Fact]
@@ -224,7 +267,7 @@ public class StoreTests
             store.Append(Ev.Parameters("Before", i), 0);
         }
 
-        store.GetAfter(0, 100, out var cursor);
+        var cursor = store.GetAfter(0, 100).LastSequence;
         Assert.Equal(10, cursor);
         store.Clear();
 
@@ -234,13 +277,39 @@ public class StoreTests
             store.Append(Ev.Parameters("After", i), 0);
         }
 
-        var page = store.GetAfter(cursor, 100, out var next);
-        Assert.Equal(40, page.Count);
-        Assert.All(page, e => Assert.Equal("After", ((ParametersSetEvent)e).ComponentType));
-        Assert.Equal(store.LastSequence, next);
+        var page = store.GetAfter(cursor, 100);
+        Assert.True(page.Reset);
+        Assert.False(page.Gap);
+        Assert.Equal(40, page.Events.Count);
+        Assert.All(page.Events, e => Assert.Equal("After", ((ParametersSetEvent)e).ComponentType));
+        Assert.Equal(store.LastSequence, page.LastSequence);
         Assert.True(store.ClearedSequence > cursor);
         Assert.Equal(40, store.TotalAppended);
-        Assert.Empty(store.GetAfter(next, 100, out _));
+        var next = store.GetAfter(page.LastSequence, 100);
+        Assert.Empty(next.Events);
+        Assert.False(next.Reset);
+    }
+
+    [Fact]
+    public void ResetIsReportedByTheReadThatReturnsPostClearEvents()
+    {
+        // The flags come from the same read as the events, so a clear between reading and reporting cannot make the
+        // reader discard its data and then keep loading pre-clear events.
+        var store = new BoundedEventStore(1000, long.MaxValue, long.MaxValue);
+        for (var i = 0; i < 20; i++)
+        {
+            store.Append(Ev.Parameters("Before", i), 0);
+        }
+
+        var beforeClear = store.GetAfter(10, 100);
+        store.Clear();
+        Assert.False(beforeClear.Reset);
+        Assert.Equal(10, beforeClear.Events.Count);
+
+        var afterClear = store.GetAfter(beforeClear.LastSequence, 100);
+        Assert.True(afterClear.Reset);
+        Assert.Empty(afterClear.Events);
+        Assert.Equal(store.ClearedSequence, afterClear.LastSequence);
     }
 
     [Fact]
@@ -252,8 +321,10 @@ public class StoreTests
             store.Append(Ev.Parameters("A", i), 0);
         }
 
-        Assert.Equal(5, store.GetAfter(5000, 100, out var cursor).Count);
-        Assert.Equal(5, cursor);
+        var range = store.GetAfter(5000, 100);
+        Assert.Equal(5, range.Events.Count);
+        Assert.Equal(5, range.LastSequence);
+        Assert.True(range.Reset);
     }
 
     [Fact]
@@ -779,6 +850,23 @@ public class BrowserMergeTests
 
         var endpoint = session.GetSummary().Endpoints.Single();
         Assert.Equal(1, endpoint.CacheHits);
+    }
+
+    [Fact]
+    public void ResourceTimingOnlyUpdatesTheSessionsThatRecordedTheRequest()
+    {
+        // The request is replaced in the sessions it was offered to, even after they paused; sessions created afterwards
+        // (and imported ones) are never searched.
+        var (host, session, _) = TestHost.WithSession();
+        host.Emit(Ev.Http("https://x.test/api/data", 100, 50));
+        session.Pause();
+        var later = host.StartSession();
+        host.Emit(new BrowserResourceEvent { Url = "https://x.test/api/data", InitiatorType = "fetch", Timestamp = Ev.T(110), TransferSize = 0, FromCache = true });
+
+        Assert.True(session.GetEvents(new EventQuery()).OfType<HttpRequestEvent>().Single().FromCache);
+        Assert.Equal(1, session.GetSummary().Endpoints.Single().CacheHits);
+        Assert.Empty(later.GetEvents(new EventQuery()).OfType<HttpRequestEvent>());
+        Assert.Empty(later.GetEvents(new EventQuery()).OfType<BrowserResourceEvent>());
     }
 
     [Fact]

@@ -25,7 +25,9 @@ public sealed class HighGcPressureRule : DiagnosticRule
             yield break;
         }
 
-        var pauseRatio = runtime.GcPauseMs / runtime.SampledMs;
+        // Without pause data (WebAssembly) only the generation 2 collection rate is evaluated.
+        var pauseAvailable = !runtime.GcPauseUnavailable;
+        var pauseRatio = pauseAvailable ? runtime.GcPauseMs / runtime.SampledMs : 0;
         var gen2PerMinute = runtime.Gen2Collections / (runtime.SampledMs / 60_000);
         var highPause = pauseRatio >= context.Options.HighGcPauseRatio;
         var highGen2 = gen2PerMinute >= context.Options.HighGen2CollectionsPerMinute;
@@ -39,17 +41,25 @@ public sealed class HighGcPressureRule : DiagnosticRule
             highPause ? $"{FormatPercent(pauseRatio)} of time spent in GC pauses" : $"{gen2PerMinute:0.#} generation 2 collections per minute",
             highPause ? Scale(pauseRatio, context.Options.HighGcPauseRatio) : Scale(gen2PerMinute, context.Options.HighGen2CollectionsPerMinute),
             DiagnosticConfidence.High,
-            $"Over {FormatMs(runtime.SampledMs)} of samples the runtime paused {FormatMs(runtime.GcPauseMs)} for GC ({runtime.Gen0Collections}/{runtime.Gen1Collections}/{runtime.Gen2Collections} gen0/1/2 collections) and allocated {FormatBytes(runtime.AllocatedBytes)}.",
+            pauseAvailable
+                ? $"Over {FormatMs(runtime.SampledMs)} of samples the runtime paused {FormatMs(runtime.GcPauseMs)} for GC ({runtime.Gen0Collections}/{runtime.Gen1Collections}/{runtime.Gen2Collections} gen0/1/2 collections) and allocated {FormatBytes(runtime.AllocatedBytes)}."
+                : $"Over {FormatMs(runtime.SampledMs)} of samples the runtime ran {runtime.Gen0Collections}/{runtime.Gen1Collections}/{runtime.Gen2Collections} gen0/1/2 collections and allocated {FormatBytes(runtime.AllocatedBytes)} (this runtime does not report GC pause time).",
             server
                 ? "GC pauses stop all threads of the server process, delaying every circuit. Frequent generation 2 collections indicate many long-lived allocations or memory pressure."
                 : "In WebAssembly, GC pauses block the browser's UI thread. Allocation-heavy rendering (large render trees, LINQ, string building) increases collection frequency.",
             "Reduce allocations on hot paths (avoid LINQ and string concatenation in markup, reuse buffers, cache derived data), avoid holding large object graphs per user, and check the allocation spike findings for when allocations happen.",
             [
-                Evidence("GC pause share", FormatPercent(pauseRatio)),
+                pauseAvailable ? Evidence("GC pause share", FormatPercent(pauseRatio)) : Evidence("GC pause share", "not reported by this runtime", ValueQuality.Unavailable),
                 Evidence("Gen2 collections per minute", gen2PerMinute.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)),
                 Evidence("Allocated", FormatBytes(runtime.AllocatedBytes)),
             ],
-            new ImpactEstimate { TotalMs = runtime.GcPauseMs, Occurrences = runtime.Gen0Collections + runtime.Gen1Collections + runtime.Gen2Collections, Method = "Total GC pause time reported by the runtime during sampling.", Quality = ValueQuality.Measured },
+            new ImpactEstimate
+            {
+                TotalMs = pauseAvailable ? runtime.GcPauseMs : null,
+                Occurrences = runtime.Gen0Collections + runtime.Gen1Collections + runtime.Gen2Collections,
+                Method = pauseAvailable ? "Total GC pause time reported by the runtime during sampling." : "Garbage collections during sampling (this runtime does not report pause time).",
+                Quality = pauseAvailable ? ValueQuality.Measured : ValueQuality.Unavailable,
+            },
             subject: "gc",
             caveats: ["Server GC values cover the whole process, including work unrelated to Blazor."]);
     }
@@ -344,7 +354,7 @@ public sealed class HighRenderBatchVolumeRule : DiagnosticRule
         foreach (var circuit in context.OfType<RenderBatchEvent>().Where(b => b.CircuitId is not null).GroupBy(b => b.CircuitId!))
         {
             var sorted = SortedByTimestamp(circuit);
-            var peak = PeakRate(sorted, context.Clock.Frequency);
+            var peak = PeakWeight(sorted, context.Clock.Frequency);
             var sustained = SecondsAtOrAbove(sorted, context.Clock.Frequency, threshold);
             if (peak < threshold || sustained < 3)
             {

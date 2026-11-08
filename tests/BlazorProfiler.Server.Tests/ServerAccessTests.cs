@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -144,29 +145,155 @@ public sealed class ServerAccessTests
     {
         var registry = new CircuitRegistry();
         var live = new HashSet<string>(StringComparer.Ordinal) { "s1", "s2", "s3" };
-        Assert.Empty(registry.RetainClosedCircuit("c1", "alice", "s1", 2, live.Contains));
-        Assert.Empty(registry.RetainClosedCircuit("c2", "bob", "s2", 2, live.Contains));
+        static bool NotInUse(string id) => false;
+        Assert.Empty(registry.RetainClosedCircuit("c1", "alice", "s1", 2, live.Contains, NotInUse));
+        Assert.Empty(registry.RetainClosedCircuit("c2", "bob", "s2", 2, live.Contains, NotInUse));
         Assert.Equal(["c1"], registry.GetOwned("alice"));
 
         // Over the limit: the oldest retained session is returned for removal and its owner loses access to it.
-        Assert.Equal(["s1"], registry.RetainClosedCircuit("c3", "alice", "s3", 2, live.Contains));
+        Assert.Equal(["s1"], registry.RetainClosedCircuit("c3", "alice", "s3", 2, live.Contains, NotInUse));
         Assert.Equal(["c3"], registry.GetOwned("alice"));
 
         // Entries of sessions removed elsewhere are discarded instead of counting toward the limit.
         live.Remove("s2");
         live.Add("s4");
-        Assert.Empty(registry.RetainClosedCircuit("c4", "bob", "s4", 2, live.Contains));
-        Assert.Equal("s3", registry.TakeOldestRetainedSession());
-        Assert.Equal("s4", registry.TakeOldestRetainedSession());
-        Assert.Null(registry.TakeOldestRetainedSession());
+        Assert.Empty(registry.RetainClosedCircuit("c4", "bob", "s4", 2, live.Contains, NotInUse));
+        Assert.Equal("s3", registry.TakeOldestRetainedSession(NotInUse));
+        Assert.Equal("s4", registry.TakeOldestRetainedSession(NotInUse));
+        Assert.Null(registry.TakeOldestRetainedSession(NotInUse));
     }
 
     [Fact]
     public void RetainingNoClosedCircuitSessionsRemovesThemImmediately()
     {
         var registry = new CircuitRegistry();
-        Assert.Equal(["s1"], registry.RetainClosedCircuit("c1", "alice", "s1", 0, _ => true));
+        Assert.Equal(["s1"], registry.RetainClosedCircuit("c1", "alice", "s1", 0, _ => true, _ => false));
         Assert.Empty(registry.GetOwned("alice"));
+    }
+
+    [Fact]
+    public void RetainedSessionsInUseAreNeverRemovedAutomatically()
+    {
+        // A session open in a dashboard must not disappear while someone inspects it: the limit is exceeded instead, and
+        // room for new circuits is made from other sessions.
+        var registry = new CircuitRegistry();
+        var viewed = new HashSet<string>(StringComparer.Ordinal) { "s1" };
+        Assert.Empty(registry.RetainClosedCircuit("c1", "alice", "s1", 1, _ => true, viewed.Contains));
+        Assert.Equal(["s2"], registry.RetainClosedCircuit("c2", "bob", "s2", 1, _ => true, viewed.Contains));
+        Assert.Equal(["c1"], registry.GetOwned("alice"));
+
+        Assert.Empty(registry.RetainClosedCircuit("c3", "bob", "s3", 0, _ => true, id => id is "s1" or "s3"));
+        Assert.Equal("s3", registry.TakeOldestRetainedSession(id => id == "s1"));
+        Assert.Null(registry.TakeOldestRetainedSession(id => id == "s1"));
+
+        // Once no longer viewed, it is removed like any other.
+        Assert.Equal("s1", registry.TakeOldestRetainedSession(_ => false));
+    }
+
+    [Fact]
+    public async Task ReadingASessionThroughTheApiMarksItAsViewed()
+    {
+        await using var app = await CreateAppAsync("Development", enabled: true);
+        var profiler = app.Services.GetRequiredService<IProfiler>();
+        var session = (ProfilerSession)profiler.StartSession();
+        Assert.False(session.WasViewedWithin(ProfilerServerOptions.RetainedSessionViewWindow));
+
+        using var response = await Client(app).GetAsync($"/_blazor-profiler/api/sessions/{session.Id}/events");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(session.WasViewedWithin(ProfilerServerOptions.RetainedSessionViewWindow));
+    }
+
+    [Theory]
+    [InlineData("X-Forwarded-For", "203.0.113.7")]
+    [InlineData("X-Forwarded-For", "127.0.0.1, 203.0.113.7")] // a spoofed local entry followed by the real client
+    [InlineData("Forwarded", "for=203.0.113.7")]
+    [InlineData("Forwarded", "proto=https")] // relayed, but the client is not reported
+    [InlineData("X-Forwarded-Host", "abc.devtunnels.ms")]
+    [InlineData("X-Cluster-Client-IP", "203.0.113.7")]
+    [InlineData("Via", "1.1 proxy")]
+    [InlineData("X-Forwarded-Server", "proxy.example.com")]
+    [InlineData("X-Forwarded-For", "unknown")]
+    [InlineData("Origin", "https://my-app.example.com")] // a remote browser behind a relay that rewrote Host
+    [InlineData("Referer", "https://my-app.example.com/_content/BlazorProfiler/dashboard/index.html")]
+    public void LoopbackRequestsRelayedFromRemoteClientsAreNotLocal(string header, string value)
+    {
+        var context = LoopbackContext();
+        context.Request.Headers[header] = value;
+        Assert.False(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("X-Forwarded-For", "[::1]:54321")] // IIS / IIS Express out-of-process, before ForwardedHeadersMiddleware
+    [InlineData("X-Original-For", "127.0.0.1:54321")] // the same, after ForwardedHeadersMiddleware consumed the header
+    [InlineData("Forwarded", "for=\"[::1]:1234\";host=localhost:5000;proto=http")]
+    [InlineData("Origin", "http://localhost:5000")]
+    [InlineData("Referer", "http://127.0.0.1:5000/_content/BlazorProfiler/dashboard/index.html")]
+    public void LoopbackRequestsFromLocalBrowsersAreLocal(string? header, string? value)
+    {
+        var context = LoopbackContext();
+        if (header is not null)
+        {
+            context.Request.Headers[header] = value;
+        }
+
+        if (header == "X-Original-For")
+        {
+            context.Request.Headers["X-Original-Proto"] = "http";
+        }
+
+        Assert.True(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    [Fact]
+    public void CrossSiteNavigationsAreNotJudgedByTheirReferrer()
+    {
+        // A link to the dashboard from another site carries that site's referrer; the browser marks it as cross-site.
+        var context = LoopbackContext();
+        context.Request.Headers.Referer = "https://github.com/";
+        context.Request.Headers["Sec-Fetch-Site"] = "cross-site";
+        Assert.True(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    [Fact]
+    public void Http10RequestsAreNotLocal()
+    {
+        // Browsers never use HTTP/1.0, but nginx's proxy_pass does by default, without forwarding headers and with Host
+        // rewritten to the upstream (localhost).
+        var context = LoopbackContext();
+        context.Request.Protocol = "HTTP/1.0";
+        Assert.False(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("[::]")]
+    [InlineData("192.0.2.10")] // the address the connection arrived on
+    public void LocalAddressesAsHostAreLocal(string host)
+    {
+        var context = LoopbackContext();
+        context.Connection.LocalIpAddress = IPAddress.Parse("192.0.2.10");
+        context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.10");
+        context.Request.Host = new HostString(host, 5000);
+        Assert.True(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    [Fact]
+    public void RemoteConnectionsAreNotLocal()
+    {
+        var context = LoopbackContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.7");
+        Assert.False(ProfilerAccessEvaluator.IsLocal(context));
+    }
+
+    private static DefaultHttpContext LoopbackContext()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Protocol = "HTTP/1.1";
+        context.Request.Host = new HostString("localhost", 5000);
+        context.Connection.LocalIpAddress = IPAddress.IPv6Loopback;
+        context.Connection.RemoteIpAddress = IPAddress.IPv6Loopback;
+        return context;
     }
 
     private static ClaimsPrincipal User(string name, string? role = null)

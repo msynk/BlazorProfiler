@@ -82,7 +82,8 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
                 Gen0Collections = current.Gen0 - previous.Gen0,
                 Gen1Collections = current.Gen1 - previous.Gen1,
                 Gen2Collections = current.Gen2 - previous.Gen2,
-                GcPauseTicks = clock.FromTimeSpan(current.Pause - previous.Pause),
+                // The WebAssembly (Mono) runtime does not track GC pause time: GC.GetTotalPauseDuration always returns zero.
+                GcPauseTicks = browser ? null : clock.FromTimeSpan(current.Pause - previous.Pause),
                 CpuTicks = browser ? null : clock.FromTimeSpan(current.Cpu - previous.Cpu),
                 ProcessorCount = Environment.ProcessorCount,
                 WorkingSetBytes = browser ? null : current.WorkingSet,
