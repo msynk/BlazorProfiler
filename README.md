@@ -17,7 +17,7 @@ batches, HTTP, JavaScript interop, runtime/GC, Blazor Server circuits, and brows
 - **Instruments components on request**: inheriting `ProfiledComponentBase` (one line in `_Imports.razor`) adds per-instance
   render timing, synchronous vs. awaited lifecycle time, parameter-change detection, render-output comparison, the component
   tree, and disposal.
-- **Explains** problems with 32 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
+- **Explains** problems with 33 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
   value labelled measured / estimated / inferred / unavailable), an impact estimate with its calculation method, a suggested
   fix, conditions under which the advice may not apply, and suppression support.
 - **Shows** it all in a dependency-free dashboard (overview, components and tree, unified timeline, network waterfall,

@@ -205,11 +205,25 @@ public sealed class InteropSummary
     /// <summary>The identifier.</summary>
     public string? Identifier { get; set; }
 
-    /// <summary>Call durations.</summary>
+    /// <summary>Durations of all calls; <see cref="DurationSummary.Count"/> is the number of calls.</summary>
     public DurationSummary Durations { get; set; } = new();
+
+    /// <summary>
+    /// Durations of the calls that JavaScript answered (a result or a JavaScript exception). Latency analysis uses these: a
+    /// call without a response (see <see cref="NoResponse"/>) measures how long the caller waited, for example the interop
+    /// timeout, and a call that failed before reaching JavaScript measures nothing.
+    /// </summary>
+    public DurationSummary ResponseDurations { get; set; } = new();
 
     /// <summary>Failed or canceled calls.</summary>
     public double Failures { get; set; }
+
+    /// <summary>
+    /// Calls that ended without a response from JavaScript: they timed out, were canceled, were made after the connection to
+    /// the browser was lost, or were made while interop was unavailable (for example during prerendering). Included in
+    /// <see cref="Failures"/>.
+    /// </summary>
+    public double NoResponse { get; set; }
 
     /// <summary>Total estimated payload bytes.</summary>
     public long PayloadBytes { get; set; }

@@ -131,6 +131,30 @@ public sealed class JSInteropEvent : ProfilerEvent
     /// <summary>The component instance whose lifecycle or event started the call, when known.</summary>
     public long OriginComponentInstanceId { get; set; }
 
+    /// <summary>The <see cref="ProfilerEvent.ErrorType"/> of a call that JavaScript ran and that threw.</summary>
+    internal const string JavaScriptErrorType = "Microsoft.JSInterop.JSException";
+
+    /// <summary>The <see cref="ProfilerEvent.ErrorType"/> of a call made after the connection to the browser was lost.</summary>
+    internal const string DisconnectedErrorType = "Microsoft.JSInterop.JSDisconnectedException";
+
+    /// <summary>
+    /// The <see cref="ProfilerEvent.ErrorType"/> of a call that could not be issued because JavaScript interop was unavailable,
+    /// for example while the component was statically rendered (prerendered).
+    /// </summary>
+    internal const string UnavailableErrorType = "System.InvalidOperationException";
+
+    /// <summary>Whether JavaScript answered the call: it returned a result or threw a JavaScript exception.</summary>
+    internal bool Answered => Outcome == ProfilerOutcome.Success || (Outcome == ProfilerOutcome.Error && ErrorType == JavaScriptErrorType);
+
+    /// <summary>
+    /// Whether the call ended without a response from JavaScript: it was canceled or timed out
+    /// (<see cref="ProfilerOutcome.Canceled"/>), the connection to the browser was lost (<c>JSDisconnectedException</c>), or
+    /// interop was unavailable (<c>InvalidOperationException</c>, for example during prerendering). The duration of such a
+    /// call is how long the caller waited, not how long JavaScript took.
+    /// </summary>
+    internal bool EndedWithoutResponse =>
+        Outcome == ProfilerOutcome.Canceled || (Outcome == ProfilerOutcome.Error && ErrorType is DisconnectedErrorType or UnavailableErrorType);
+
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + StringSize(Identifier) + StringSize(OriginComponentType) + 40;
 }

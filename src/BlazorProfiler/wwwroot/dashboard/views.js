@@ -579,6 +579,26 @@ export function network(ctx) {
 
 // ----------------------------------------------------------------------------------------------- Interop
 
+// Calls that ended without a JavaScript response are marked, so a timeout is not read as a slow function.
+function interopDuration(ctx, call) {
+  const text = fmtMs(ctx.ticksToMs(call.duration));
+  const noResponse = call.outcome === 'Canceled' ? 'No response: timed out or canceled'
+    : call.outcome !== 'Error' ? null
+    : call.errorType === 'Microsoft.JSInterop.JSDisconnectedException' ? 'No response: the browser was disconnected'
+    : call.errorType === 'System.InvalidOperationException' ? 'No response: JavaScript interop was unavailable (for example during prerendering)'
+    : null;
+  if (noResponse) {
+    return h('span', { class: 'mono dup', title: noResponse }, text, h('span', { 'aria-hidden': 'true' }, ' ✕'), h('span', { class: 'sr-only' }, ', no response'));
+  }
+  return h('span', { class: call.outcome === 'Error' ? 'mono dup' : 'mono', title: call.outcome === 'Error' ? `Failed: ${call.errorType || 'error'}` : null }, text);
+}
+
+function answeredP95(row) {
+  const answered = row.responseDurations;
+  if (!answered) return row.durations.p95Ms;
+  return answered.count > 0 ? answered.p95Ms : null;
+}
+
 export function interop(ctx) {
   const root = h('div');
   root.appendChild(h('h1', null, 'JavaScript interop'));
@@ -600,7 +620,10 @@ export function interop(ctx) {
       { key: 'identifier', title: 'Identifier', render: r => h('span', { class: 'mono' }, `${r.direction === 'JSToDotNet' ? '←' : '→'} ${r.identifier}`) },
       { key: 'count', title: 'Calls', num: true, sort: r => r.durations.count, render: r => fmtNum(r.durations.count) },
       { key: 'failures', title: 'Failures', num: true, render: r => fmtNum(r.failures) },
-      { key: 'p95', title: 'p95', num: true, sort: r => r.durations.p95Ms, render: r => fmtMs(r.durations.p95Ms) },
+      { key: 'noResponse', title: 'No response', num: true, sort: r => r.noResponse ?? 0, render: r => (r.noResponse == null ? '—' : fmtNum(r.noResponse)) },
+      // p95 of the answered calls: a call without a response (for example a timeout) says nothing about the JavaScript.
+      // Traces exported before responseDurations existed fall back to all calls.
+      { key: 'p95', title: 'p95 (answered)', num: true, sort: r => answeredP95(r) ?? -1, render: r => { const v = answeredP95(r); return v == null ? '—' : fmtMs(v); } },
       { key: 'total', title: 'Total', num: true, sort: r => r.durations.totalMs, render: r => fmtMs(r.durations.totalMs) },
       { key: 'maxPayloadBytes', title: 'Max payload', num: true, render: r => (r.maxPayloadBytes ? `≈ ${fmtBytes(r.maxPayloadBytes)}` : '—') },
     ],
@@ -615,7 +638,7 @@ export function interop(ctx) {
       h('span', { class: 'mono' }, fmtMs(ctx.toMs(c.timestamp))),
       h('span', { class: 'mono', title: c.identifier }, `${c.viaObjectReference ? 'module.' : ''}${c.identifier}`),
       h('span', null, c.synchronous ? 'sync' : 'async'),
-      h('span', { class: 'mono' }, fmtMs(ctx.ticksToMs(c.duration))),
+      interopDuration(ctx, c),
       h('span', { title: 'Estimated serialized size' }, c.payloadBytes != null ? `≈ ${fmtBytes(c.payloadBytes)}` : '—'),
       h('span', null, c.originComponentType ? shortType(c.originComponentType) : '—'),
     ],

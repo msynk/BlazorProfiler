@@ -167,7 +167,7 @@ public sealed class SlowInteropRule : DiagnosticRule
         Id = "BP4004",
         Title = "Slow interop calls",
         Category = DiagnosticCategory.Interop,
-        Description = "Detects interop identifiers whose calls exceed the slow-interop threshold.",
+        Description = "Detects interop identifiers whose answered calls exceed the slow-interop threshold. Calls without a response are reported by BP4006.",
         RequiredSignals = [ProfilerEventKind.JSInterop],
     };
 
@@ -175,32 +175,179 @@ public sealed class SlowInteropRule : DiagnosticRule
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
         var threshold = context.Options.SlowInteropMs;
-        foreach (var interop in context.Summary.Interop.OrderByDescending(i => i.Durations.P95Ms))
+
+        // Only calls that JavaScript answered measure JavaScript: a call without a response (timed out, canceled, or made
+        // while the browser was unreachable) measures how long the caller waited, which BP4006 reports instead, and a call
+        // that failed before reaching JavaScript measures nothing.
+        foreach (var interop in context.Summary.Interop.OrderByDescending(i => i.ResponseDurations.P95Ms))
         {
-            var slow = interop.Durations.Count >= 3 ? interop.Durations.P95Ms >= threshold : interop.Durations.MaxMs >= threshold * 3;
+            var durations = interop.ResponseDurations;
+            var slow = durations.Count >= 3 ? durations.P95Ms >= threshold : durations.Count > 0 && durations.MaxMs >= threshold * 3;
             if (!slow)
             {
                 continue;
             }
 
-            var related = context.OfType<JSInteropEvent>().Where(c => c.Identifier == interop.Identifier && c.Direction == interop.Direction).OrderByDescending(c => c.Duration).Take(20).ToList();
+            var related = context.OfType<JSInteropEvent>().Where(c => c.Identifier == interop.Identifier && c.Direction == interop.Direction && c.Answered).OrderByDescending(c => c.Duration).Take(20).ToList();
             var server = related.Any(c => c.CircuitId is not null);
             yield return Create(
-                $"{interop.Identifier} p95 is {FormatMs(interop.Durations.P95Ms)}",
-                Scale(interop.Durations.P95Ms, threshold),
+                $"{interop.Identifier} p95 is {FormatMs(durations.P95Ms)}",
+                Scale(durations.P95Ms, threshold),
                 DiagnosticConfidence.Medium,
-                $"{FormatNumber(interop.Durations.Count)} call(s) to {interop.Identifier}: p95 {FormatMs(interop.Durations.P95Ms)}, max {FormatMs(interop.Durations.MaxMs)}.",
+                $"{FormatNumber(durations.Count)} answered call(s) to {interop.Identifier}: p95 {FormatMs(durations.P95Ms)}, max {FormatMs(durations.MaxMs)}.",
                 server
                     ? "On Blazor Server the measured time includes the network round trip to the browser and the JavaScript execution."
                     : "The measured time includes JavaScript execution and, for asynchronous calls, any awaited JavaScript promises (for example user prompts or network calls).",
                 "Profile the JavaScript function in the browser developer tools; avoid awaiting long-running JavaScript work in UI paths, and cache results where possible.",
-                [Evidence("Calls", FormatNumber(interop.Durations.Count)), Evidence("p95", FormatMs(interop.Durations.P95Ms)), Evidence("Maximum", FormatMs(interop.Durations.MaxMs))],
-                new ImpactEstimate { TotalMs = interop.Durations.TotalMs, Occurrences = interop.Durations.Count, Method = "Total measured call time.", Quality = ValueQuality.Measured },
+                [Evidence("Answered calls", FormatNumber(durations.Count)), Evidence("p95", FormatMs(durations.P95Ms)), Evidence("Maximum", FormatMs(durations.MaxMs))],
+                new ImpactEstimate { TotalMs = durations.TotalMs, Occurrences = durations.Count, Method = "Total measured time of the answered calls.", Quality = ValueQuality.Measured },
                 subject: interop.Identifier,
                 caveats: ["Calls that intentionally wait for user input (dialogs, permission prompts) are expected to be slow."],
                 related: related);
         }
     }
+}
+
+/// <summary>BP4006: interop calls that ended without a response from JavaScript.</summary>
+public sealed class InteropWithoutResponseRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP4006",
+        Title = "Interop calls without a response",
+        Category = DiagnosticCategory.Interop,
+        Description = "Detects .NET-to-JavaScript calls that timed out, were canceled, were made after the connection to the browser was lost, or were made while interop was unavailable (prerendering).",
+        RequiredSignals = [ProfilerEventKind.JSInterop],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var calls = context.OfType<JSInteropEvent>().Where(c => c.Direction == InteropDirection.DotNetToJS && c.EndedWithoutResponse).ToList();
+        if (calls.Count == 0)
+        {
+            yield break;
+        }
+
+        var offline = OfflinePeriods(context);
+        var groups = calls
+            .GroupBy(c => c.Identifier)
+            .Select(g => (Identifier: g.Key, Calls: g.ToList(), Weight: Weighted(g)))
+            .Where(g => g.Weight >= context.Options.InteropWithoutResponseThreshold)
+            .OrderByDescending(g => g.Weight);
+
+        foreach (var group in groups)
+        {
+            var list = group.Calls;
+            var count = group.Weight;
+            var quality = Core.ValueQualityFor(list);
+            var canceled = list.Where(c => c.Outcome == ProfilerOutcome.Canceled).ToList();
+            var timedOut = Weighted(canceled);
+            var timedOutOffline = Weighted(canceled.Where(c => StartedOffline(offline, c)));
+            var disconnected = Weighted(list.Where(c => c.Outcome == ProfilerOutcome.Error && c.ErrorType == JSInteropEvent.DisconnectedErrorType));
+            var unavailable = Weighted(list.Where(c => c.Outcome == ProfilerOutcome.Error && c.ErrorType == JSInteropEvent.UnavailableErrorType));
+            var waitedMs = Math.Round(WeightedMs(context, list), 3);
+            var maxMs = context.Ms(list.Max(c => c.Duration));
+
+            // Without a browser: calls that failed as disconnected or unavailable, and calls that timed out while their
+            // circuit was disconnected (they were never delivered).
+            var withoutBrowser = disconnected + unavailable + timedOutOffline >= count / 2;
+
+            var evidence = new List<FindingEvidence> { Evidence("Calls without a response", FormatNumber(count), quality) };
+            var reasons = new List<string>();
+            var explanation = new List<string>();
+            if (timedOut > 0)
+            {
+                evidence.Add(Evidence("Timed out or canceled", FormatNumber(timedOut), quality));
+                reasons.Add($"{FormatNumber(timedOut)} timed out or were canceled" + (timedOutOffline > 0 ? $" ({FormatNumber(timedOutOffline)} of them sent while the circuit was disconnected)" : string.Empty));
+                explanation.Add("A call that times out leaves its caller waiting for the interop timeout (one minute by default on Blazor Server). Calls sent while a circuit's connection is down never reach the browser, so they always time out; other causes are JavaScript promises that never settle.");
+            }
+
+            if (timedOutOffline > 0)
+            {
+                evidence.Add(Evidence("Timed out while the circuit was disconnected", FormatNumber(timedOutOffline), quality));
+            }
+
+            if (disconnected > 0)
+            {
+                evidence.Add(Evidence("Failed as disconnected (JSDisconnectedException)", FormatNumber(disconnected), quality));
+                reasons.Add($"{FormatNumber(disconnected)} failed because the browser had disconnected");
+                explanation.Add("Calls made after the circuit's connection to the browser is gone fail with JSDisconnectedException.");
+            }
+
+            if (unavailable > 0)
+            {
+                evidence.Add(Evidence("Failed as unavailable (InvalidOperationException)", FormatNumber(unavailable), quality));
+                reasons.Add($"{FormatNumber(unavailable)} failed because interop was unavailable");
+                explanation.Add("Calls made while JavaScript interop is unavailable, for example from a prerendered (statically rendered) component instance, fail with InvalidOperationException.");
+            }
+
+            evidence.Add(Evidence("Longest wait", FormatMs(maxMs)));
+            if (withoutBrowser)
+            {
+                explanation.Add("Work that keeps calling JavaScript when no browser is attached usually comes from timers, event subscriptions, or loops that are not stopped when the component is disposed, including instances created during prerendering.");
+            }
+
+            yield return Create(
+                withoutBrowser
+                    ? $"{group.Identifier} called {FormatNumber(count)} times without a connected browser"
+                    : $"{FormatNumber(count)} call(s) to {group.Identifier} got no response",
+                Cap(Scale(count, context.Options.InteropWithoutResponseThreshold), DiagnosticSeverity.High),
+                DiagnosticConfidence.High,
+                $"{FormatNumber(count)} call(s) to {group.Identifier} ended without a response from JavaScript: {string.Join("; ", reasons)}. Callers waited up to {FormatMs(maxMs)}.",
+                string.Join(" ", explanation),
+                "Stop timers, unsubscribe events, and cancel background work in Dispose/DisposeAsync; pass a CancellationToken (or a short timeout) to InvokeAsync for calls that may not complete; make sure every JavaScript promise the call awaits resolves or rejects; and on Blazor Server avoid interop from background work, or pause it while the circuit is disconnected (CircuitHandler).",
+                evidence,
+                new ImpactEstimate { TotalMs = waitedMs, Occurrences = count, Method = "Sum of the time callers waited for calls that ended without a response.", Quality = quality },
+                subject: group.Identifier,
+                caveats: ["Calls canceled on purpose (for example when the user navigates away) are expected; timeouts and cancellations are not distinguished."],
+                related: list.OrderByDescending(c => c.Duration));
+        }
+    }
+
+    // Per circuit, the periods in which interop calls cannot reach the browser: from each connection loss to the next
+    // reconnection, and from the circuit's closing on.
+    private static Dictionary<string, List<(long Start, long End)>> OfflinePeriods(DiagnosticContext context)
+    {
+        var periods = new Dictionary<string, List<(long Start, long End)>>(StringComparer.Ordinal);
+        foreach (var circuit in context.OfType<CircuitEvent>().Where(c => c.CircuitId is not null).GroupBy(c => c.CircuitId!))
+        {
+            var list = new List<(long Start, long End)>();
+            long? downSince = null;
+            foreach (var change in circuit.OrderBy(c => c.Timestamp))
+            {
+                switch (change.Change)
+                {
+                    case CircuitChange.ConnectionDown:
+                        downSince ??= change.Timestamp;
+                        break;
+                    case CircuitChange.ConnectionUp or CircuitChange.Opened when downSince is { } since:
+                        list.Add((since, change.Timestamp));
+                        downSince = null;
+                        break;
+                    case CircuitChange.Closed:
+                        downSince ??= change.Timestamp;
+                        break;
+                }
+            }
+
+            if (downSince is { } open)
+            {
+                list.Add((open, long.MaxValue));
+            }
+
+            if (list.Count > 0)
+            {
+                periods[circuit.Key] = list;
+            }
+        }
+
+        return periods;
+    }
+
+    private static bool StartedOffline(Dictionary<string, List<(long Start, long End)>> offline, JSInteropEvent call) =>
+        call.CircuitId is not null && offline.TryGetValue(call.CircuitId, out var periods) && periods.Any(p => call.Timestamp >= p.Start && call.Timestamp < p.End);
 }
 
 /// <summary>BP4005: interop calls from a component after it was disposed.</summary>

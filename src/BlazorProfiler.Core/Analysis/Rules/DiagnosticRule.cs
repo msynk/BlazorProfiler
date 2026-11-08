@@ -204,6 +204,7 @@ public static class BuiltInRules
         new LargeInteropPayloadRule(),
         new SlowInteropRule(),
         new InteropAfterDisposeRule(),
+        new InteropWithoutResponseRule(),
         new HighGcPressureRule(),
         new AllocationSpikeRule(),
         new MemoryGrowthAcrossNavigationRule(),

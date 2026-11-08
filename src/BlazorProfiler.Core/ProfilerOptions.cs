@@ -420,6 +420,9 @@ public sealed class DiagnosticOptions
     /// <summary>Interop call duration considered slow.</summary>
     public double SlowInteropMs { get; set; } = 100;
 
+    /// <summary>Calls to one interop identifier that ended without a response (timed out, canceled, or disconnected) before BP4006 reports them.</summary>
+    public int InteropWithoutResponseThreshold { get; set; } = 3;
+
     /// <summary>Fraction of wall time spent in GC pauses considered high pressure.</summary>
     public double HighGcPauseRatio { get; set; } = 0.05;
 

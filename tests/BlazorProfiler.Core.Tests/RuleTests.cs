@@ -391,6 +391,87 @@ public class RuleTests
         Assert.Single(finding.RelatedEventIds);
     }
 
+    private const string Timeout = "System.Threading.Tasks.TaskCanceledException";
+    private const string Disconnected = "Microsoft.JSInterop.JSDisconnectedException";
+    private const string Unavailable = "System.InvalidOperationException";
+
+    private static JSInteropEvent Unanswered(string identifier, double atMs, double durationMs, string? circuit = null, string error = Timeout)
+    {
+        var call = Ev.Interop(identifier, atMs, durationMs);
+        call.CircuitId = circuit;
+        call.Outcome = error == Timeout ? ProfilerOutcome.Canceled : ProfilerOutcome.Error;
+        call.ErrorType = error;
+        return call;
+    }
+
+    [Fact]
+    public void BP4004_MeasuresOnlyCallsThatJavaScriptAnswered()
+    {
+        // Answered calls (including one that threw in JavaScript), calls that waited for the one-minute timeout, and calls
+        // that failed at once because interop was unavailable: only the answered ones say anything about JavaScript.
+        var events = Enumerable.Range(0, 9).Select(i => (ProfilerEvent)Ev.Interop("console.debug", i * 100, 2)).ToList();
+        events.Add(Unanswered("console.debug", 950, 2, error: "Microsoft.JSInterop.JSException"));
+        events.AddRange(Enumerable.Range(0, 10).Select(i => (ProfilerEvent)Unanswered("console.debug", 2_000 + (i * 100), 60_000)));
+        events.AddRange(Enumerable.Range(0, 40).Select(i => (ProfilerEvent)Unanswered("console.debug", 4_000 + (i * 10), 0.01, error: Unavailable)));
+        var (host, session, _) = TestHost.WithSession();
+        foreach (var e in events)
+        {
+            host.Emit(e);
+        }
+
+        Assert.Empty(Findings(host.Diagnostics.Analyze(session), "BP4004"));
+        var interop = Assert.Single(session.GetSummary().Interop);
+        Assert.Equal(60, interop.Durations.Count);
+        Assert.Equal(10, interop.ResponseDurations.Count);
+        Assert.Equal(2, interop.ResponseDurations.P95Ms, 1);
+        Assert.Equal(50, interop.NoResponse);
+        Assert.Equal(51, interop.Failures);
+    }
+
+    [Fact]
+    public void BP4006_ReportsCallsMadeWhileTheCircuitWasDisconnected()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            new CircuitEvent { CircuitId = "c1", Change = CircuitChange.Opened, Timestamp = Ev.T(0) },
+            Ev.Interop("console.debug", 100, 0.5),
+            new CircuitEvent { CircuitId = "c1", Change = CircuitChange.ConnectionDown, Timestamp = Ev.T(1_000) },
+            new CircuitEvent { CircuitId = "c1", Change = CircuitChange.Closed, Timestamp = Ev.T(200_000) },
+        };
+        events.AddRange(Enumerable.Range(0, 20).Select(i => (ProfilerEvent)Unanswered("console.debug", 2_000 + (i * 200), 60_000, "c1")));
+        events.AddRange(Enumerable.Range(0, 5).Select(i => (ProfilerEvent)Unanswered("console.debug", 201_000 + (i * 200), 0.1, "c1", Disconnected)));
+        events.AddRange(Enumerable.Range(0, 3).Select(i => (ProfilerEvent)Unanswered("console.debug", 300 + (i * 200), 0.01, error: Unavailable)));
+        var report = Analyze(events);
+
+        var finding = Assert.Single(Findings(report, "BP4006"));
+        Assert.Equal("console.debug", finding.Subject);
+        Assert.Equal("console.debug called 28 times without a connected browser", finding.Title);
+        Assert.Equal(DiagnosticSeverity.High, finding.Severity);
+        Assert.Equal(DiagnosticConfidence.High, finding.Confidence);
+        Assert.Contains(finding.Evidence, e => e.Label == "Timed out or canceled" && e.Value == "20");
+        Assert.Contains(finding.Evidence, e => e.Label == "Timed out while the circuit was disconnected" && e.Value == "20");
+        Assert.Contains(finding.Evidence, e => e.Label.StartsWith("Failed as disconnected", StringComparison.Ordinal) && e.Value == "5");
+        Assert.Contains(finding.Evidence, e => e.Label.StartsWith("Failed as unavailable", StringComparison.Ordinal) && e.Value == "3");
+        Assert.Contains("prerender", finding.Explanation, StringComparison.Ordinal);
+        Assert.Equal(28, finding.Impact!.Occurrences);
+    }
+
+    [Fact]
+    public void BP4006_ReportsTimeoutsWithoutCircuitInformationAndIgnoresIsolatedCancellations()
+    {
+        var events = new List<ProfilerEvent>();
+        events.AddRange(Enumerable.Range(0, 4).Select(i => (ProfilerEvent)Unanswered("dialog.open", i * 1_000, 60_000)));
+        events.AddRange(Enumerable.Range(0, 2).Select(i => (ProfilerEvent)Unanswered("map.pan", i * 1_000, 5)));
+        var report = Analyze(events);
+
+        var finding = Assert.Single(Findings(report, "BP4006"));
+        Assert.Equal("dialog.open", finding.Subject);
+        Assert.Equal("4 call(s) to dialog.open got no response", finding.Title);
+        Assert.Single(finding.Evidence, e => e.Label == "Timed out or canceled");
+        Assert.DoesNotContain(finding.Evidence, e => e.Label.StartsWith("Timed out while", StringComparison.Ordinal) || e.Label.StartsWith("Failed as", StringComparison.Ordinal));
+        Assert.Empty(Findings(report, "BP4004"));
+    }
+
     [Fact]
     public void BP5001_ReportsHighGcPauseRatio()
     {

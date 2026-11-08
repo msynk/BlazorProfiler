@@ -361,6 +361,15 @@ public sealed class SessionAggregates
                         aggregate.Failures += weight;
                     }
 
+                    if (js.Answered)
+                    {
+                        aggregate.ResponseDurations.Add(js.Duration, weight);
+                    }
+                    else if (js.EndedWithoutResponse)
+                    {
+                        aggregate.NoResponse += weight;
+                    }
+
                     if (js.PayloadBytes is { } payload)
                     {
                         aggregate.PayloadBytes += payload;
@@ -533,7 +542,9 @@ public sealed class SessionAggregates
                 Direction = interop.Direction,
                 Identifier = interop.Identifier,
                 Durations = interop.Durations.ToSummary(_clock),
+                ResponseDurations = interop.ResponseDurations.ToSummary(_clock),
                 Failures = Math.Round(interop.Failures, 2),
+                NoResponse = Math.Round(interop.NoResponse, 2),
                 PayloadBytes = interop.PayloadBytes,
                 MaxPayloadBytes = interop.MaxPayloadBytes,
             });
@@ -790,7 +801,9 @@ public sealed class SessionAggregates
         public InteropDirection Direction { get; } = direction;
         public string? Identifier { get; } = identifier;
         public DurationStats Durations { get; } = new();
+        public DurationStats ResponseDurations { get; } = new();
         public double Failures { get; set; }
+        public double NoResponse { get; set; }
         public long PayloadBytes { get; set; }
         public long MaxPayloadBytes { get; set; }
     }

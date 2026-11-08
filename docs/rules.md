@@ -151,13 +151,25 @@ Calls whose estimated argument size is at least `LargeInteropPayloadBytes` (64 K
 <a id="bp4004"></a>
 ### BP4004 — Slow interop calls
 
-Identifiers whose p95 is at least `SlowInteropMs` (100). On the server the time includes the network round trip. Demo:
-*Interop chatter* (slow JavaScript).
+Identifiers whose p95 is at least `SlowInteropMs` (100), over the calls that JavaScript answered (a result or a
+`JSException`). Calls without a response are left to BP4006, because their duration is the caller's wait (for example the
+one-minute interop timeout), not JavaScript time. On the server the time includes the network round trip. Demo: *Interop
+chatter* (slow JavaScript).
 
 <a id="bp4005"></a>
 ### BP4005 — Interop after component disposal
 
 Calls attributed to an instrumented component instance that started after its disposal. Demo: *Leaky component*.
+
+<a id="bp4006"></a>
+### BP4006 — Interop calls without a response
+
+Identifiers with at least `InteropWithoutResponseThreshold` (3) .NET-to-JavaScript calls that ended without a response:
+canceled or timed out (`TaskCanceledException`), failed with `JSDisconnectedException` (the circuit's browser was gone), or
+failed with `InvalidOperationException` (interop unavailable, for example from a prerendered instance). On Blazor Server,
+calls made while the circuit is disconnected never reach the browser and wait for the interop timeout; the finding counts
+the timeouts that started while the circuit was disconnected or closed. Severity capped at High. Timeouts and deliberate
+cancellations cannot be told apart. Demo: *Leaky component* (leave the page or close the tab).
 
 ## Memory
 

@@ -10,7 +10,7 @@ First preview.
 - Collectors: framework component metrics and activities (.NET 10), component activation, opt-in `ProfiledComponentBase`
   instrumentation, HTTP (`ProfilerHttpMessageHandler`), JavaScript interop, runtime/GC, Blazor Server circuits, browser
   performance entries.
-- Diagnostics: 32 rules across rendering, event handling, network, interop, memory, server, and browser categories, with
+- Diagnostics: 33 rules across rendering, event handling, network, interop, memory, server, and browser categories, with
   suppression and configurable thresholds.
 - Dashboard: overview, components and tree, unified timeline, network, interop, runtime, circuits, diagnostics, sessions and
   comparison, profiler health; HTTP, WebAssembly bridge, and offline file sources.
