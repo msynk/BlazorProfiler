@@ -29,9 +29,10 @@ builder.AddBlazorProfiler(options =>
 | Render-request tracking | off | on | on |
 | Minimum recorded lifecycle duration | 1 ms | 0.1 ms | 0 (all) |
 | Interop payload estimation | off | off | on |
+| Component retention tracking (leaks) | off | on | on |
 
-Event handlers, navigations, custom operations, render batches, HTTP requests, component creation/disposal, circuit
-events, markers, and failed events are never sampled out.
+Event handlers, navigations, custom operations, render batches, HTTP requests, database commands, component
+creation/disposal/retention, circuit events, startup and web vitals, markers, and failed events are never sampled out.
 
 ## Reference
 
@@ -108,7 +109,11 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `JSInteropPayloadEstimation` | off | Serialize arguments a second time to estimate size. |
 | `Runtime`, `RuntimeSampleInterval` | on, 1 s | Runtime sampling. |
 | `Circuits` | on | Circuit handler and hub filter (server). |
-| `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries (needs `BlazorProfilerClient`). |
+| `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries, startup, and Core Web Vitals (needs `BlazorProfilerClient`). |
+| `Database` | on | Entity Framework Core commands through its `DiagnosticListener`: normalized SQL (literals replaced), duration including reading rows, rows read, sync/async, `DbContext`, originating component. Argument values are hashed, never stored. |
+| `ComponentRetention` | on (off in LowOverhead) | Watch released components through weak references and report those still reachable after full GCs (BP5004). One weak reference per watched instance. |
+| `RetentionGcCycles` | 2 | Full collections a released instance must survive before it is reported. |
+| `RetentionMinimumAge` | 2 s | Minimum time between release and report, so in-flight work does not count. |
 
 ### `Instrumentation` (for `ProfiledComponentBase`)
 
@@ -124,7 +129,8 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 ### `Diagnostics`
 
 Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules["BP1001"] = new RuleSettings { Enabled = false, Severity = DiagnosticSeverity.Low }`.
-`MaxFindingsPerRule` limits output (default 10).
+`MaxFindingsPerRule` limits output (default 10). Newer thresholds: `NPlusOneQueryThreshold` (5), `SlowQueryMs` (100),
+`LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000).
 
 ## Server options (`ProfilerServerOptions`)
 
@@ -137,6 +143,7 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 | `AutoCircuitSessions` | `false` | Start a session per circuit (subject to `MaxSessions`). |
 | `RetainedCircuitSessions` | 4 | Automatic circuit sessions kept (stopped) after their circuit closes, visible to the circuit's owner. Older ones are removed, and a retained one is removed when a new circuit needs room under `MaxSessions`, except sessions a dashboard showed in the last 5 minutes (`RetainedSessionViewWindow`), which are never removed automatically. `0` removes them on close. |
 | `MaxImportBytes` | 64 MB | Upload limit for trace import. |
+| `SimulatedLatency` | 0 (off) | Delay added to every message from the browser to circuits, to reproduce a slow connection; changeable at runtime with the `simulate-latency` command (Circuits view). Never active in Production. |
 
 ## `BlazorProfilerClient` parameters
 
@@ -146,3 +153,14 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 | `Shortcut` | `Alt+Shift+P` | Opens the dashboard; empty disables. |
 | `ShowLauncher` | `false` | Floating button that opens the dashboard. |
 | `DashboardUrl` | hosting default | Override the dashboard URL. |
+| `ShowToolbar` | `false` | In-page toolbar: estimated INP, last interaction latency, long frames, DOM updates per second, update highlighting switch, dashboard button. Replaces the launcher. Runs only in the browser (no .NET work or circuit traffic). |
+| `HighlightUpdates` | `false` | Start with update highlighting on (outlines DOM elements as render batches change them). The toolbar/shortcut choice is remembered per tab. |
+| `HighlightShortcut` | `Alt+Shift+H` | Toggles update highlighting; empty disables. |
+| `DevToolsTracks` | `false` | Write Blazor activity (renders, batches, handlers, HTTP, interop, database) into the Chrome/Edge Performance panel as a "Blazor" track group (enable "Show custom tracks"). Sent once per second; on Blazor Server only the current circuit's events, as extra circuit traffic. |
+
+## Commands
+
+The dashboard can run actions in the app through `IProfilerCommand` implementations (listed in `/api/info` as `commands`,
+executed with `POST /api/commands/{name}?argument=...` or the bridge's `command` operation). Commands require control
+access; process-wide commands also require access to all circuits. Built in: `check-leaks` (forces full collections and
+reports retained components) and, on the server, `simulate-latency`. Register your own as `IProfilerCommand` singletons.

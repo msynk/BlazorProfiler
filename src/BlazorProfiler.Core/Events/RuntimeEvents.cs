@@ -192,3 +192,114 @@ public sealed class BrowserResourceEvent : ProfilerEvent
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + StringSize(Url) + StringSize(InitiatorType) + 32;
 }
+
+/// <summary>A framework file downloaded during startup.</summary>
+public sealed class StartupResource
+{
+    /// <summary>The file name (without path or query).</summary>
+    public string? Name { get; set; }
+
+    /// <summary>Bytes transferred over the network (zero when served from the browser cache).</summary>
+    public long TransferSize { get; set; }
+
+    /// <summary>The decoded (uncompressed) size in bytes.</summary>
+    public long DecodedSize { get; set; }
+
+    /// <summary>The download duration in milliseconds.</summary>
+    public double DurationMs { get; set; }
+
+    /// <summary>Whether the file came from the browser cache.</summary>
+    public bool Cached { get; set; }
+}
+
+/// <summary>
+/// Page startup as measured by the browser: navigation and paint timing, the moment the page became interactive (the
+/// first interactive render of <c>BlazorProfilerClient</c>), and the Blazor framework download (<c>_framework</c> files).
+/// The event starts at navigation start and lasts until the page became interactive. Reported once per page load.
+/// </summary>
+public sealed class BrowserStartupEvent : ProfilerEvent
+{
+    /// <inheritdoc />
+    [JsonIgnore]
+    public override ProfilerEventKind Kind => ProfilerEventKind.BrowserStartup;
+
+    /// <summary>The navigation type (navigate, reload, back_forward, prerender).</summary>
+    public string? NavigationType { get; set; }
+
+    /// <summary>The detected Blazor runtime: webassembly, webapp-webassembly, webapp, server, or unknown.</summary>
+    public string? RuntimeKind { get; set; }
+
+    /// <summary>Time to first byte of the document, in milliseconds after navigation start.</summary>
+    public double TimeToFirstByteMs { get; set; }
+
+    /// <summary>First Contentful Paint, in milliseconds after navigation start (zero when unavailable).</summary>
+    public double FirstContentfulPaintMs { get; set; }
+
+    /// <summary>The end of DOMContentLoaded, in milliseconds after navigation start.</summary>
+    public double DomContentLoadedMs { get; set; }
+
+    /// <summary>The end of the load event, in milliseconds after navigation start (zero when it had not finished).</summary>
+    public double LoadMs { get; set; }
+
+    /// <summary>
+    /// When the page became interactive, in milliseconds after navigation start: the first interactive render of
+    /// <c>BlazorProfilerClient</c> (estimated; render it early in the layout for accuracy).
+    /// </summary>
+    public double InteractiveMs { get; set; }
+
+    /// <summary>The number of <c>_framework</c> files loaded.</summary>
+    public int FrameworkFiles { get; set; }
+
+    /// <summary>Bytes of <c>_framework</c> files transferred over the network.</summary>
+    public long FrameworkTransferBytes { get; set; }
+
+    /// <summary>Decoded (uncompressed) bytes of <c>_framework</c> files.</summary>
+    public long FrameworkDecodedBytes { get; set; }
+
+    /// <summary>The number of <c>_framework</c> files served from the browser cache.</summary>
+    public int FrameworkCachedFiles { get; set; }
+
+    /// <summary>The number of large <c>_framework</c> files that arrived without content encoding (compression).</summary>
+    public int FrameworkUncompressedFiles { get; set; }
+
+    /// <summary>The time from the first <c>_framework</c> request to the end of the last one, in milliseconds.</summary>
+    public double FrameworkDownloadMs { get; set; }
+
+    /// <summary>The largest framework files.</summary>
+    public List<StartupResource> LargestFiles { get; set; } = [];
+
+    /// <inheritdoc />
+    public override int EstimateSize() => base.EstimateSize() + 160 + StringSize(NavigationType) + StringSize(RuntimeKind) + (LargestFiles.Count * 96);
+}
+
+/// <summary>A Core Web Vitals value reported by the browser: LCP (ms), CLS (unitless), or INP (ms, estimated).</summary>
+public sealed class BrowserVitalEvent : ProfilerEvent
+{
+    /// <inheritdoc />
+    [JsonIgnore]
+    public override ProfilerEventKind Kind => ProfilerEventKind.BrowserVital;
+
+    /// <summary>The metric: <c>LCP</c>, <c>CLS</c>, or <c>INP</c>.</summary>
+    public string? Name { get; set; }
+
+    /// <summary>The value (milliseconds for LCP and INP; unitless for CLS).</summary>
+    public double Value { get; set; }
+
+    /// <summary>The element tag of the LCP element or the largest layout shift source, when known.</summary>
+    public string? TargetTag { get; set; }
+
+    /// <summary>The Web Vitals rating: good, needs-improvement, or poor.</summary>
+    public string? Rating => Rate(Name, Value);
+
+    /// <summary>Rates a value with the Web Vitals thresholds (LCP 2.5 s / 4 s, CLS 0.1 / 0.25, INP 200 / 500 ms).</summary>
+    public static string? Rate(string? name, double value) => name switch
+    {
+        "LCP" => value <= 2500 ? "good" : value <= 4000 ? "needs-improvement" : "poor",
+        "CLS" => value <= 0.1 ? "good" : value <= 0.25 ? "needs-improvement" : "poor",
+        "INP" => value <= 200 ? "good" : value <= 500 ? "needs-improvement" : "poor",
+        _ => null,
+    };
+
+    /// <inheritdoc />
+    public override int EstimateSize() => base.EstimateSize() + 16 + StringSize(Name) + StringSize(TargetTag);
+}

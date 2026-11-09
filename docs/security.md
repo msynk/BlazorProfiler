@@ -65,6 +65,10 @@ built-in rule reference.
   tag name only.
 - Exception messages or stack traces (only exception type names).
 - Render output (identical-output detection hashes it in memory; the hash is process-local and not exported as content).
+- Database parameter values and literals. SQL text is normalized before it leaves the collector (string and numeric
+  literals become `?`); argument values are reduced to a 64-bit hash used only to recognize identical queries.
+- Page content in the in-page toolbar and update highlighting: they read element geometry and mutation counts only, run
+  entirely in the browser, and send nothing to the server.
 
 ## Redaction
 
@@ -73,6 +77,17 @@ sensitive-looking keys are always redacted), and identifier-like path segments a
 of the original URL is kept for duplicate detection; `string.GetHashCode` is randomized per process, so the hash cannot be
 reversed or correlated across processes. Export can additionally pseudonymize circuit ids and remove trace ids
 (`TraceExportOptions`).
+
+## Commands and development-only features
+
+- Commands (`POST /api/commands/{name}`, bridge `command`) require control access and the CSRF header like every other
+  mutation; process-wide commands (`check-leaks`, `simulate-latency`) also require access to all circuits, so per-user
+  (`OwnCircuitPolicy`) callers cannot run them and do not see them listed.
+- `check-leaks` forces full blocking garbage collections, which pause the whole process briefly.
+- Latency simulation is never active in the Production environment, whatever the configuration or command says.
+- DevTools tracks on Blazor Server send only the current circuit's events to that circuit's browser; when the circuit
+  cannot be determined, nothing is sent.
+- Retention tracking holds weak references only; it never keeps a component alive.
 
 ## Resource limits (denial-of-service protection)
 
@@ -84,7 +99,7 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
   interop call), so it stays within SignalR's default 32 KB message limit even when the JSON hub protocol escapes it again.
   Dashboard bridge requests above that size (trace imports) are streamed in chunks instead of sent as one message, up to
   96 MB.
-- Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 20
+- Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 24
   known event types are accepted; no type names from the input are resolved and no code is executed.
 
 ## Production use

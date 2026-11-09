@@ -536,6 +536,164 @@ public class RuleTests
     }
 
     [Fact]
+    public void BP5004_GroupsRetainedInstancesByComponentType()
+    {
+        var events = new List<ProfilerEvent>();
+        for (var i = 0; i < 6; i++)
+        {
+            events.Add(new ComponentRetainedEvent
+            {
+                ComponentType = "App.Pages.Chart",
+                ComponentInstanceId = i + 1,
+                CircuitId = i < 3 ? "c1" : "c2",
+                Reason = i < 3 ? RetentionReason.Disposed : RetentionReason.ScopeEnded,
+                ReleasedTimestamp = Ev.T(i * 100),
+                Timestamp = Ev.T(10_000),
+                SurvivedCollections = 2,
+            });
+        }
+
+        events.Add(new ComponentRetainedEvent { ComponentType = "App.Shared.Badge", ComponentInstanceId = 99, ReleasedTimestamp = Ev.T(0), Timestamp = Ev.T(5_000), SurvivedCollections = 4, ForcedCollection = true });
+
+        var findings = Findings(Analyze(events), "BP5004");
+        Assert.Equal(2, findings.Count);
+        var chart = findings.Single(f => f.ComponentType == "App.Pages.Chart");
+        Assert.Equal(DiagnosticSeverity.High, chart.Severity);
+        Assert.Equal(DiagnosticConfidence.Medium, chart.Confidence);
+        Assert.Contains(chart.Evidence, e => e.Label == "Circuits" && e.Value == "2");
+        Assert.Contains(chart.Evidence, e => e.Label == "Released by" && e.Value.Contains("scope end (3)", StringComparison.Ordinal));
+        Assert.Contains(chart.Evidence, e => e.Label == "Likely leaked" && e.Value == "6");
+
+        // A single retained instance per parent position matches the renderer's previous render tree: bounded, not a leak.
+        var badge = findings.Single(f => f.ComponentType == "App.Shared.Badge");
+        Assert.Equal(DiagnosticConfidence.Low, badge.Confidence);
+        Assert.Equal(DiagnosticSeverity.Info, badge.Severity);
+    }
+
+    [Fact]
+    public void BP5004_TreatsAccumulationUnderOneParentAsALeakAndSingleStaleChildrenAsBounded()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            new ComponentChildrenEvent { ComponentType = "App.Host", ComponentInstanceId = 1, ChildInstanceIds = [10, 20], ChildTypes = ["App.Dialog", "App.Row"], Timestamp = Ev.T(0) },
+            new ComponentChildrenEvent { ComponentType = "App.Host", ComponentInstanceId = 1, ChildInstanceIds = [11, 21], ChildTypes = ["App.Dialog", "App.Row"], Timestamp = Ev.T(100) },
+        };
+        foreach (var id in new long[] { 10, 11, 21 })
+        {
+            events.Add(new ComponentRetainedEvent { ComponentType = id < 20 ? "App.Dialog" : "App.Row", ComponentInstanceId = id, ReleasedTimestamp = Ev.T(200), Timestamp = Ev.T(5_000), SurvivedCollections = 3, ForcedCollection = true });
+        }
+
+        var findings = Findings(Analyze(events), "BP5004");
+        var dialog = findings.Single(f => f.ComponentType == "App.Dialog");
+        Assert.Equal(DiagnosticConfidence.High, dialog.Confidence);
+        Assert.Equal(DiagnosticSeverity.Medium, dialog.Severity);
+        var row = findings.Single(f => f.ComponentType == "App.Row");
+        Assert.Equal(DiagnosticSeverity.Info, row.Severity);
+    }
+
+    [Fact]
+    public void BP8001_ReportsPerItemQueriesWithinAnOperation()
+    {
+        var events = new List<ProfilerEvent> { Ev.Handler("App.Orders", "Load", 0, 200, operation: 7) };
+        for (var i = 0; i < 8; i++)
+        {
+            events.Add(Ev.Db("SELECT * FROM Lines WHERE OrderId = @p0", 10 + (i * 5), 4, operation: 7, arguments: i, origin: "App.Orders", lifecycle: LifecycleMethod.OnInitializedAsync, instance: 1));
+        }
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8001"));
+        Assert.Equal(DiagnosticConfidence.High, finding.Confidence);
+        Assert.Contains("Load", finding.Title, StringComparison.Ordinal);
+        Assert.Equal(28, finding.Impact!.TotalMs!.Value, 3);
+        Assert.Empty(Findings(Analyze(events), "BP8002"));
+    }
+
+    [Fact]
+    public void BP8001_ReportsQueriesIssuedByManyInstancesOfOneComponent()
+    {
+        var events = Enumerable.Range(0, 6)
+            .Select(i => (ProfilerEvent)Ev.Db("SELECT * FROM Stock WHERE ProductId = @p0", i * 10, 3, arguments: i, origin: "App.ProductRow", instance: 100 + i, lifecycle: LifecycleMethod.OnInitializedAsync))
+            .ToList();
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8001"));
+        Assert.Equal(DiagnosticConfidence.Medium, finding.Confidence);
+        Assert.Contains("parent", finding.Recommendation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP8001_IgnoresFewExecutions()
+    {
+        var events = Enumerable.Range(0, 3).Select(i => (ProfilerEvent)Ev.Db("SELECT 1", i, operation: 1, arguments: i)).ToList();
+        Assert.Empty(Findings(Analyze(events), "BP8001"));
+    }
+
+    [Fact]
+    public void BP8002_ReportsIdenticalQueriesInOneOperationButNotWrites()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            Ev.Db("SELECT * FROM Settings", 0, 5, operation: 3),
+            Ev.Db("SELECT * FROM Settings", 10, 5, operation: 3),
+            Ev.Db("SELECT * FROM Settings", 20, 5, operation: 3),
+            Ev.Db("UPDATE Counters SET Value = Value + ?", 30, 1, operation: 3, method: "NonQuery"),
+            Ev.Db("UPDATE Counters SET Value = Value + ?", 40, 1, operation: 3, method: "NonQuery"),
+        };
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8002"));
+        Assert.Contains("3 times", finding.Title, StringComparison.Ordinal);
+        Assert.Equal(10, finding.Impact!.TotalMs!.Value, 3);
+    }
+
+    [Fact]
+    public void BP8002_ReportsPrerenderDoubleFetch()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            Ev.Db("SELECT * FROM Products", 0, 20, origin: "App.Catalog", lifecycle: LifecycleMethod.OnInitializedAsync, instance: 1),
+            Ev.Db("SELECT * FROM Products", 1500, 25, origin: "App.Catalog", lifecycle: LifecycleMethod.OnInitializedAsync, instance: 2, circuit: "c1"),
+        };
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8002"));
+        Assert.Contains("prerendering", finding.Title, StringComparison.Ordinal);
+        Assert.Contains("PersistentState", finding.Recommendation, StringComparison.Ordinal);
+        Assert.Equal(25, finding.Impact!.TotalMs!.Value, 3);
+    }
+
+    [Fact]
+    public void BP8003_ReportsSlowQueryShapes()
+    {
+        var events = Enumerable.Range(0, 4).Select(i => (ProfilerEvent)Ev.Db("SELECT * FROM Big", i * 1000, 250, arguments: i)).ToList();
+        events.Add(Ev.Db("SELECT 1", 0, 2));
+        var finding = Assert.Single(Findings(Analyze(events), "BP8003"));
+        Assert.Equal(DiagnosticSeverity.Medium, finding.Severity);
+    }
+
+    [Fact]
+    public void BP8004_ReportsSynchronousQueriesOnTheRenderer()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            Ev.Db("SELECT * FROM Users", 0, 40, origin: "App.Profile", isAsync: false, onRenderer: true),
+            Ev.Db("SELECT * FROM Users", 100, 40, origin: "App.Profile", isAsync: false, onRenderer: false),
+            Ev.Db("SELECT * FROM Users", 200, 40, origin: "App.Profile", isAsync: true, onRenderer: true),
+        };
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8004"));
+        Assert.Equal("App.Profile", finding.ComponentType);
+        Assert.Contains("ToListAsync", finding.Recommendation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP8005_ReportsDbContextLivingAcrossInteractions()
+    {
+        var events = Enumerable.Range(0, 4).Select(i => (ProfilerEvent)Ev.Db("SELECT 1", i * 15_000, operation: i + 1, circuit: "c1", context: 42)).ToList();
+        events.AddRange(Enumerable.Range(0, 4).Select(i => (ProfilerEvent)Ev.Db("SELECT 1", i * 15_000, operation: i + 10, circuit: "c2", context: 43 + i)));
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP8005"));
+        Assert.Contains("IDbContextFactory", finding.Recommendation, StringComparison.Ordinal);
+        Assert.Contains(finding.Evidence, e => e.Label == "Long-lived instances" && e.Value == "1");
+    }
+
+    [Fact]
     public void BP6001_IdentifiesNetworkBoundRoundTrips()
     {
         var events = Enumerable.Range(0, 10).Select(i => (ProfilerEvent)Ev.Batch(i * 1000, 400, 1, roundTrip: true, circuit: "c1")).ToList();

@@ -1,0 +1,9 @@
+@inherits ProfiledComponentBase
+@if (Show)
+{
+    <LeakyChild />
+    <ProfiledChild Value="3" />
+}
+@code {
+    [Parameter] public bool Show { get; set; } = true;
+}

@@ -36,6 +36,8 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     private DotNetObjectReference<BrowserCallbacks>? _callbacks;
     private bool _started;
     private bool _disposed;
+    private DevToolsTrackProcessor.Subscription? _devTools;
+    private CancellationTokenSource? _devToolsLoop;
 
     // Identifies this client to the browser module, which is shared by the whole document: when a client is disposed after
     // its replacement started (for example on an enhanced navigation), its stop call must not stop the replacement.
@@ -70,6 +72,37 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     /// <summary>Overrides the dashboard URL.</summary>
     [Parameter]
     public string? DashboardUrl { get; set; }
+
+    /// <summary>
+    /// Whether to show the in-page toolbar: live interaction latency (estimated INP and the last interaction), long
+    /// animation frames, DOM updates per second, a switch for update highlighting, and a button that opens the dashboard.
+    /// It replaces the launcher button. The toolbar runs entirely in the browser: it adds no .NET work, interop calls, or
+    /// circuit traffic.
+    /// </summary>
+    [Parameter]
+    public bool ShowToolbar { get; set; }
+
+    /// <summary>
+    /// Whether to start with update highlighting on: DOM elements are outlined as render batches change them, with colors
+    /// that heat up when the same element changes repeatedly. The choice made with the toolbar or shortcut is remembered
+    /// for the browser tab.
+    /// </summary>
+    [Parameter]
+    public bool HighlightUpdates { get; set; }
+
+    /// <summary>A keyboard shortcut that toggles update highlighting, for example <c>Alt+Shift+H</c>. Set to an empty string to disable.</summary>
+    [Parameter]
+    public string? HighlightShortcut { get; set; } = "Alt+Shift+H";
+
+    /// <summary>
+    /// Whether to show Blazor activity in the browser's Performance panel (Chrome and Edge DevTools): component renders,
+    /// render batches, event handlers, HTTP, JavaScript interop, and database commands appear as tracks of a "Blazor" group
+    /// next to the browser's own tracks while a performance recording runs (enable "Show custom tracks" in the panel's
+    /// capture settings). Events are sent to the browser once per second. On Blazor Server that is extra circuit traffic, and
+    /// only the current circuit's events are sent.
+    /// </summary>
+    [Parameter]
+    public bool DevToolsTracks { get; set; }
 
     /// <inheritdoc />
     public void Attach(RenderHandle renderHandle) => _renderHandle = renderHandle;
@@ -140,9 +173,16 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
                 Shortcut ?? string.Empty,
                 ShowLauncher,
                 DashboardUrl ?? hosting.DashboardUrl,
-                _owner));
+                _owner,
+                ShowToolbar,
+                HighlightUpdates,
+                HighlightShortcut ?? string.Empty));
 
             _callbacks.Value.ClockOffsetMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - clientNow;
+            if (DevToolsTracks)
+            {
+                StartDevToolsTracks(profiler, hosting, _callbacks.Value.ClockOffsetMs);
+            }
         }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or InvalidOperationException)
         {
@@ -154,6 +194,9 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _devToolsLoop?.Cancel();
+        _devToolsLoop?.Dispose();
+        _devTools?.Dispose();
         if (_module is not null)
         {
             try
@@ -169,7 +212,53 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
         _callbacks?.Dispose();
     }
 
-    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner)
+    private void StartDevToolsTracks(IProfiler profiler, ProfilerHostingInfo hosting, double clockOffsetMs)
+    {
+        var processor = Services.GetService<DevToolsTrackProcessor>();
+        if (processor is null || _module is null)
+        {
+            return;
+        }
+
+        // On the server the processor sees every user's events: subscribe to this circuit only, and not at all when the
+        // circuit cannot be determined.
+        var circuitId = hosting.IsWebAssembly ? null : ComponentRetentionCollector.CurrentCircuitId(profiler);
+        if (!hosting.IsWebAssembly && circuitId is null)
+        {
+            return;
+        }
+
+        _devTools = processor.Subscribe(circuitId);
+        _devToolsLoop = new CancellationTokenSource();
+        _ = PumpDevToolsTracksAsync(_devTools, _module, profiler.Clock, clockOffsetMs, _devToolsLoop.Token);
+    }
+
+    private static async Task PumpDevToolsTracksAsync(DevToolsTrackProcessor.Subscription subscription, IJSObjectReference module, IProfilerClock clock, double clockOffsetMs, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                for (var batch = 0; batch < 10; batch++)
+                {
+                    var events = subscription.Drain(500);
+                    if (events.Count == 0)
+                    {
+                        break;
+                    }
+
+                    await module.InvokeVoidAsync("devtools", cancellationToken, DevToolsTrackProcessor.Serialize(events, clock, clockOffsetMs));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or JSException or JSDisconnectedException or ObjectDisposedException or InvalidOperationException)
+        {
+            // The client was disposed or the browser went away; the tracks are optional.
+        }
+    }
+
+    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner, bool toolbar, bool highlight, string highlightShortcut)
     {
         // Serialized explicitly (no reflection) so the payload is trimming-safe in WebAssembly.
         using var buffer = new MemoryStream();
@@ -187,6 +276,9 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
             writer.WriteBoolean("showLauncher", showLauncher);
             writer.WriteString("dashboardUrl", dashboardUrl);
             writer.WriteString("owner", owner);
+            writer.WriteBoolean("toolbar", toolbar);
+            writer.WriteBoolean("highlight", highlight);
+            writer.WriteString("highlightShortcut", highlightShortcut);
             writer.WriteEndObject();
         }
 

@@ -26,10 +26,12 @@ namespace BlazorProfiler.Events;
 [JsonDerivedType(typeof(RenderRequestEvent), "renderRequest")]
 [JsonDerivedType(typeof(LifecycleMethodEvent), "lifecycle")]
 [JsonDerivedType(typeof(ComponentChildrenEvent), "componentChildren")]
+[JsonDerivedType(typeof(ComponentRetainedEvent), "componentRetained")]
 [JsonDerivedType(typeof(RenderBatchEvent), "renderBatch")]
 [JsonDerivedType(typeof(EventHandlerEvent), "eventHandler")]
 [JsonDerivedType(typeof(NavigationEvent), "navigation")]
 [JsonDerivedType(typeof(HttpRequestEvent), "http")]
+[JsonDerivedType(typeof(DatabaseCommandEvent), "dbCommand")]
 [JsonDerivedType(typeof(JSInteropEvent), "jsInterop")]
 [JsonDerivedType(typeof(RuntimeSampleEvent), "runtime")]
 [JsonDerivedType(typeof(CircuitEvent), "circuit")]
@@ -37,11 +39,13 @@ namespace BlazorProfiler.Events;
 [JsonDerivedType(typeof(BrowserInteractionEvent), "browserInteraction")]
 [JsonDerivedType(typeof(BrowserLongTaskEvent), "browserLongTask")]
 [JsonDerivedType(typeof(BrowserResourceEvent), "browserResource")]
+[JsonDerivedType(typeof(BrowserStartupEvent), "browserStartup")]
+[JsonDerivedType(typeof(BrowserVitalEvent), "browserVital")]
 [JsonDerivedType(typeof(OperationEvent), "operation")]
 public abstract class ProfilerEvent
 {
     /// <summary>The version of the event schema implemented by this assembly.</summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>
     /// Process-unique, stable identifier assigned when the event is emitted.
@@ -141,6 +145,8 @@ public enum ProfilerEventKind
     LifecycleMethod = 15,
     /// <summary>The children of a component changed.</summary>
     ComponentChildren = 16,
+    /// <summary>A released component instance was still reachable after full garbage collections.</summary>
+    ComponentRetained = 17,
     /// <summary>A render batch was produced and applied.</summary>
     RenderBatch = 20,
     /// <summary>A UI event handler ran.</summary>
@@ -149,6 +155,8 @@ public enum ProfilerEventKind
     Navigation = 31,
     /// <summary>An HTTP request was sent.</summary>
     HttpRequest = 40,
+    /// <summary>A database command ran.</summary>
+    DatabaseCommand = 45,
     /// <summary>A JavaScript interop call ran.</summary>
     JSInterop = 50,
     /// <summary>A periodic runtime sample.</summary>
@@ -163,6 +171,10 @@ public enum ProfilerEventKind
     BrowserLongTask = 81,
     /// <summary>A browser resource timing entry.</summary>
     BrowserResource = 82,
+    /// <summary>Page startup and framework download.</summary>
+    BrowserStartup = 83,
+    /// <summary>A Core Web Vitals value.</summary>
+    BrowserVital = 84,
     /// <summary>A custom application operation.</summary>
     Operation = 90,
 }
@@ -248,4 +260,6 @@ public enum InstrumentationSource
     Runtime = 10,
     /// <summary>Manual application instrumentation.</summary>
     Manual = 11,
+    /// <summary>A <c>DiagnosticListener</c> of a data-access library (Entity Framework Core).</summary>
+    DatabaseDiagnostics = 12,
 }

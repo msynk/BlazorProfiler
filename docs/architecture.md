@@ -57,7 +57,13 @@ Values that are estimates carry a `ValueQuality` (for example `HttpRequestEvent.
 | js-interop | Decorating `IJSRuntime` (WebAssembly) / `IProfiledJSRuntime` (server opt-in) | on |
 | runtime | Periodic sampling of public GC/runtime APIs | on |
 | browser | `PerformanceObserver` in a JS module started by `BlazorProfilerClient` | on when the component is rendered |
-| circuits | `CircuitHandler` + `IHubFilter` | on (server) |
+| circuits | `CircuitHandler` + `IHubFilter` (also applies simulated latency) | on (server) |
+| database | `DiagnosticListener` subscription to `Microsoft.EntityFrameworkCore` (no EF reference) | on |
+| component-retention | Weak references registered on disposal (`ProfiledComponentBase`) and when the activator's scope ends; checked after full GCs | on (off in LowOverhead) |
+
+The browser module also reports startup (once per page) and Core Web Vitals, runs the optional in-page toolbar and update
+highlighting (browser-only, nothing is sent to .NET), and writes DevTools tracks received from `DevToolsTrackProcessor`
+(an `IProfilerEventProcessor` that is inactive until a `BlazorProfilerClient` with `DevToolsTracks` subscribes).
 
 Collectors start when the first session starts recording and stop when none is recording, so an idle profiler costs a
 field check per instrumented call. A collector that throws is marked `Failed` with the error in its status; the application
@@ -130,3 +136,6 @@ reading are not re-rendered automatically (a refresh prompt appears instead), ex
 - Custom redaction: register `IProfilerRedactionPolicy`.
 - Custom exporters: implement `IProfilerExporter`.
 - Manual instrumentation: `profiler.StartOperation("name")` and `profiler.Mark("name")`.
+- Commands the dashboard can run in the app: `IProfilerCommand` singletons (built in: `check-leaks`, `simulate-latency`).
+- Tests and CI: `ProfilerAssert`, `ProfilerBudget` (`BlazorProfiler.Testing`), and the `blazor-profiler` CLI
+  (`BlazorProfiler.Cli`) for exported traces.

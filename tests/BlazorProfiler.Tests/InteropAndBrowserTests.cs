@@ -175,6 +175,44 @@ public class BrowserIngestionTests
     }
 
     [Fact]
+    public async Task IngestsStartupAndWebVitals()
+    {
+        await using var f = ProfilerFixture.Create();
+        var collector = f.Root.GetRequiredService<BrowserCollector>();
+        var origin = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 5000;
+        var json = $$"""
+            [
+              {"k":"s","n":"navigate","t":{{origin}},"d":4200,"ttfb":120,"fcp":600,"dcl":700,"ld":900,"ia":4200,"fc":40,"ft":7340032,"fd":20971520,"fca":2,"fu":3,"fdl":3100,"rk":"webapp-webassembly",
+               "lf":[{"n":"dotnet.native.wasm","ts":3000000,"ds":9000000,"d":1500,"c":false},{"n":"App.wasm","ts":0,"ds":200000,"d":2,"c":true}]},
+              {"k":"v","n":"LCP","t":{{origin + 4300}},"d":0,"v":3100,"tag":"img"},
+              {"k":"v","n":"CLS","t":{{origin + 4300}},"d":0,"v":0.31,"tag":"div"},
+              {"k":"v","n":"FID","t":{{origin + 4300}},"d":0,"v":1}
+            ]
+            """;
+        Assert.Equal(3, collector.Ingest(json, 0));
+
+        var startup = Assert.Single(f.All<BrowserStartupEvent>());
+        Assert.Equal(4200, f.Host.Clock.ToMilliseconds(startup.Duration), 3);
+        Assert.Equal(600, startup.FirstContentfulPaintMs);
+        Assert.Equal(7340032, startup.FrameworkTransferBytes);
+        Assert.Equal(3, startup.FrameworkUncompressedFiles);
+        Assert.Equal("dotnet.native.wasm", startup.LargestFiles[0].Name);
+        Assert.True(startup.LargestFiles[1].Cached);
+
+        var summary = f.Session.GetSummary();
+        Assert.Equal(4200, summary.Startup!.InteractiveMs);
+        Assert.Equal("needs-improvement", summary.Vitals["LCP"].Rating);
+        Assert.Equal("poor", summary.Vitals["CLS"].Rating);
+        Assert.False(summary.Vitals.ContainsKey("FID"));
+
+        var findings = f.Host.Diagnostics.Analyze(f.Session).Findings;
+        Assert.Contains(findings, x => x.RuleId == "BP7003");
+        Assert.Contains(findings, x => x.RuleId == "BP7004" && x.Title.Contains("3.6", StringComparison.Ordinal));
+        Assert.Contains(findings, x => x.RuleId == "BP7005" && x.Subject == "CLS" && x.Severity >= Analysis.DiagnosticSeverity.Medium);
+        Assert.Contains(findings, x => x.RuleId == "BP7005" && x.Subject == "LCP" && x.Severity == Analysis.DiagnosticSeverity.Low);
+    }
+
+    [Fact]
     public async Task RejectsOversizedOrInvalidPayloads()
     {
         await using var f = ProfilerFixture.Create();
@@ -381,7 +419,8 @@ public class RegistrationTests
         using var provider = services.BuildServiceProvider();
         var collectors = provider.GetServices<IProfilerCollector>().ToList();
         Assert.Equal(collectors.Count, collectors.Select(c => c.Descriptor.Name).Distinct().Count());
-        Assert.Equal(8, collectors.Count);
+        Assert.Equal(10, collectors.Count);
+        Assert.Single(provider.GetServices<BlazorProfiler.Api.IProfilerCommand>(), c => c.Descriptor.Name == "check-leaks");
         Assert.False(provider.GetRequiredService<ProfilerOptions>().Collectors.Browser);
         Assert.Single(services, d => d.ServiceType == typeof(Microsoft.AspNetCore.Components.IComponentActivator));
     }

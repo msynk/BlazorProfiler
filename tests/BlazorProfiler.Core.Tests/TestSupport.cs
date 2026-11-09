@@ -120,6 +120,26 @@ public static class Ev
         Source = InstrumentationSource.HttpMessageHandler,
     };
 
+    public static DatabaseCommandEvent Db(string sql, double atMs, double durationMs = 2, long operation = 0, long arguments = 0, string? origin = null, long instance = 0, LifecycleMethod? lifecycle = null, string? circuit = null, bool isAsync = true, bool? onRenderer = null, long context = 0, string method = "Reader") => new()
+    {
+        CommandText = sql,
+        CommandHash = sql.GetHashCode(StringComparison.Ordinal),
+        ParameterHash = HashCode.Combine(sql, arguments),
+        ExecuteMethod = method,
+        Timestamp = T(atMs),
+        Duration = D(durationMs),
+        OperationId = operation,
+        OriginComponentType = origin,
+        OriginComponentInstanceId = instance,
+        OriginLifecycleMethod = lifecycle,
+        CircuitId = circuit,
+        IsAsync = isAsync,
+        OnRendererThread = onRenderer,
+        ContextType = context == 0 ? null : "App.Data.ShopContext",
+        ContextInstanceId = context,
+        Source = InstrumentationSource.DatabaseDiagnostics,
+    };
+
     public static JSInteropEvent Interop(string identifier, double atMs, double durationMs = 0.5, long operation = 0, long? payload = null, long instance = 0, string? origin = null) => new()
     {
         Identifier = identifier,

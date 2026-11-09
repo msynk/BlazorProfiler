@@ -918,6 +918,35 @@ public class AggregateTests
     }
 
     [Fact]
+    public void SummarizesWhyComponentsRendered()
+    {
+        var (host, session, _) = TestHost.WithSession();
+        var first = Ev.Render("A", 1, instance: 1);
+        first.Reason = RenderReason.FirstRender;
+        var byParameters = Ev.Render("A", 2, instance: 1);
+        byParameters.Reason = RenderReason.Parameters;
+        var byParametersAgain = Ev.Render("A", 3, instance: 1);
+        byParametersAgain.Reason = RenderReason.Parameters;
+        var byTimer = Ev.Render("A", 4, instance: 1);
+        byTimer.Reason = RenderReason.StateHasChanged;
+        host.Emit(first);
+        host.Emit(byParameters);
+        host.Emit(byParametersAgain);
+        host.Emit(byTimer);
+        host.Emit(Ev.Parameters("A", 2, 1, ParameterChangeState.Changed, InstrumentationSource.ComponentInstrumentation, ["Items", "Title"]));
+        host.Emit(Ev.Parameters("A", 3, 1, ParameterChangeState.Changed, InstrumentationSource.ComponentInstrumentation, ["Items"]));
+
+        var a = session.GetSummary().Components.Single(c => c.ComponentType == "A");
+        Assert.Equal(1, a.RenderReasons["FirstRender"]);
+        Assert.Equal(2, a.RenderReasons["Parameters"]);
+        Assert.Equal(1, a.RenderReasons["StateHasChanged"]);
+        Assert.False(a.RenderReasons.ContainsKey("EventHandler"));
+        Assert.Equal(2, a.ChangedParameters["Items"]);
+        Assert.Equal(1, a.ChangedParameters["Title"]);
+        Assert.Empty(a.ReferenceOnlyParameters);
+    }
+
+    [Fact]
     public void FullInstanceTableEvictsDisposedInstancesAndOtherwiseStopsTracking()
     {
         var (host, session, _) = TestHost.WithSession(o => o.Retention.MaxTrackedInstances = 16);

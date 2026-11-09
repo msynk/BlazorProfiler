@@ -1,0 +1,7 @@
+@* A plain ComponentBase component that leaks itself into a static holder. *@
+<span>plain leaky</span>
+<PlainChild Value="1" />
+@code {
+    public static readonly List<object> Holder = [];
+    protected override void OnInitialized() => Holder.Add(this);
+}

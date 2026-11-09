@@ -21,6 +21,7 @@
   --lane-batch: #0e7490;
   --lane-component: #2563eb;
   --lane-http: #15803d;
+  --lane-database: #a21caf;
   --lane-interop: #b45309;
   --lane-navigation: #be185d;
   --lane-circuit: #475569;
@@ -233,6 +234,7 @@ ul.compact { margin: 0; padding-left: 18px; }
 .tree button.node { all: unset; cursor: pointer; padding: 1px 4px; border-radius: 4px; }
 .tree button.node:hover, .tree button.node:focus-visible { background: var(--surface-2); outline: 2px solid var(--focus); }
 .tree .disposed { text-decoration: line-through; color: var(--muted); }
+.tree .retained { color: var(--bad); text-decoration: line-through wavy; }
 
 .compare-up { color: var(--bad); }
 .compare-down { color: var(--ok); }
@@ -252,3 +254,35 @@ ul.compact { margin: 0; padding-left: 18px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Stacked proportion bar ("why it rendered"); segment colors reuse the lane palette, which has light and dark variants. */
+.stacked-bar { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--surface-2); margin: 4px 0 6px; }
+.stacked-bar .seg { display: block; height: 100%; min-width: 2px; }
+.seg-0 { background: var(--lane-component); }
+.seg-1 { background: var(--lane-interaction); }
+.seg-2 { background: var(--lane-batch); }
+.seg-3 { background: var(--lane-interop); }
+.seg-4 { background: var(--lane-navigation); }
+.legend-list li { display: flex; align-items: center; gap: 6px; }
+
+/* Interactions: ranked components and per-operation waterfall. */
+.ranked { list-style: none; margin: 0; padding: 0; }
+.ranked li { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 72px; gap: 8px; align-items: center; padding: 2px 0; }
+.ranked-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ranked-bar { height: 10px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.ranked-bar span { display: block; height: 100%; border-radius: 2px; }
+.ranked-value { text-align: right; }
+.waterfall { display: flex; flex-direction: column; max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.waterfall-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 64px; gap: 8px; align-items: center; padding: 2px 6px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.waterfall-row:hover, .waterfall-row:focus-visible { background: var(--surface-2); }
+.waterfall-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.waterfall-track { position: relative; height: 10px; }
+.waterfall-track span { position: absolute; top: 0; height: 10px; border-radius: 2px; min-width: 2px; }
+.waterfall-track span.fail { outline: 2px solid var(--bad); }
+.waterfall-value { text-align: right; font-size: 12px; }
+
+/* Web vitals tile: one colored value per metric. */
+.value.vitals { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 15px; }
+.vital.good { color: var(--ok); }
+.vital.needs-improvement { color: var(--warn); }
+.vital.poor { color: var(--bad); }

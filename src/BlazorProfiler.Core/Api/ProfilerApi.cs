@@ -41,6 +41,9 @@ public sealed class ProfilerInfo
     /// <summary>Registered diagnostic rules.</summary>
     public List<DiagnosticRuleDescriptor> Rules { get; set; } = [];
 
+    /// <summary>Commands the caller may run (see <see cref="IProfilerCommand"/>).</summary>
+    public List<ProfilerCommandInfo> Commands { get; set; } = [];
+
     /// <summary>Whether the caller may see process-wide information and all circuits.</summary>
     public bool CanViewAllCircuits { get; set; }
 }
@@ -97,7 +100,7 @@ public sealed class ProfilerApiRequest
     /// <summary>The export format (native, json, chrome).</summary>
     public string? Format { get; set; }
 
-    /// <summary>Base64-encoded data (import).</summary>
+    /// <summary>Base64-encoded data (import), or the argument of a command.</summary>
     public string? Data { get; set; }
 
     /// <summary>A suppression fingerprint.</summary>
@@ -145,6 +148,9 @@ public sealed class ProfilerApiResponse
 
     /// <summary>A content type (export).</summary>
     public string? ContentType { get; set; }
+
+    /// <summary>The result of a command.</summary>
+    public ProfilerCommandResult? Command { get; set; }
 }
 
 /// <summary>Thrown for invalid API requests.</summary>
@@ -208,13 +214,24 @@ public sealed class ProfilerApi
     private readonly IProfiler _profiler;
     private readonly string _source;
     private readonly TraceImportOptions _importOptions;
+    private readonly Dictionary<string, IProfilerCommand> _commands = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Creates the API.</summary>
     public ProfilerApi(IProfiler profiler, string source, TraceImportOptions? importOptions = null)
+        : this(profiler, source, importOptions, null)
+    {
+    }
+
+    /// <summary>Creates the API with commands that clients can run.</summary>
+    public ProfilerApi(IProfiler profiler, string source, TraceImportOptions? importOptions, IEnumerable<IProfilerCommand>? commands)
     {
         _profiler = profiler;
         _source = source;
         _importOptions = importOptions ?? new TraceImportOptions();
+        foreach (var command in commands ?? [])
+        {
+            _commands.TryAdd(command.Descriptor.Name, command);
+        }
     }
 
     /// <summary>The profiler.</summary>
@@ -236,6 +253,7 @@ public sealed class ProfilerApi
             Sessions = [.. _profiler.GetSessions().Where(access.CanView).Select(s => s.GetStatistics())],
             Rules = [.. _profiler.Diagnostics.Rules.Select(r => r.Descriptor)],
             CanViewAllCircuits = access.CanViewAllCircuits,
+            Commands = GetCommands(access),
         };
     }
 
@@ -354,6 +372,7 @@ public sealed class ProfilerApi
         {
             "json" => new JsonTraceExporter(),
             "chrome" => new ChromeTraceExporter(),
+            "markdown" or "md" => new MarkdownReportExporter(),
             null or "" or "native" => new CompressedTraceExporter(),
             _ => throw new ProfilerApiException($"Unknown export format '{format}'."),
         };
@@ -417,6 +436,59 @@ public sealed class ProfilerApi
     {
         RequireSuppressionControl(access);
         _profiler.Diagnostics.Suppressions.Remove(fingerprint ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Runs a command. Requires control access; commands that affect the whole process also require access to all
+    /// circuits.
+    /// </summary>
+    public async Task<ProfilerCommandResult> ExecuteCommandAsync(ProfilerApiAccess access, string? name, string? argument, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        RequireControl(access);
+        if (string.IsNullOrEmpty(name) || !_commands.TryGetValue(name, out var command))
+        {
+            throw new ProfilerApiException($"Unknown command '{Truncate(name, 64)}'.") { StatusCode = 404 };
+        }
+
+        if (command.Descriptor.ProcessWide && !access.CanViewAllCircuits)
+        {
+            throw new ProfilerApiException("This command affects every user; running it requires access to all circuits.") { StatusCode = 403 };
+        }
+
+        return await command.ExecuteAsync(Truncate(argument, 1024), cancellationToken).ConfigureAwait(false);
+    }
+
+    private List<ProfilerCommandInfo> GetCommands(ProfilerApiAccess access)
+    {
+        var list = new List<ProfilerCommandInfo>();
+        if (!access.CanControl)
+        {
+            return list;
+        }
+
+        foreach (var command in _commands.Values)
+        {
+            var descriptor = command.Descriptor;
+            if (descriptor.ProcessWide && !access.CanViewAllCircuits)
+            {
+                continue;
+            }
+
+            string? state;
+            try
+            {
+                state = command.GetState();
+            }
+            catch (Exception)
+            {
+                state = null;
+            }
+
+            list.Add(new ProfilerCommandInfo { Name = descriptor.Name, Title = descriptor.Title, Description = descriptor.Description, ArgumentHint = descriptor.ArgumentHint, State = state });
+        }
+
+        return list;
     }
 
     /// <summary>Handles a serialized request (message-based transports such as the WebAssembly bridge).</summary>
@@ -498,6 +570,8 @@ public sealed class ProfilerApi
             case "unsuppress":
                 Unsuppress(access, request.Fingerprint);
                 return new ProfilerApiResponse { Ok = true };
+            case "command":
+                return new ProfilerApiResponse { Ok = true, Command = await ExecuteCommandAsync(access, request.Name, request.Data, cancellationToken).ConfigureAwait(false) };
             default:
                 throw new ProfilerApiException($"Unknown operation '{request.Op}'.");
         }

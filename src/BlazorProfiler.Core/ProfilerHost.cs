@@ -258,6 +258,31 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>
+    /// Runs the correlation providers on an event without emitting it, so values that are only visible on the current
+    /// thread (such as the circuit of the current renderer) can be captured for an event emitted later from another
+    /// thread. Never throws.
+    /// </summary>
+    public void Correlate(ProfilerEvent profilerEvent)
+    {
+        if (profilerEvent is null)
+        {
+            return;
+        }
+
+        foreach (var provider in _correlationProviders)
+        {
+            try
+            {
+                provider.Enrich(profilerEvent);
+            }
+            catch (Exception)
+            {
+                // Correlation is best effort.
+            }
+        }
+    }
+
     /// <inheritdoc />
     public bool Emit(ProfilerEvent profilerEvent)
     {

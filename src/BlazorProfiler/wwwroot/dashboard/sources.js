@@ -76,6 +76,7 @@ export class ApiSource {
   remove(id) { return this.send('DELETE', `/sessions/${encodeURIComponent(id)}`); }
   suppress(fingerprint, kind, note) { return this.send('POST', '/suppressions', { fingerprint, kind, note }); }
   unsuppress(fingerprint) { return this.send('DELETE', `/suppressions?fingerprint=${encodeURIComponent(fingerprint)}`); }
+  command(name, argument) { return this.send('POST', `/commands/${encodeURIComponent(name)}${argument ? `?argument=${encodeURIComponent(argument)}` : ''}`); }
 
   async importTrace(file) {
     return this.send('POST', '/import', file, 'application/octet-stream');
@@ -185,6 +186,7 @@ export class BridgeSource {
   async remove(id) { await this.call({ op: 'remove', sessionId: id }); }
   async suppress(fingerprint, kind, note) { await this.call({ op: 'suppress', fingerprint, kind, note }); }
   async unsuppress(fingerprint) { await this.call({ op: 'unsuppress', fingerprint }); }
+  async command(name, argument) { return (await this.call({ op: 'command', name, data: argument || null }, 60000)).command; }
 
   async importTrace(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());

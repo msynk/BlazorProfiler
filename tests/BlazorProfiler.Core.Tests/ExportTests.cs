@@ -23,6 +23,34 @@ public class ExportTests
         return (host, session);
     }
 
+    [Fact]
+    public async Task WritesAMarkdownReportWithFindingsAndTables()
+    {
+        var (host, session) = SessionWithData();
+        for (var i = 0; i < 6; i++)
+        {
+            host.Emit(Ev.Db("SELECT * FROM Lines WHERE OrderId = @p0 | x", 10 + i, 3, operation: 1, arguments: i, origin: "App.Counter"));
+        }
+
+        var report = host.Diagnostics.Analyze(session);
+        var document = TraceDocumentBuilder.Create(session, host.Options, report, host.GetHealth(), "test");
+        using var stream = new MemoryStream();
+        var exporter = new MarkdownReportExporter();
+        await exporter.ExportAsync(document, stream);
+        var markdown = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Equal("markdown", exporter.Name);
+        Assert.StartsWith("# Blazor Profiler report: ", markdown, StringComparison.Ordinal);
+        Assert.Contains("## Key metrics", markdown, StringComparison.Ordinal);
+        Assert.Contains("BP8001", markdown, StringComparison.Ordinal);
+        Assert.Contains("**Suggested fix:**", markdown, StringComparison.Ordinal);
+        Assert.Contains("## Database queries", markdown, StringComparison.Ordinal);
+
+        // Table cells escape pipes, and redacted URLs stay redacted.
+        Assert.Contains(@"@p0 \| x", markdown, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", markdown, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

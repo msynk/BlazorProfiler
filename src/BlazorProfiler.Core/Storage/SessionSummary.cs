@@ -41,6 +41,9 @@ public sealed class SessionSummary
     /// <summary>Per-identifier JavaScript interop aggregates.</summary>
     public List<InteropSummary> Interop { get; set; } = [];
 
+    /// <summary>Database commands grouped by normalized command text.</summary>
+    public List<QuerySummary> Queries { get; set; } = [];
+
     /// <summary>Navigation counts by route.</summary>
     public List<NavigationSummary> Navigations { get; set; } = [];
 
@@ -55,6 +58,12 @@ public sealed class SessionSummary
 
     /// <summary>Browser long tasks and long animation frames.</summary>
     public DurationSummary BrowserLongTasks { get; set; } = new();
+
+    /// <summary>The most recent page startup reported by the browser, or null.</summary>
+    public StartupSummary? Startup { get; set; }
+
+    /// <summary>The latest Core Web Vitals values by name (LCP, CLS, INP).</summary>
+    public Dictionary<string, VitalSummary> Vitals { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>Runtime aggregates.</summary>
     public RuntimeSummary Runtime { get; set; } = new();
@@ -78,6 +87,12 @@ public sealed class ComponentSummary
     /// <summary>Instances disposed (instrumented components only).</summary>
     public double Disposed { get; set; }
 
+    /// <summary>
+    /// Instances that were still reachable after full garbage collections although they had been disposed or their scope
+    /// (circuit, request) had ended: likely memory leaks. See rule BP5004.
+    /// </summary>
+    public double Retained { get; set; }
+
     /// <summary>Render durations (<c>BuildRenderTree</c>); instrumented components only.</summary>
     public DurationSummary Renders { get; set; } = new();
 
@@ -98,6 +113,18 @@ public sealed class ComponentSummary
 
     /// <summary>Names of parameters that most often changed by reference only, with counts.</summary>
     public Dictionary<string, double> ReferenceOnlyParameters { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Parameter names whose values changed (not only their instances), with the number of updates in which each changed.
+    /// Together with <see cref="RenderReasons"/> this answers "why did this component render?". At most 32 names are kept.
+    /// </summary>
+    public Dictionary<string, double> ChangedParameters { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Instrumented renders by cause (<see cref="Events.RenderReason"/> names: FirstRender, Parameters, EventHandler,
+    /// StateHasChanged, AsyncLifecycleCompletion). Empty for components that are not instrumented.
+    /// </summary>
+    public Dictionary<string, double> RenderReasons { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>Render requests ignored because a render was already pending.</summary>
     public double RenderRequestsCoalesced { get; set; }
@@ -150,6 +177,9 @@ public sealed class ComponentInstanceSummary
 
     /// <summary>The most recent render timestamp.</summary>
     public long? LastRenderTimestamp { get; set; }
+
+    /// <summary>Whether the instance was reported as retained after it was released (a likely memory leak).</summary>
+    public bool Retained { get; set; }
 }
 
 /// <summary>Aggregates for one event handler.</summary>
@@ -230,6 +260,90 @@ public sealed class InteropSummary
 
     /// <summary>The largest estimated payload.</summary>
     public long MaxPayloadBytes { get; set; }
+}
+
+/// <summary>Database commands with the same normalized text.</summary>
+public sealed class QuerySummary
+{
+    /// <summary>The normalized command text.</summary>
+    public string? CommandText { get; set; }
+
+    /// <summary>The <c>DbContext</c> type that ran it first.</summary>
+    public string? ContextType { get; set; }
+
+    /// <summary>Execution durations.</summary>
+    public DurationSummary Durations { get; set; } = new();
+
+    /// <summary>Failed or canceled executions.</summary>
+    public double Failures { get; set; }
+
+    /// <summary>Executions that ran synchronously.</summary>
+    public double Synchronous { get; set; }
+
+    /// <summary>Total rows read from data readers.</summary>
+    public long RowsRead { get; set; }
+}
+
+/// <summary>Page startup (see <see cref="Events.BrowserStartupEvent"/> for field meanings).</summary>
+public sealed class StartupSummary
+{
+    /// <summary>Navigation start (clock ticks).</summary>
+    public long Timestamp { get; set; }
+
+    /// <summary>The navigation type.</summary>
+    public string? NavigationType { get; set; }
+
+    /// <summary>The detected Blazor runtime.</summary>
+    public string? RuntimeKind { get; set; }
+
+    /// <summary>Time to first byte (ms after navigation start).</summary>
+    public double TimeToFirstByteMs { get; set; }
+
+    /// <summary>First Contentful Paint (ms after navigation start).</summary>
+    public double FirstContentfulPaintMs { get; set; }
+
+    /// <summary>DOMContentLoaded end (ms after navigation start).</summary>
+    public double DomContentLoadedMs { get; set; }
+
+    /// <summary>Load event end (ms after navigation start).</summary>
+    public double LoadMs { get; set; }
+
+    /// <summary>When the page became interactive (ms after navigation start, estimated).</summary>
+    public double InteractiveMs { get; set; }
+
+    /// <summary>Framework files loaded.</summary>
+    public int FrameworkFiles { get; set; }
+
+    /// <summary>Framework bytes transferred.</summary>
+    public long FrameworkTransferBytes { get; set; }
+
+    /// <summary>Framework bytes decoded.</summary>
+    public long FrameworkDecodedBytes { get; set; }
+
+    /// <summary>Framework files served from the browser cache.</summary>
+    public int FrameworkCachedFiles { get; set; }
+
+    /// <summary>Large framework files without content encoding.</summary>
+    public int FrameworkUncompressedFiles { get; set; }
+
+    /// <summary>Framework download span (ms).</summary>
+    public double FrameworkDownloadMs { get; set; }
+
+    /// <summary>The largest framework files.</summary>
+    public List<Events.StartupResource> LargestFiles { get; set; } = [];
+}
+
+/// <summary>The latest value of one Core Web Vitals metric.</summary>
+public sealed class VitalSummary
+{
+    /// <summary>The value (ms for LCP and INP; unitless for CLS).</summary>
+    public double Value { get; set; }
+
+    /// <summary>good, needs-improvement, or poor.</summary>
+    public string? Rating { get; set; }
+
+    /// <summary>The element tag involved, when known.</summary>
+    public string? TargetTag { get; set; }
 }
 
 /// <summary>Navigation count for one route.</summary>
@@ -367,6 +481,9 @@ public sealed class TimeSeriesPoint
 
     /// <summary>Interop calls.</summary>
     public double InteropCalls { get; set; }
+
+    /// <summary>Database commands.</summary>
+    public double DatabaseCommands { get; set; }
 
     /// <summary>Bytes allocated.</summary>
     public long AllocatedBytes { get; set; }

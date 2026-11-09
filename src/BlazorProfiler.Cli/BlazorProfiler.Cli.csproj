@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>BlazorProfiler.Cli</RootNamespace>
+    <AssemblyName>blazor-profiler</AssemblyName>
+    <PackageId>BlazorProfiler.Cli</PackageId>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>blazor-profiler</ToolCommandName>
+    <Description>Command-line tool for BlazorProfiler traces: re-analyze exported traces with the current rules and fail CI on findings or budget violations (text, Markdown, SARIF, or GitHub annotations), write Markdown reports, and compare two traces for regressions.</Description>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorProfiler.Core\BlazorProfiler.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BlazorProfiler.Core.Tests" />
+  </ItemGroup>
+
+</Project>

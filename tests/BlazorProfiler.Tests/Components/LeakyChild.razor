@@ -1,0 +1,7 @@
+@inherits ProfiledComponentBase
+@* Simulates a leak: registers itself with a long-lived holder (like subscribing to a singleton's event) and never leaves. *@
+<span>leaky</span>
+@code {
+    public static readonly List<object> Holder = [];
+    protected override void OnInitialized() => Holder.Add(this);
+}

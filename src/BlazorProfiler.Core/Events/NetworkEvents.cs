@@ -158,3 +158,67 @@ public sealed class JSInteropEvent : ProfilerEvent
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + StringSize(Identifier) + StringSize(OriginComponentType) + 40;
 }
+
+/// <summary>
+/// A database command executed through Entity Framework Core (observed through its <c>DiagnosticListener</c>). The command
+/// text is normalized (literals replaced with <c>?</c>) and parameter values are never stored; only a hash of them is kept
+/// so identical repeated queries can be recognized.
+/// </summary>
+public sealed class DatabaseCommandEvent : ProfilerEvent
+{
+    /// <inheritdoc />
+    [JsonIgnore]
+    public override ProfilerEventKind Kind => ProfilerEventKind.DatabaseCommand;
+
+    /// <summary>The normalized command text (literals replaced, whitespace collapsed, truncated).</summary>
+    public string? CommandText { get; set; }
+
+    /// <summary>A hash of the normalized command text: equal for the same query shape.</summary>
+    public long CommandHash { get; set; }
+
+    /// <summary>
+    /// A hash of the command text and parameter values: equal for identical queries (same shape and arguments). Values are
+    /// hashed, never stored.
+    /// </summary>
+    public long ParameterHash { get; set; }
+
+    /// <summary>The number of parameters.</summary>
+    public int ParameterCount { get; set; }
+
+    /// <summary>How the command was executed: <c>Reader</c>, <c>NonQuery</c>, or <c>Scalar</c>.</summary>
+    public string? ExecuteMethod { get; set; }
+
+    /// <summary>Whether the command was executed asynchronously.</summary>
+    public bool IsAsync { get; set; }
+
+    /// <summary>The rows read from a data reader, when known.</summary>
+    public int? RowsRead { get; set; }
+
+    /// <summary>The <c>DbContext</c> type that ran the command.</summary>
+    public string? ContextType { get; set; }
+
+    /// <summary>A process-unique identifier of the <c>DbContext</c> instance (not stable across runs).</summary>
+    public long ContextInstanceId { get; set; }
+
+    /// <summary>The database provider (connection type name, for example <c>SqlConnection</c>).</summary>
+    public string? Provider { get; set; }
+
+    /// <summary>The component that started the command, if it ran inside a component context.</summary>
+    public string? OriginComponentType { get; set; }
+
+    /// <summary>The instance id of the originating component.</summary>
+    public long OriginComponentInstanceId { get; set; }
+
+    /// <summary>The lifecycle method in which the command was started, if known.</summary>
+    public LifecycleMethod? OriginLifecycleMethod { get; set; }
+
+    /// <summary>Whether the command started on a renderer's dispatcher (blocking it when synchronous), when known.</summary>
+    public bool? OnRendererThread { get; set; }
+
+    /// <summary>How the command was observed.</summary>
+    public InstrumentationSource Source { get; set; }
+
+    /// <inheritdoc />
+    public override int EstimateSize() =>
+        base.EstimateSize() + 72 + StringSize(CommandText) + StringSize(ExecuteMethod) + StringSize(ContextType) + StringSize(Provider) + StringSize(OriginComponentType);
+}

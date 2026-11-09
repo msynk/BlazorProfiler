@@ -30,6 +30,7 @@ namespace BlazorProfiler.Export;
 [JsonSerializable(typeof(Api.EventPage))]
 [JsonSerializable(typeof(Api.ProfilerApiRequest))]
 [JsonSerializable(typeof(Api.ProfilerApiResponse))]
+[JsonSerializable(typeof(Api.ProfilerCommandResult))]
 public sealed partial class ProfilerJsonContext : JsonSerializerContext;
 
 /// <summary>Clones events (used when export redaction must not modify live events).</summary>
@@ -286,6 +287,13 @@ public static class TraceImporter
                     http.Endpoint = Truncate(http.Endpoint, max);
                     http.OriginComponentType = Truncate(http.OriginComponentType, max);
                     break;
+                case DatabaseCommandEvent db:
+                    db.CommandText = Truncate(db.CommandText, max);
+                    db.ExecuteMethod = Truncate(db.ExecuteMethod, 32);
+                    db.ContextType = Truncate(db.ContextType, max);
+                    db.Provider = Truncate(db.Provider, 128);
+                    db.OriginComponentType = Truncate(db.OriginComponentType, max);
+                    break;
                 case JSInteropEvent js:
                     js.Identifier = Truncate(js.Identifier, max);
                     js.OriginComponentType = Truncate(js.OriginComponentType, max);
@@ -308,6 +316,24 @@ public static class TraceImporter
                 case BrowserLongTaskEvent longTask:
                     longTask.EntryType = Truncate(longTask.EntryType, 64);
                     longTask.Script = Truncate(longTask.Script, max);
+                    break;
+                case BrowserStartupEvent startup:
+                    startup.NavigationType = Truncate(startup.NavigationType, 32);
+                    startup.RuntimeKind = Truncate(startup.RuntimeKind, 32);
+                    if (startup.LargestFiles.Count > 50)
+                    {
+                        startup.LargestFiles = startup.LargestFiles.GetRange(0, 50);
+                    }
+
+                    foreach (var file in startup.LargestFiles)
+                    {
+                        file.Name = Truncate(file.Name, 256);
+                    }
+
+                    break;
+                case BrowserVitalEvent vital:
+                    vital.Name = Truncate(vital.Name, 16);
+                    vital.TargetTag = Truncate(vital.TargetTag, 64);
                     break;
                 case BrowserResourceEvent resource:
                     resource.Url = Truncate(resource.Url, max);

@@ -161,7 +161,7 @@ public sealed class AmbientCorrelationProvider : IProfilerCorrelationProvider
     }
 
     private static bool WantsTraceContext(ProfilerEventKind kind) =>
-        kind is ProfilerEventKind.HttpRequest or ProfilerEventKind.EventHandler or ProfilerEventKind.Operation or ProfilerEventKind.Navigation;
+        kind is ProfilerEventKind.HttpRequest or ProfilerEventKind.DatabaseCommand or ProfilerEventKind.EventHandler or ProfilerEventKind.Operation or ProfilerEventKind.Navigation;
 
     private static void ApplyOrigin(ProfilerEvent profilerEvent, OperationFrame frame)
     {
@@ -187,6 +187,11 @@ public sealed class AmbientCorrelationProvider : IProfilerCorrelationProvider
             case JSInteropEvent js when js.OriginComponentType is null:
                 js.OriginComponentType = origin.ComponentType;
                 js.OriginComponentInstanceId = origin.ComponentInstanceId;
+                break;
+            case DatabaseCommandEvent db when db.OriginComponentType is null:
+                db.OriginComponentType = origin.ComponentType;
+                db.OriginComponentInstanceId = origin.ComponentInstanceId;
+                db.OriginLifecycleMethod = origin.LifecycleMethod;
                 break;
             case OperationEvent operation when operation.ComponentType is null:
                 operation.ComponentType = origin.ComponentType;

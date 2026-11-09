@@ -45,6 +45,8 @@ public enum DiagnosticCategory
     Server = 5,
     /// <summary>Browser responsiveness.</summary>
     Browser = 6,
+    /// <summary>Database access.</summary>
+    Database = 7,
 }
 
 /// <summary>Static description of a rule.</summary>

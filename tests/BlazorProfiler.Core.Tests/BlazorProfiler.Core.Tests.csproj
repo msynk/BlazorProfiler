@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\..\src\BlazorProfiler.Core\BlazorProfiler.Core.csproj" />
+    <ProjectReference Include="..\..\src\BlazorProfiler.Cli\BlazorProfiler.Cli.csproj" />
   </ItemGroup>
 </Project>

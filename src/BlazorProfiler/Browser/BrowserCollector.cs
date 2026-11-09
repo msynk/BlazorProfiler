@@ -49,11 +49,72 @@ public sealed class BrowserEntry
 
     /// <summary>Response status (resources), when reported.</summary>
     public int St { get; set; }
+
+    /// <summary>Startup: time to first byte (ms).</summary>
+    public double Ttfb { get; set; }
+
+    /// <summary>Startup: First Contentful Paint (ms).</summary>
+    public double Fcp { get; set; }
+
+    /// <summary>Startup: DOMContentLoaded end (ms).</summary>
+    public double Dcl { get; set; }
+
+    /// <summary>Startup: load event end (ms).</summary>
+    public double Ld { get; set; }
+
+    /// <summary>Startup: interactive time (ms).</summary>
+    public double Ia { get; set; }
+
+    /// <summary>Startup: framework file count.</summary>
+    public int Fc { get; set; }
+
+    /// <summary>Startup: framework bytes transferred.</summary>
+    public long Ft { get; set; }
+
+    /// <summary>Startup: framework bytes decoded.</summary>
+    public long Fd { get; set; }
+
+    /// <summary>Startup: framework files served from cache.</summary>
+    public int Fca { get; set; }
+
+    /// <summary>Startup: large framework files without content encoding.</summary>
+    public int Fu { get; set; }
+
+    /// <summary>Startup: framework download span (ms).</summary>
+    public double Fdl { get; set; }
+
+    /// <summary>Startup: detected runtime kind.</summary>
+    public string? Rk { get; set; }
+
+    /// <summary>Startup: largest framework files.</summary>
+    public BrowserFileEntry[]? Lf { get; set; }
+
+    /// <summary>Web vital: value.</summary>
+    public double V { get; set; }
+}
+
+/// <summary>A framework file in a startup entry (wire format).</summary>
+public sealed class BrowserFileEntry
+{
+    /// <summary>File name.</summary>
+    public string? N { get; set; }
+
+    /// <summary>Transferred bytes.</summary>
+    public long Ts { get; set; }
+
+    /// <summary>Decoded bytes.</summary>
+    public long Ds { get; set; }
+
+    /// <summary>Duration (ms).</summary>
+    public double D { get; set; }
+
+    /// <summary>Served from cache.</summary>
+    public bool C { get; set; }
 }
 
 /// <summary>Source-generated JSON metadata for browser payloads.</summary>
 [JsonSerializable(typeof(BrowserEntry[]))]
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, MaxDepth = 4)]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, MaxDepth = 6)]
 internal sealed partial class BrowserJsonContext : JsonSerializerContext;
 
 /// <summary>Collects browser performance entries reported by <see cref="BlazorProfilerClient"/>.</summary>
@@ -79,6 +140,9 @@ public sealed class BrowserCollector : ProfilerCollectorBase
     /// is always shorter than <see cref="MaxPayloadLength"/> characters.
     /// </summary>
     public const int WebAssemblyMaxBatchBytes = MaxPayloadLength / 2;
+
+    /// <summary>The maximum number of framework files kept per startup entry.</summary>
+    public const int MaxStartupFiles = 20;
 
     /// <inheritdoc />
     public override CollectorDescriptor Descriptor { get; } = new()
@@ -183,6 +247,36 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     EntryType = Truncate(entry.N, 64),
                     BlockingMs = Sanitize(entry.B),
                     Script = Truncate(entry.S, 512),
+                },
+                "s" => new BrowserStartupEvent
+                {
+                    NavigationType = Truncate(entry.N, 32),
+                    RuntimeKind = Truncate(entry.Rk, 32),
+                    TimeToFirstByteMs = Sanitize(entry.Ttfb),
+                    FirstContentfulPaintMs = Sanitize(entry.Fcp),
+                    DomContentLoadedMs = Sanitize(entry.Dcl),
+                    LoadMs = Sanitize(entry.Ld),
+                    InteractiveMs = Sanitize(entry.Ia),
+                    FrameworkFiles = Math.Max(0, entry.Fc),
+                    FrameworkTransferBytes = Math.Max(0, entry.Ft),
+                    FrameworkDecodedBytes = Math.Max(0, entry.Fd),
+                    FrameworkCachedFiles = Math.Max(0, entry.Fca),
+                    FrameworkUncompressedFiles = Math.Max(0, entry.Fu),
+                    FrameworkDownloadMs = Sanitize(entry.Fdl),
+                    LargestFiles = (entry.Lf ?? []).Where(f => f is not null).Take(MaxStartupFiles).Select(f => new StartupResource
+                    {
+                        Name = Truncate(f.N, 128),
+                        TransferSize = Math.Max(0, f.Ts),
+                        DecodedSize = Math.Max(0, f.Ds),
+                        DurationMs = Sanitize(f.D),
+                        Cached = f.C,
+                    }).ToList(),
+                },
+                "v" when entry.N is "LCP" or "CLS" or "INP" => new BrowserVitalEvent
+                {
+                    Name = entry.N,
+                    Value = Sanitize(entry.V),
+                    TargetTag = Truncate(entry.Tag, 32),
                 },
                 "r" => new BrowserResourceEvent
                 {

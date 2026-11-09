@@ -275,6 +275,80 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
     }
 
     [Fact]
+    public async Task ToolbarHighlightingStartupAndNewDashboardViewsWork()
+    {
+        var session = await app.StartSessionAsync("toolbar");
+        var page = await OpenAsync("server/requests");
+
+        // The in-page toolbar (browser-only) appears once the profiler client is interactive.
+        await page.WaitForSelectorAsync("[data-blazor-profiler=toolbar]", new() { State = WaitForSelectorState.Attached, Timeout = 30_000 });
+        var toolbarText = await page.EvaluateAsync<string>("() => document.querySelector('[data-blazor-profiler=toolbar]').shadowRoot.textContent");
+        Assert.Contains("INP", toolbarText, StringComparison.Ordinal);
+        Assert.Contains("Highlight updates", toolbarText, StringComparison.Ordinal);
+
+        // Alt+Shift+H toggles update highlighting: an overlay that outlines DOM mutations.
+        await page.Keyboard.PressAsync("Alt+Shift+H");
+        await page.WaitForSelectorAsync("[data-blazor-profiler=highlight]", new() { State = WaitForSelectorState.Attached });
+        await ClickWhenInteractiveAsync(page, "#reload", "Reloaded", "#requests-status");
+        await page.Keyboard.PressAsync("Alt+Shift+H");
+        await page.WaitForSelectorAsync("[data-blazor-profiler=highlight]", new() { State = WaitForSelectorState.Detached });
+
+        // Startup is reported once per page load, a few seconds after the client starts.
+        await Waits.UntilAsync(async () =>
+        {
+            var events = await app.ApiAsync($"/sessions/{session}/events?after=0&max=10000");
+            return events.GetProperty("events").EnumerateArray().Any(e => e.Str("type") == "browserStartup");
+        }, 30_000, "No startup was reported.");
+
+        var dashboard = await OpenAsync("_blazor-profiler/");
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        await dashboard.SelectOptionAsync("#session-select", session);
+        await dashboard.ClickAsync("a[data-view=interactions]");
+        await dashboard.WaitForSelectorAsync("table[aria-label=Operations] tbody tr", new() { Timeout = 20_000 });
+        await dashboard.ClickAsync("table[aria-label=Operations] tbody tr");
+        await dashboard.WaitForSelectorAsync("#drawer .waterfall", new() { State = WaitForSelectorState.Visible });
+        await dashboard.ClickAsync("#drawer-close");
+        await dashboard.ClickAsync("a[data-view=network]");
+        await dashboard.WaitForSelectorAsync("text=Framework files", new() { Timeout = 20_000 });
+        await dashboard.ClickAsync("a[data-view=database]");
+        await dashboard.WaitForSelectorAsync("h1:has-text('Database')");
+        await dashboard.ClickAsync("a[data-view=circuits]");
+        await dashboard.WaitForSelectorAsync("text=Latency simulation");
+        Assert.DoesNotContain("failed to render", await dashboard.InnerTextAsync("#view"), StringComparison.Ordinal);
+        await page.CloseAsync();
+        await dashboard.CloseAsync();
+    }
+
+    [Theory]
+    [InlineData("server/requests")]
+    [InlineData("wasm/requests")]
+    public async Task DevToolsTracksWriteBlazorEntriesIntoThePerformanceTimeline(string path)
+    {
+        await app.StartSessionAsync("devtools");
+        var page = await app.Browser.NewPageAsync();
+
+        // The module clears its entries right after writing them (DevTools has captured them by then), so record the calls.
+        await page.AddInitScriptAsync("""
+            window.__bpMeasures = [];
+            const original = performance.measure.bind(performance);
+            performance.measure = (name, options) => {
+              const devtools = options && options.detail && options.detail.devtools;
+              if (devtools) { window.__bpMeasures.push({ name, track: devtools.track, group: devtools.trackGroup }); }
+              return original(name, options);
+            };
+            """);
+        await page.GotoAsync(app.BaseUrl + path);
+        await ClickWhenInteractiveAsync(page, "#reload", "Reloaded", "#requests-status");
+
+        await Waits.UntilAsync(async () =>
+        {
+            var tracks = await page.EvaluateAsync<string[]>("() => window.__bpMeasures.filter(m => m.group === 'Blazor').map(m => m.track)");
+            return tracks.Contains("HTTP (.NET)") && tracks.Contains("Render batches");
+        }, 30_000, "No Blazor DevTools track entries were written.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
     public async Task WebAssemblyBrowserCollectorReportsUserPerceivedLatency()
     {
         var page = await OpenAsync("wasm/slow-handler");

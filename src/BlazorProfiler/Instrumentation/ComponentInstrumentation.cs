@@ -103,10 +103,17 @@ public sealed class ComponentInstrumentation
 {
     /// <summary>Creates the service.</summary>
     public ComponentInstrumentation(IProfiler profiler, ComponentInstanceRegistry registry, ComponentInstrumentationCollector collector)
+        : this(profiler, registry, collector, null)
+    {
+    }
+
+    /// <summary>Creates the instrumentation context with retention tracking for disposed instances.</summary>
+    public ComponentInstrumentation(IProfiler profiler, ComponentInstanceRegistry registry, ComponentInstrumentationCollector collector, ComponentRetentionCollector? retention)
     {
         Profiler = profiler;
         Registry = registry;
         Collector = collector;
+        Retention = retention;
     }
 
     /// <summary>The profiler.</summary>
@@ -117,6 +124,9 @@ public sealed class ComponentInstrumentation
 
     /// <summary>The collector used for health and emission.</summary>
     public ComponentInstrumentationCollector Collector { get; }
+
+    /// <summary>Watches disposed instances for retention (memory leaks), when enabled.</summary>
+    public ComponentRetentionCollector? Retention { get; }
 
     /// <summary>The instrumentation options.</summary>
     public InstrumentationOptions Options => Profiler.Options.Instrumentation;
@@ -150,13 +160,24 @@ public sealed class ComponentActivationCollector : ProfilerCollectorBase
     protected override bool IsEnabled(ProfilerOptions options) => options.Collectors.ComponentActivator;
 
     /// <inheritdoc />
-    protected override void OnStart(ProfilerCollectorContext context)
-    {
-    }
+    protected override void OnStart(ProfilerCollectorContext context) => ProfilerHotReloadHandler.Updated += OnHotReload;
 
     /// <inheritdoc />
-    protected override void OnStop()
+    protected override void OnStop() => ProfilerHotReloadHandler.Updated -= OnHotReload;
+
+    // Renders right after a hot reload update re-render the affected components; a marker keeps them from being mistaken
+    // for application behavior.
+    private void OnHotReload(Type[]? updatedTypes)
     {
+        if (Profiler is { } profiler)
+        {
+            Emit(new MarkerEvent
+            {
+                MarkerType = MarkerType.Custom,
+                Name = updatedTypes is { Length: > 0 } ? $"Hot reload ({updatedTypes.Length} type(s): {string.Join(", ", updatedTypes.Take(3).Select(t => t.Name))})" : "Hot reload",
+                Timestamp = profiler.Clock.GetTimestamp(),
+            });
+        }
     }
 }
 
@@ -164,8 +185,11 @@ public sealed class ComponentActivationCollector : ProfilerCollectorBase
 /// An <see cref="IComponentActivator"/> that records component creation and then delegates to the application's activator
 /// or reproduces the framework's default behavior (constructor injection through <see cref="ActivatorUtilities"/>).
 /// </summary>
-public sealed class ProfilerComponentActivator : IComponentActivator
+public sealed class ProfilerComponentActivator : IComponentActivator, IDisposable
 {
+    /// <summary>The maximum number of instances per scope handed to retention tracking when the scope ends.</summary>
+    public const int MaxTrackedPerScope = 20_000;
+
     private static readonly ConcurrentDictionary<Type, ObjectFactory> s_factories = new();
 
     private readonly IServiceProvider _services;
@@ -173,6 +197,12 @@ public sealed class ProfilerComponentActivator : IComponentActivator
     private readonly ComponentInstanceRegistry _registry;
     private readonly ComponentActivationCollector _collector;
     private readonly IProfiler _profiler;
+    private readonly ComponentRetentionCollector? _retention;
+    private readonly object _scopeLock = new();
+    private List<ScopeInstance>? _scopeInstances;
+    private string? _circuitId;
+    private bool _disposed;
+    private bool _scopeFull;
 
     /// <summary>Creates the activator.</summary>
     public ProfilerComponentActivator(IServiceProvider services, IComponentActivator? inner, ComponentInstanceRegistry registry, ComponentActivationCollector collector, IProfiler profiler)
@@ -183,6 +213,17 @@ public sealed class ProfilerComponentActivator : IComponentActivator
         _collector = collector;
         _profiler = profiler;
         (profiler as ProfilerHost)?.Start();
+    }
+
+    /// <summary>
+    /// Creates the activator. When <paramref name="retention"/> is given, the activator must be scoped: when its scope ends
+    /// (a Blazor Server circuit closes, or a static rendering request completes) every instance it created is watched for
+    /// retention.
+    /// </summary>
+    public ProfilerComponentActivator(IServiceProvider services, IComponentActivator? inner, ComponentInstanceRegistry registry, ComponentActivationCollector collector, IProfiler profiler, ComponentRetentionCollector? retention)
+        : this(services, inner, registry, collector, profiler)
+    {
+        _retention = retention;
     }
 
     /// <inheritdoc />
@@ -209,13 +250,15 @@ public sealed class ProfilerComponentActivator : IComponentActivator
             {
                 var timestamp = _profiler.Clock.GetTimestamp();
                 var info = _registry.Register(component, timestamp);
+                var typeName = _registry.GetTypeName(component.GetType());
                 _collector.Publish(new ComponentCreatedEvent
                 {
-                    ComponentType = _registry.GetTypeName(component.GetType()),
+                    ComponentType = typeName,
                     ComponentInstanceId = info.Id,
                     Timestamp = timestamp,
                     Source = InstrumentationSource.ComponentActivator,
                 });
+                TrackForScope(component, typeName, info.Id);
             }
             catch (Exception)
             {
@@ -226,8 +269,72 @@ public sealed class ProfilerComponentActivator : IComponentActivator
         return component;
     }
 
+    /// <summary>Hands the instances created in this scope that are still alive to retention tracking.</summary>
+    public void Dispose()
+    {
+        List<ScopeInstance>? instances;
+        lock (_scopeLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            instances = _scopeInstances;
+            _scopeInstances = null;
+        }
+
+        if (instances is null || _retention is not { IsCollecting: true } retention)
+        {
+            return;
+        }
+
+        foreach (var instance in instances)
+        {
+            if (instance.Reference.Target is { } target)
+            {
+                retention.Watch(target, instance.ComponentType, instance.InstanceId, RetentionReason.ScopeEnded, _circuitId);
+            }
+        }
+    }
+
     /// <summary>Clears cached factories (after a hot reload update).</summary>
     internal static void ClearFactories() => s_factories.Clear();
+
+    private void TrackForScope(IComponent component, string typeName, long instanceId)
+    {
+        // In WebAssembly the application's scope lasts as long as the tab, so its instances would never be checked.
+        if (_scopeFull || OperatingSystem.IsBrowser() || _retention is not { IsCollecting: true })
+        {
+            return;
+        }
+
+        // Instances are created on the scope's renderer, where the circuit (if any) can be resolved.
+        _circuitId ??= ComponentRetentionCollector.CurrentCircuitId(_profiler);
+        lock (_scopeLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _scopeInstances ??= [];
+            if (_scopeInstances.Count >= MaxTrackedPerScope)
+            {
+                // Long-lived scopes (large circuits): forget instances that were already collected; if that frees nothing,
+                // stop tracking this scope instead of scanning the list again for every new instance.
+                _scopeInstances.RemoveAll(i => !i.Reference.IsAlive);
+                if (_scopeInstances.Count >= MaxTrackedPerScope)
+                {
+                    _scopeFull = true;
+                    return;
+                }
+            }
+
+            _scopeInstances.Add(new ScopeInstance(new WeakReference(component), typeName, instanceId));
+        }
+    }
 
     private static ObjectFactory GetFactory([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type componentType)
     {
@@ -239,11 +346,19 @@ public sealed class ProfilerComponentActivator : IComponentActivator
 
         return factory;
     }
+
+    private sealed record ScopeInstance(WeakReference Reference, string ComponentType, long InstanceId);
 }
 
 /// <summary>Clears profiler caches after a hot reload update. Invoked by the runtime.</summary>
 internal static class ProfilerHotReloadHandler
 {
+    /// <summary>Raised after a hot reload update was applied, with the updated types (if known).</summary>
+    public static event Action<Type[]?>? Updated;
+
     /// <summary>Clears caches.</summary>
     public static void ClearCache(Type[]? updatedTypes) => ProfilerComponentActivator.ClearFactories();
+
+    /// <summary>Notifies listeners after the update was applied. Invoked by the runtime.</summary>
+    public static void UpdateApplication(Type[]? updatedTypes) => Updated?.Invoke(updatedTypes);
 }

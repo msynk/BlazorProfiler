@@ -193,6 +193,23 @@ A least-squares trend of heap size sampled after each navigation (≥ `MemoryGro
 `MemoryGrowthBytesPerNavigation` (512 KB) and R² ≥ 0.6. Confidence is Low without generation 2 collections in the window,
 Medium with them. Demo: *Leaky component* (navigate back and forth).
 
+<a id="bp5004"></a>
+### BP5004 — Components retained after disposal
+
+Component instances still reachable after `Collectors.RetentionGcCycles` (2) full garbage collections and at least
+`Collectors.RetentionMinimumAge` (2 s) after they were released: disposed `ProfiledComponentBase` components, and every
+component of a closed Blazor Server circuit or a finished static rendering request (the component activator watches its
+scope). Detection waits for collections that happen anyway; the **Check for leaks** command (Components view, or
+`POST /api/commands/check-leaks`) forces full collections and checks immediately.
+
+Blazor's renderer keeps the previous render tree of every live component, and that buffer can still reference the child
+most recently removed from a position until the position renders again. That retention is bounded, so the rule reports a
+**likely leak** (severity by count, High confidence after a forced check) only when retention accumulates: two or more
+retained instances of one type under the same parent, a retained child whose parent is gone, or components of an ended
+scope. A single retained child of a live parent is reported at Info severity with Low confidence; repeat the action and
+check again to tell the two apart. The retaining path is not determined (use a memory profiler or `dotnet-gcdump`).
+Demo: *Leaky component* (navigate away and back several times, then check for leaks).
+
 ## Blazor Server
 
 <a id="bp6001"></a>
@@ -236,6 +253,68 @@ measurement. Demo: *Slow handlers* (WebAssembly).
 ### BP7002 — Main thread blocked by long tasks
 
 Three or more long animation frames / long tasks at or above `LongTaskMs` (150).
+
+<a id="bp7003"></a>
+### BP7003 — Large framework download
+
+Page loads that transferred at least `LargeFrameworkDownloadBytes` (5 MB) of `_framework` files or spent at least
+`SlowStartupMs` (3,000) downloading them, and large framework files served without compression. Evidence lists the
+largest files. Development builds are neither trimmed nor compressed: judge a Release publish. Requires
+`BlazorProfilerClient` (startup is reported once per page load).
+
+<a id="bp7004"></a>
+### BP7004 — Slow interactivity after first paint
+
+At least `InteractivityGapMs` (2,000) between First Contentful Paint and the moment the page became interactive: users see
+(often prerendered) content that ignores their input. Interactivity is estimated from the first interactive render of
+`BlazorProfilerClient` (Medium confidence); render it early in the layout.
+
+<a id="bp7005"></a>
+### BP7005 — Core Web Vitals need improvement
+
+Largest Contentful Paint, Cumulative Layout Shift (web-vitals session windows), and estimated Interaction to Next Paint
+measured in the browser above the "good" thresholds (2.5 s, 0.1, 200 ms). "Needs improvement" is Low severity; "poor" is
+scaled. The advice is specific to Blazor (prerender the LCP content, keep prerendered and interactive layouts identical,
+reserve space for data loaded in `OnInitializedAsync`). Values are lab data from the profiling browser.
+
+## Database
+
+Database rules use commands captured from Entity Framework Core's `DiagnosticListener` (`Collectors.Database`). Command
+text is normalized (literals replaced with `?`); argument values are compared by hash and never stored.
+
+<a id="bp8001"></a>
+### BP8001 — N+1 database queries
+
+The same query shape executed at least `NPlusOneQueryThreshold` (5) times with different arguments within one operation
+(High confidence), or by that many instances of one component type within two seconds outside any operation (Medium; the
+typical "each row loads its own data in `OnInitializedAsync`" pattern, where the fix is to load in the parent). Impact is
+an optimistic bound: total time minus the slowest execution.
+
+<a id="bp8002"></a>
+### BP8002 — Duplicate database queries
+
+Identical queries (same text and argument hash) repeated within one operation or within `DuplicateRequestWindowMs`
+(writes excluded), and the **prerender double fetch**: a component that ran the same query while prerendering (no
+circuit) and again after it became interactive. The fix for the latter is `[PersistentState]` /
+`PersistentComponentState`.
+
+<a id="bp8003"></a>
+### BP8003 — Slow database query
+
+Query shapes whose p95 (including reading the rows) is at least `SlowQueryMs` (100) over 3+ executions, or a single
+execution at three times the threshold. Advice changes when many rows were read (paging, projection, `<Virtualize>`).
+
+<a id="bp8004"></a>
+### BP8004 — Synchronous database call blocks the renderer
+
+Commands executed synchronously (`ToList`, `First`, `SaveChanges`) on a renderer's dispatcher: the circuit cannot
+process events or render until the database answers. High confidence.
+
+<a id="bp8005"></a>
+### BP8005 — DbContext shared across interactions
+
+One `DbContext` instance used by three or more operations over at least 30 seconds in a circuit: a scoped context lives
+as long as the circuit. Recommends `IDbContextFactory<TContext>` and short-lived contexts. Severity capped at Medium.
 
 ## Writing a rule
 

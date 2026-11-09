@@ -28,6 +28,6 @@ public static class DemoCatalog
         ("flaky", "Failing endpoint", "BP3004, BP3005"),
         ("interop", "Interop chatter", "BP4001-BP4004"),
         ("allocations", "Allocation spike", "BP5001, BP5002"),
-        ("leaky", "Leaky component", "BP4005, BP4006, BP5003"),
+        ("leaky", "Leaky component", "BP4005, BP4006, BP5003, BP5004"),
     ];
 }

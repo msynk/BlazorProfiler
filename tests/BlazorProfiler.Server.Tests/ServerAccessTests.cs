@@ -76,6 +76,66 @@ public sealed class ServerAccessTests
     }
 
     [Fact]
+    public async Task CommandsRunOverHttpAndLatencySimulationIsValidated()
+    {
+        await using var app = await CreateAppAsync("Development", enabled: null);
+
+        // SignalR builds the hub filter's factory when hub options are created; it rejects ambiguous constructors.
+        Assert.NotNull(app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.SignalR.HubOptions>>().Value);
+        var client = Client(app);
+        var info = await client.GetFromJsonAsync<JsonElement>("/_blazor-profiler/api/info");
+        var names = info.GetProperty("commands").EnumerateArray().Select(c => c.GetProperty("name").GetString()).ToList();
+        Assert.Contains("check-leaks", names);
+        Assert.Contains("simulate-latency", names);
+
+        using (var response = await client.SendAsync(Post("/_blazor-profiler/api/commands/simulate-latency?argument=150")))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("150", result.GetProperty("values").GetProperty("delayMs").GetString());
+        }
+
+        Assert.Equal(TimeSpan.FromMilliseconds(150), app.Services.GetRequiredService<LatencySimulator>().Delay);
+        using (var invalid = await client.SendAsync(Post("/_blazor-profiler/api/commands/simulate-latency?argument=99999")))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        }
+
+        using (var unknown = await client.SendAsync(Post("/_blazor-profiler/api/commands/nope")))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        }
+
+        // Commands change state: like every other mutation they require the CSRF header.
+        using var withoutHeader = await client.PostAsync("/_blazor-profiler/api/commands/simulate-latency?argument=0", null);
+        Assert.Equal(HttpStatusCode.BadRequest, withoutHeader.StatusCode);
+        Assert.Equal(TimeSpan.FromMilliseconds(150), app.Services.GetRequiredService<LatencySimulator>().Delay);
+    }
+
+    [Fact]
+    public void LatencySimulationIsNeverActiveInProduction()
+    {
+        var simulator = new LatencySimulator(new ProfilerServerOptions { SimulatedLatency = TimeSpan.FromMilliseconds(200) }, new TestEnvironment("Production"));
+        Assert.False(simulator.IsAllowed);
+        Assert.Equal(TimeSpan.Zero, simulator.Delay);
+
+        var development = new LatencySimulator(new ProfilerServerOptions { SimulatedLatency = TimeSpan.FromMilliseconds(200) }, new TestEnvironment("Development"));
+        Assert.Equal(TimeSpan.FromMilliseconds(200), development.Delay);
+        Assert.Throws<ArgumentOutOfRangeException>(() => development.Delay = TimeSpan.FromSeconds(10));
+    }
+
+    private sealed class TestEnvironment(string name) : Microsoft.Extensions.Hosting.IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = name;
+
+        public string ApplicationName { get; set; } = "test";
+
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
+    }
+
+    [Fact]
     public async Task DevelopmentAllowsLocalRequestsWithoutPolicy()
     {
         await using var app = await CreateAppAsync("Development", enabled: null);

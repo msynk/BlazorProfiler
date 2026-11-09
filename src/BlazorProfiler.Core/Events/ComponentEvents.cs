@@ -40,6 +40,43 @@ public sealed class ComponentDisposedEvent : ComponentEvent
     public long LifetimeTicks { get; set; }
 }
 
+/// <summary>Why a component instance was expected to become unreachable.</summary>
+public enum RetentionReason
+{
+    /// <summary>The renderer disposed the instance (observed through <c>ProfiledComponentBase</c>).</summary>
+    Disposed = 0,
+
+    /// <summary>
+    /// The dependency-injection scope that created the instance ended: the Blazor Server circuit closed, or the static
+    /// rendering request completed. Every component of the scope has been disposed by then.
+    /// </summary>
+    ScopeEnded = 1,
+}
+
+/// <summary>
+/// A component instance that should have become unreachable was still alive after several full (generation 2) garbage
+/// collections: something (typically an event subscription on a longer-lived service, a timer, a static cache, or an
+/// undisposed <c>DotNetObjectReference</c>) still references it. Reported once per instance.
+/// </summary>
+public sealed class ComponentRetainedEvent : ComponentEvent
+{
+    /// <inheritdoc />
+    [JsonIgnore]
+    public override ProfilerEventKind Kind => ProfilerEventKind.ComponentRetained;
+
+    /// <summary>Why the instance was expected to be released.</summary>
+    public RetentionReason Reason { get; set; }
+
+    /// <summary>When the instance was disposed or its scope ended (clock ticks).</summary>
+    public long ReleasedTimestamp { get; set; }
+
+    /// <summary>The number of full garbage collections the instance survived after it was released.</summary>
+    public int SurvivedCollections { get; set; }
+
+    /// <summary>Whether the check that found the instance followed a collection forced by the profiler (an explicit leak check).</summary>
+    public bool ForcedCollection { get; set; }
+}
+
 /// <summary>Describes how a component's incoming parameters compared with the previous set.</summary>
 public enum ParameterChangeState
 {

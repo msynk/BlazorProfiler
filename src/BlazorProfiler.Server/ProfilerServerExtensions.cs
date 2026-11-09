@@ -74,6 +74,13 @@ public sealed class ProfilerServerOptions
 
     /// <summary>The maximum size of an uploaded trace.</summary>
     public long MaxImportBytes { get; set; } = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// A delay added to every message from the browser to Blazor Server circuits, to reproduce a slow connection during
+    /// development (see <see cref="LatencySimulator"/>). Zero (the default) turns simulation off; it can also be changed at
+    /// runtime with the <c>simulate-latency</c> command. Ignored in the Production environment.
+    /// </summary>
+    public TimeSpan SimulatedLatency { get; set; }
 }
 
 /// <summary>Registration of the Blazor Server / Blazor Web App integration.</summary>
@@ -119,7 +126,9 @@ public static class ProfilerServerExtensions
         if (!services.Any(d => d.ServiceType == typeof(ProfilerHubFilter)))
         {
             // Global hub filters are copied to every hub's options, including Blazor's component hub.
-            services.AddSingleton<ProfilerHubFilter>();
+            services.TryAddSingleton<LatencySimulator>();
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<IProfilerCommand, SimulateLatencyCommand>());
+            services.AddSingleton<ProfilerHubFilter>(sp => new ProfilerHubFilter(sp.GetRequiredService<LatencySimulator>()));
             services.Configure<HubOptions>(o => o.AddFilter<ProfilerHubFilter>());
         }
         services.AddHostedService<ProfilerHostedService>();

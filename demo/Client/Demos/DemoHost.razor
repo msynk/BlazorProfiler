@@ -1,7 +1,7 @@
 @* Shared shell for the interactive demos. Hosts the profiler client so browser data and the dashboard bridge work. *@
-<BlazorProfilerClient ShowLauncher="true" />
+<BlazorProfilerClient ShowToolbar="true" DevToolsTracks="true" />
 <div class="demo-shell">
-  <p class="mode">Render mode: <strong>@ModeLabel</strong> · <a href="@DashboardUrl" target="_blank" rel="noopener">Open dashboard</a> (or press Alt+Shift+P)</p>
+  <p class="mode">Render mode: <strong>@ModeLabel</strong> · <a href="@DashboardUrl" target="_blank" rel="noopener">Open dashboard</a> (or press Alt+Shift+P; Alt+Shift+H highlights DOM updates)</p>
   <nav class="demo-nav" aria-label="Demos">
     @foreach (var demo in DemoCatalog.All)
     {

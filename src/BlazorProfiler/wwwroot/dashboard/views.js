@@ -81,9 +81,12 @@ export function overview(ctx) {
     tile('Event handlers', fmtNum(handlerCount), `p95 ${fmtMs(handlerP95)}`),
     tile('HTTP requests', fmtNum(requests), failures ? `${fmtNum(failures)} failed` : 'no failures'),
     tile('JS interop calls', fmtNum(interop)),
+    tile('Database commands', fmtNum((s.queries || []).reduce((n, q) => n + q.durations.count, 0)), (s.queries || []).length ? `${fmtNum(s.queries.length)} distinct queries` : 'Entity Framework Core'),
     tile('Allocated', runtime.samples ? fmtBytes(runtime.allocatedBytes) : '—', !runtime.samples ? 'runtime collector off' : runtime.gcPauseUnavailable ? `${fmtNum(runtime.gen0Collections + runtime.gen1Collections + runtime.gen2Collections)} GCs` : `GC pauses ${fmtMs(runtime.gcPauseMs)}`),
     tile('Circuits', fmtNum((s.circuits || []).length), (s.circuits || []).length ? `${fmtNum(s.circuits.filter(c => c.connected && !c.closed).length)} connected` : 'not a server session'),
     tile('Browser interactions', fmtNum(s.browserInteractions?.count), s.browserInteractions?.count ? `p95 ${fmtMs(s.browserInteractions.p95Ms)}` : 'needs BlazorProfilerClient'),
+    startupTile(s.startup),
+    vitalsTile(s.vitals),
     tile('Dropped events', fmtNum(health ? health.droppedQueueFull : s.droppedEventsReported), health ? `profiler overhead ${fmtNum(health.emitMicrosecondsPerEvent, 2)} µs/event` : null, 'Events dropped because the profiler queue was full.'),
   ));
 
@@ -130,6 +133,56 @@ export function overview(ctx) {
   return root;
 }
 
+function startupTile(startup) {
+  if (!startup) {
+    return tile('Startup', '—', 'needs BlazorProfilerClient', 'Reported once per page load by the browser.');
+  }
+
+  const sub = `FCP ${startup.firstContentfulPaintMs ? fmtMs(startup.firstContentfulPaintMs) : '—'} · ${startup.frameworkFiles ? `${fmtBytes(startup.frameworkTransferBytes)} framework` : 'no framework files'}`;
+  return tile('Interactive after', fmtMs(startup.interactiveMs), sub, 'From navigation start to the first interactive render of BlazorProfilerClient (estimated). See Network > Startup.');
+}
+
+const VITAL_UNITS = { LCP: 'ms', INP: 'ms', CLS: '' };
+
+function vitalsTile(vitals) {
+  const names = ['LCP', 'CLS', 'INP'].filter(n => vitals && vitals[n]);
+  if (!names.length) {
+    return tile('Web vitals', '—', 'needs BlazorProfilerClient (Chromium)');
+  }
+
+  const value = n => (VITAL_UNITS[n] ? fmtMs(vitals[n].value) : String(vitals[n].value));
+  return h('div', { class: 'tile', title: 'Core Web Vitals measured in this browser session. Good: LCP ≤ 2.5 s, CLS ≤ 0.1, INP ≤ 200 ms (INP estimated).' },
+    h('div', { class: 'label' }, 'Web vitals'),
+    h('div', { class: 'value vitals' }, names.map(n => h('span', { class: `vital ${vitals[n].rating}` }, `${n} ${value(n)}`))),
+    h('div', { class: 'sub' }, names.map(n => `${n} ${vitals[n].rating}`).join(' · ')));
+}
+
+function startupPanel(startup) {
+  const phase = (label, ms) => (ms ? [h('dt', null, label), h('dd', null, fmtMs(ms))] : null);
+  return panel('Startup',
+    h('dl', { class: 'kv' },
+      h('dt', null, 'Runtime'), h('dd', null, `${startup.runtimeKind || 'unknown'} · ${startup.navigationType || 'navigate'}`),
+      phase('Time to first byte', startup.timeToFirstByteMs),
+      phase('First Contentful Paint', startup.firstContentfulPaintMs),
+      phase('DOMContentLoaded', startup.domContentLoadedMs),
+      phase('Load event', startup.loadMs),
+      h('dt', null, 'Interactive (estimated)'), h('dd', null, fmtMs(startup.interactiveMs), startup.firstContentfulPaintMs ? h('span', { class: 'muted' }, ` · ${fmtMs(Math.max(0, startup.interactiveMs - startup.firstContentfulPaintMs))} after first paint`) : null),
+      h('dt', null, 'Framework files'), h('dd', null, `${fmtNum(startup.frameworkFiles)} files · ${fmtBytes(startup.frameworkTransferBytes)} transferred · ${fmtBytes(startup.frameworkDecodedBytes)} decoded · ${fmtNum(startup.frameworkCachedFiles)} cached · ${fmtMs(startup.frameworkDownloadMs)}`),
+      startup.frameworkUncompressedFiles ? [h('dt', null, 'Uncompressed'), h('dd', { class: 'dup' }, `${fmtNum(startup.frameworkUncompressedFiles)} large file(s) without compression`)] : null),
+    startup.largestFiles?.length ? sortableTable({
+      label: 'Largest framework files',
+      rows: startup.largestFiles,
+      initialSort: { key: 'decodedSize', dir: -1 },
+      columns: [
+        { key: 'name', title: 'File', render: r => h('span', { class: 'mono' }, r.name) },
+        { key: 'decodedSize', title: 'Decoded', num: true, render: r => fmtBytes(r.decodedSize) },
+        { key: 'transferSize', title: 'Transferred', num: true, render: r => (r.cached ? 'cache' : fmtBytes(r.transferSize)) },
+        { key: 'durationMs', title: 'Download', num: true, render: r => fmtMs(r.durationMs) },
+      ],
+    }) : null,
+    h('p', { class: 'muted' }, 'Development builds are neither trimmed nor compressed: measure a Release publish to judge download size.'));
+}
+
 // ----------------------------------------------------------------------------------------------- Components
 
 export function components(ctx, params) {
@@ -172,6 +225,8 @@ export function components(ctx, params) {
         { key: 'paramsP95', title: 'Params p95', num: true, sort: r => r.parametersSets.p95Ms, render: r => fmtMs(r.parametersSets.p95Ms) },
         { key: 'unchanged', title: 'Unchanged params', num: true, render: r => (r.unchanged == null || !r.instrumented ? '—' : fmtPct(r.unchanged)) },
         { key: 'sameOutput', title: 'Identical output', num: true, render: r => (r.sameOutput == null ? '—' : fmtPct(r.sameOutput)) },
+        { key: 'retained', title: 'Retained', num: true, render: r => (r.retained ? h('span', { class: 'dup', title: 'Released instances still reachable after full garbage collections (rule BP5004)' }, fmtNum(r.retained)) : '') },
+        { key: 'cause', title: 'Main render cause', sort: r => mainCause(r)?.share ?? -1, render: r => { const m = mainCause(r); return m ? h('span', { title: (RENDER_REASONS[m.reason] || RENDER_REASONS.Unknown).hint }, `${(RENDER_REASONS[m.reason] || RENDER_REASONS.Unknown).label} ${fmtPct(m.share)}`) : '—'; } },
         { key: 'errors', title: 'Errors', num: true },
       ],
       onSelect: r => ctx.openDrawer(shortType(r.componentType), componentDetails(ctx, r)),
@@ -180,7 +235,9 @@ export function components(ctx, params) {
   search.addEventListener('input', debounce(render, 150));
   render();
 
-  root.appendChild(panel('Component types', h('div', { class: 'toolbar' }, search), tableHost));
+  const leakCheck = (ctx.state.info?.commands || []).find(c => c.name === 'check-leaks');
+  root.appendChild(panel('Component types', h('div', { class: 'toolbar' }, search,
+    leakCheck && !ctx.state.source?.readOnly ? h('button', { type: 'button', class: 'btn', title: `${leakCheck.description}${leakCheck.state ? ` (${leakCheck.state})` : ''}`, onclick: () => ctx.runCommand('check-leaks') }, leakCheck.title) : null), tableHost));
   root.appendChild(panel('Component tree', componentTree(ctx, s)));
   if (params?.component) {
     const match = s.components.find(c => c.componentType === params.component);
@@ -201,6 +258,7 @@ function componentDetails(ctx, c) {
       h('dt', null, 'Instrumented'), h('dd', null, c.instrumented ? 'yes (ProfiledComponentBase)' : 'no (framework metrics only)'),
       h('dt', null, 'Instances created'), h('dd', null, fmtNum(c.created)),
       h('dt', null, 'Instances disposed'), h('dd', null, c.instrumented ? fmtNum(c.disposed) : 'unavailable'),
+      h('dt', null, 'Retained after release'), h('dd', null, c.retained ? h('span', { class: 'dup' }, `${fmtNum(c.retained)} still reachable after full GCs (see BP5004)`) : 'none detected'),
       h('dt', null, 'Renders'), h('dd', null, c.instrumented ? `${fmtNum(c.renders.count)} · total ${fmtMs(c.renders.totalMs)} · p95 ${fmtMs(c.renders.p95Ms)} · max ${fmtMs(c.renders.maxMs)}` : 'unavailable'),
       h('dt', null, 'Identical-output renders'), h('dd', null, c.rendersWithOutputComparison ? `${fmtNum(c.rendersWithUnchangedOutput)} of ${fmtNum(c.rendersWithOutputComparison)}` : 'not compared (enable TrackRenderOutput)'),
       h('dt', null, 'Parameter updates'), h('dd', null, `${fmtNum(c.parametersSets.count)} · p95 ${fmtMs(c.parametersSets.p95Ms)} · max ${fmtMs(c.parametersSets.maxMs)}`),
@@ -208,6 +266,7 @@ function componentDetails(ctx, c) {
       h('dt', null, 'Ignored render requests'), h('dd', null, c.instrumented ? `${fmtNum(c.renderRequestsCoalesced)} coalesced (render already pending) · ${fmtNum(c.renderRequestsSuppressed)} suppressed by ShouldRender` : 'unavailable'),
       h('dt', null, 'Event handlers'), h('dd', null, `${fmtNum(c.eventHandlers.count)} · p95 ${fmtMs(c.eventHandlers.p95Ms)}`),
     ),
+    renderCauses(c),
     Object.keys(c.referenceOnlyParameters || {}).length
       ? h('div', null, h('h3', null, 'Parameters changed by reference only'),
         h('ul', { class: 'compact' }, Object.entries(c.referenceOnlyParameters).sort((a, b) => b[1] - a[1]).map(([name, n]) => h('li', null, `${name} — ${fmtNum(n)}×`))))
@@ -237,12 +296,55 @@ function componentDetails(ctx, c) {
           { key: 'renders', title: 'Renders', num: true },
           { key: 'renderMs', title: 'Render time', num: true, render: r => fmtMs(r.renderMs) },
           { key: 'unchangedParametersSets', title: 'Unchanged params', num: true },
-          { key: 'lifetime', title: 'Lifetime', num: true, render: r => (r.disposedTimestamp ? fmtMs(r.lifetime) : 'alive') },
+          { key: 'lifetime', title: 'Lifetime', num: true, render: r => (r.retained ? h('span', { class: 'dup', title: 'Disposed but still reachable' }, 'retained') : r.disposedTimestamp ? fmtMs(r.lifetime) : 'alive') },
         ],
       }))
       : null,
     h('p', null, h('button', { type: 'button', class: 'btn', onclick: () => ctx.navigate('timeline', { search: shortType(c.componentType) }) }, 'Show in timeline')),
   );
+}
+
+const RENDER_REASONS = {
+  FirstRender: { label: 'First render', hint: 'The initial render of a new instance.' },
+  Parameters: { label: 'Parameters set', hint: 'The parent re-rendered and passed parameters (see which ones changed below).' },
+  EventHandler: { label: 'Event handler', hint: 'The automatic render after one of this component\'s event handlers ran.' },
+  StateHasChanged: { label: 'StateHasChanged', hint: 'An explicit StateHasChanged call (timers, service events, InvokeAsync callbacks).' },
+  AsyncLifecycleCompletion: { label: 'Async lifecycle completed', hint: 'The render after an awaited OnInitializedAsync / OnParametersSetAsync / handler task completed.' },
+  Unknown: { label: 'Unknown', hint: 'The cause could not be determined.' },
+};
+
+/** The most frequent render cause of a component (ignoring first renders) and its share of renders, or null. */
+function mainCause(c) {
+  const entries = Object.entries(c.renderReasons || {}).filter(([r, n]) => r !== 'FirstRender' && n > 0);
+  if (!entries.length) {
+    return null;
+  }
+
+  const total = Object.values(c.renderReasons).reduce((n, v) => n + v, 0);
+  const [reason, count] = entries.sort((a, b) => b[1] - a[1])[0];
+  return { reason, share: total ? count / total : 0 };
+}
+
+/** "Why did this render?": instrumented renders by cause, plus the parameters whose values changed. */
+function renderCauses(c) {
+  const reasons = Object.entries(c.renderReasons || {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (!reasons.length) {
+    return null;
+  }
+
+  const total = reasons.reduce((n, [, v]) => n + v, 0);
+  const changed = Object.entries(c.changedParameters || {}).sort((a, b) => b[1] - a[1]);
+  return h('div', null,
+    h('h3', null, 'Why it rendered'),
+    h('div', { class: 'stacked-bar', role: 'img', 'aria-label': reasons.map(([r, n]) => `${(RENDER_REASONS[r] || RENDER_REASONS.Unknown).label} ${fmtPct(n / total)}`).join(', ') },
+      reasons.map(([r, n], i) => h('span', { class: `seg seg-${i % 5}`, style: { width: `${(n / total) * 100}%` }, title: `${(RENDER_REASONS[r] || RENDER_REASONS.Unknown).label}: ${fmtNum(n)}` }))),
+    h('ul', { class: 'compact legend-list' }, reasons.map(([r, n], i) => {
+      const info = RENDER_REASONS[r] || RENDER_REASONS.Unknown;
+      return h('li', { title: info.hint }, h('span', { class: `swatch seg-${i % 5}`, 'aria-hidden': 'true' }), `${info.label} — ${fmtNum(n)} (${fmtPct(n / total)})`);
+    })),
+    changed.length
+      ? h('p', { class: 'muted' }, 'Parameters whose values changed: ', changed.slice(0, 12).map(([name, n]) => `${name} ×${fmtNum(n)}`).join(', '))
+      : null);
 }
 
 function componentTree(ctx, s) {
@@ -291,7 +393,7 @@ function componentTree(ctx, s) {
     const kids = kidsOf(node.instanceId);
     const label = `${shortType(node.componentType)} #${node.instanceId}`;
     const detail = ` · ${node.renders} renders · ${fmtMs(node.renderMs)}${kids.length ? ` · ${kids.length} children` : ''}`;
-    const className = `node${node.disposedTimestamp ? ' disposed' : ''}`;
+    const className = `node${node.disposedTimestamp ? ' disposed' : ''}${node.retained ? ' retained' : ''}`;
     if (kids.length) {
       return branch(label, detail, node.componentType, className, () => level(kids, 'group'));
     }
@@ -451,6 +553,11 @@ export function network(ctx) {
   root.appendChild(h('h1', null, 'Network'));
   const requests = inRange(ctx, ctx.state.events.filter(e => e.type === 'http'));
   const resources = inRange(ctx, ctx.state.events.filter(e => e.type === 'browserResource'));
+  const startup = ctx.state.summary?.startup;
+  if (startup) {
+    root.appendChild(startupPanel(startup));
+  }
+
   if (!requests.length && !resources.length) {
     root.appendChild(emptyState('No requests recorded', 'HttpClient requests through IHttpClientFactory (or ProfilerHttpMessageHandler) and browser resource timing appear here.'));
     return root;
@@ -577,6 +684,89 @@ export function network(ctx) {
   return root;
 }
 
+// ----------------------------------------------------------------------------------------------- Database
+
+export function database(ctx) {
+  const root = h('div');
+  root.appendChild(h('h1', null, 'Database'));
+  const commands = inRange(ctx, ctx.state.events.filter(e => e.type === 'dbCommand'));
+  const queries = ctx.state.summary?.queries || [];
+  if (!commands.length && !queries.length) {
+    root.appendChild(emptyState('No database commands recorded',
+      'Commands executed through Entity Framework Core appear here automatically (Collectors.Database). SQL literals are replaced with ? and parameter values are never stored.'));
+    return root;
+  }
+
+  // Repeated shapes within one operation (N+1) and identical commands (same arguments) are marked.
+  const byShape = new Map();
+  const byArguments = new Map();
+  for (const c of commands) {
+    if (c.operationId) {
+      const key = `${c.operationId}|${c.commandHash}`;
+      byShape.set(key, (byShape.get(key) || 0) + 1);
+      const dupKey = `${c.operationId}|${c.parameterHash}`;
+      byArguments.set(dupKey, (byArguments.get(dupKey) || 0) + 1);
+    }
+  }
+
+  const flag = c => {
+    if (!c.operationId) {
+      return null;
+    }
+
+    if ((byArguments.get(`${c.operationId}|${c.parameterHash}`) || 0) > 1) {
+      return h('span', { class: 'dup', title: 'Identical command (same text and arguments) ran more than once in this operation' }, '⧉ ');
+    }
+
+    return (byShape.get(`${c.operationId}|${c.commandHash}`) || 0) >= 5
+      ? h('span', { class: 'dup', title: 'Same query shape ran 5+ times in this operation (N+1)' }, 'N+1 ')
+      : null;
+  };
+
+  root.appendChild(panel('Queries by shape', sortableTable({
+    label: 'Queries',
+    rows: queries,
+    initialSort: { key: 'total', dir: -1 },
+    columns: [
+      { key: 'commandText', title: 'Query', render: r => h('span', { class: 'mono', title: r.commandText }, (r.commandText || '').length > 140 ? `${r.commandText.slice(0, 140)}…` : r.commandText) },
+      { key: 'count', title: 'Executions', num: true, sort: r => r.durations.count, render: r => fmtNum(r.durations.count) },
+      { key: 'p95', title: 'p95', num: true, sort: r => r.durations.p95Ms, render: r => fmtMs(r.durations.p95Ms) },
+      { key: 'total', title: 'Total', num: true, sort: r => r.durations.totalMs, render: r => fmtMs(r.durations.totalMs) },
+      { key: 'rowsRead', title: 'Rows read', num: true, render: r => fmtNum(r.rowsRead) },
+      { key: 'synchronous', title: 'Sync', num: true, render: r => (r.synchronous ? h('span', { class: 'dup', title: 'Executions that ran synchronously (blocking)' }, fmtNum(r.synchronous)) : '0') },
+      { key: 'failures', title: 'Failures', num: true, render: r => fmtNum(r.failures) },
+    ],
+  })));
+
+  const text = h('input', { type: 'search', placeholder: 'SQL or component contains…', 'aria-label': 'Filter commands' });
+  const listHost = h('div');
+  const render = () => {
+    const term = text.value.toLowerCase();
+    const rows = commands.filter(c => !term || (c.commandText || '').toLowerCase().includes(term) || (c.originComponentType || '').toLowerCase().includes(term))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    clear(listHost).appendChild(virtualList({
+      rows,
+      label: 'Database commands',
+      columns: '80px minmax(0,3fr) 80px 70px 56px minmax(0,1fr)',
+      header: ['Start', 'Command', 'Duration', 'Rows', 'Mode', 'Origin'],
+      renderRow: c => [
+        h('span', { class: 'mono' }, fmtMs(ctx.toMs(c.timestamp))),
+        h('span', { class: 'mono', title: c.commandText }, flag(c), c.commandText),
+        h('span', { class: c.outcome === 'Success' ? 'mono' : 'mono dup', title: c.errorType || null }, fmtMs(ctx.ticksToMs(c.duration))),
+        h('span', null, c.rowsRead != null ? fmtNum(c.rowsRead) : '—'),
+        h('span', { class: c.isAsync ? null : 'dup', title: c.isAsync ? 'Asynchronous' : c.onRendererThread ? 'Synchronous on the renderer (blocks the circuit)' : 'Synchronous' }, c.isAsync ? 'async' : 'sync'),
+        h('span', { title: c.originComponentType || '' }, c.originComponentType ? `${shortType(c.originComponentType)}${c.originLifecycleMethod ? `.${c.originLifecycleMethod}` : ''}` : '—'),
+      ],
+      onSelect: c => ctx.showEvent(c),
+    }));
+  };
+  text.addEventListener('input', debounce(render, 120));
+  render();
+  root.appendChild(panel(`Commands (${fmtNum(commands.length)})`, h('div', { class: 'toolbar' }, text,
+    h('span', { class: 'muted' }, 'N+1 = same query shape 5+ times in one operation · ⧉ = identical command repeated in one operation')), listHost));
+  return root;
+}
+
 // ----------------------------------------------------------------------------------------------- Interop
 
 // Calls that ended without a JavaScript response are marked, so a timeout is not read as a slow function.
@@ -699,6 +889,18 @@ export function runtime(ctx) {
 export function circuits(ctx) {
   const root = h('div');
   root.appendChild(h('h1', null, 'Circuits'));
+  const latency = (ctx.state.info?.commands || []).find(c => c.name === 'simulate-latency');
+  if (latency && !ctx.state.source?.readOnly) {
+    const input = h('input', { type: 'number', min: '0', max: '5000', step: '50', value: /^\d+/.test(latency.state || '') ? parseInt(latency.state, 10) : 0, 'aria-label': 'Simulated latency in milliseconds', style: { width: '90px' } });
+    root.appendChild(panel('Latency simulation',
+      h('p', { class: 'muted' }, latency.description),
+      h('div', { class: 'toolbar' },
+        h('label', null, 'Delay per browser message (ms) ', input),
+        h('button', { type: 'button', class: 'btn', onclick: () => ctx.runCommand('simulate-latency', String(Number(input.value) || 0)) }, 'Apply'),
+        h('button', { type: 'button', class: 'btn', onclick: () => ctx.runCommand('simulate-latency', '0') }, 'Turn off'),
+        h('span', { class: 'muted' }, `Current: ${latency.state || 'off'}`))));
+  }
+
   const summary = ctx.state.summary?.circuits || [];
   const events = inRange(ctx, ctx.state.events.filter(e => e.type === 'circuit' || e.type === 'circuitActivity'));
   if (!summary.length && !events.length) {
@@ -854,6 +1056,18 @@ function findingCard(ctx, f, open) {
     actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: () => ctx.navigate('timeline', { eventId: f.relatedEventIds[0] }) }, 'Show in timeline'));
   }
 
+  const copy = h('button', { type: 'button', class: 'btn small', title: 'Copy this finding as Markdown with a request for a fix, ready to paste into an AI assistant, an issue, or a pull request', onclick: async () => {
+    try {
+      await navigator.clipboard.writeText(findingPrompt(ctx, f));
+      copy.textContent = 'Copied';
+    } catch {
+      copy.textContent = 'Copy failed';
+    }
+
+    setTimeout(() => { copy.textContent = 'Copy for AI'; }, 2000);
+  } }, 'Copy for AI');
+  actions.appendChild(copy);
+
   // Findings can come from imported trace files or other untrusted sources; only web links are rendered.
   const documentationUrl = safeWebUrl(f.documentationUrl);
   if (documentationUrl) {
@@ -871,6 +1085,36 @@ function findingCard(ctx, f, open) {
     f.windowStart != null ? h('p', { class: 'muted' }, `Measurement window: ${fmtMs(ctx.toMs(f.windowStart))} – ${fmtMs(ctx.toMs(f.windowEnd))}`) : null,
     actions));
   return card;
+}
+
+/** A self-contained Markdown description of a finding, framed as a request for a code fix. */
+export function findingPrompt(ctx, f) {
+  const lines = [
+    `A Blazor performance profiler (BlazorProfiler, ${ctx.state.info?.source || 'unknown'} hosting) reported this finding. Explain the likely cause in my code and propose a concrete fix.`,
+    '',
+    `## ${f.severity}: ${f.title}`,
+    '',
+    `Rule ${f.ruleId} (${f.category}), ${f.confidence} confidence.`,
+    '',
+    f.summary,
+    '',
+    `**Why it matters:** ${f.explanation}`,
+    '',
+    `**Suggested fix:** ${f.recommendation}`,
+  ];
+  if (f.codeHint) {
+    lines.push('', `**Where to look:** \`${f.codeHint}\``);
+  }
+
+  if (f.evidence?.length) {
+    lines.push('', '**Evidence:**', ...f.evidence.map(e => `- ${e.label}: ${e.value} (${String(e.quality).toLowerCase()})`));
+  }
+
+  if (f.caveats?.length) {
+    lines.push('', '**May not apply when:**', ...f.caveats.map(c => `- ${c}`));
+  }
+
+  return lines.join('\n');
 }
 
 // ----------------------------------------------------------------------------------------------- Sessions
@@ -944,8 +1188,14 @@ function sessionActions(ctx, s, readOnly) {
     add('Remove', src => (confirm(`Remove session "${s.name}"? Its data will be discarded.`) ? src.remove(s.id) : null), 'Session removed');
   }
 
-  for (const format of s.fileImported ? ['json'] : ['native', 'json', 'chrome']) {
-    box.appendChild(h('button', { type: 'button', class: 'btn small', title: format === 'chrome' ? 'Chrome Trace Event format (Perfetto, chrome://tracing)' : format === 'native' ? 'Compressed native trace (.bptrace)' : 'Uncompressed native trace (JSON)', onclick: e => { e.stopPropagation(); ctx.exportSession(s.id, format); } }, `Export ${format}`));
+  const titles = {
+    chrome: 'Chrome Trace Event format (Perfetto, chrome://tracing)',
+    native: 'Compressed native trace (.bptrace)',
+    json: 'Uncompressed native trace (JSON)',
+    markdown: 'Markdown report: metrics, findings with fixes, and the most expensive components, handlers, endpoints, and queries (for pull requests, issues, or an AI assistant)',
+  };
+  for (const format of s.fileImported ? ['json'] : ['native', 'json', 'chrome', 'markdown']) {
+    box.appendChild(h('button', { type: 'button', class: 'btn small', title: titles[format], onclick: e => { e.stopPropagation(); ctx.exportSession(s.id, format); } }, `Export ${format}`));
   }
 
   return box;
@@ -996,6 +1246,9 @@ function compareTable(a, b) {
     ['HTTP requests', x => sum(x.endpoints, c => c.durations.count), fmtNum],
     ['HTTP time', x => sum(x.endpoints, c => c.durations.totalMs), fmtMs],
     ['Interop calls', x => sum(x.interop, c => c.durations.count), fmtNum],
+    ['Database commands', x => sum(x.queries, c => c.durations.count), fmtNum],
+    ['Database time', x => sum(x.queries, c => c.durations.totalMs), fmtMs],
+    ['Retained components', x => sum(x.components, c => c.retained || 0), fmtNum],
     ['Allocated', x => x.runtime.allocatedBytes, fmtBytes],
     ['GC pause', x => (x.runtime.gcPauseUnavailable ? null : x.runtime.gcPauseMs), fmtMs],
   ];
@@ -1063,6 +1316,24 @@ export function health(ctx) {
       tile('Emit cost', `${fmtNum(healthInfo.emitMicrosecondsPerEvent, 2)} µs`, 'on the instrumented thread (sampled)'),
       tile('Processing cost', `${fmtNum(healthInfo.processingMicrosecondsPerEvent, 2)} µs`, `total ${fmtMs(healthInfo.processingMs)} (background)`),
     ));
+  }
+
+  const commands = info?.commands || [];
+  if (commands.length && !ctx.state.source?.readOnly) {
+    root.appendChild(panel('Tools', h('ul', { class: 'compact tools', role: 'list' }, commands.map(c => h('li', null,
+      h('button', { type: 'button', class: 'btn small', onclick: () => {
+        let argument;
+        if (c.argumentHint) {
+          argument = prompt(c.argumentHint, '');
+          if (argument === null) {
+            return;
+          }
+        }
+
+        ctx.runCommand(c.name, argument);
+      } }, c.title),
+      ' ', h('span', null, c.description),
+      c.state ? h('span', { class: 'muted' }, ` · ${c.state}`) : null)))));
   }
 
   const collectors = healthInfo?.collectors || fileMeta?.collectors || [];

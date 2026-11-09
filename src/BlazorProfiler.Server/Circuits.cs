@@ -258,6 +258,11 @@ public sealed class ProfilerHubFilter : IHubFilter
     private const string ComponentHubName = "Microsoft.AspNetCore.Components.Server.ComponentHub";
 
     private static readonly AsyncLocal<HubInvocationInfo?> s_current = new();
+    private readonly LatencySimulator? _latency;
+
+    /// <summary>Creates the filter, optionally with latency simulation.</summary>
+    /// <remarks>A single constructor: SignalR's filter factory rejects types with several applicable constructors.</remarks>
+    public ProfilerHubFilter(LatencySimulator? latency = null) => _latency = latency;
 
     /// <summary>The hub invocation currently being processed, if any.</summary>
     internal static HubInvocationInfo? Current => s_current.Value;
@@ -270,8 +275,16 @@ public sealed class ProfilerHubFilter : IHubFilter
             return next(invocationContext);
         }
 
-        s_current.Value = new HubInvocationInfo(invocationContext.HubMethodName, IsProfilerInternal(invocationContext));
-        return next(invocationContext);
+        var info = new HubInvocationInfo(invocationContext.HubMethodName, IsProfilerInternal(invocationContext));
+        s_current.Value = info;
+        var delay = _latency?.Delay ?? TimeSpan.Zero;
+        return delay > TimeSpan.Zero && !info.ProfilerInternal ? DelayAsync(invocationContext, next, delay) : next(invocationContext);
+    }
+
+    private static async ValueTask<object?> DelayAsync(HubInvocationContext invocationContext, Func<HubInvocationContext, ValueTask<object?>> next, TimeSpan delay)
+    {
+        await Task.Delay(delay, invocationContext.Context.ConnectionAborted).ConfigureAwait(false);
+        return await next(invocationContext).ConfigureAwait(false);
     }
 
     private static bool IsProfilerInternal(HubInvocationContext context)

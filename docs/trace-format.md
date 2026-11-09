@@ -1,4 +1,4 @@
-# Trace format (version 1)
+# Trace format (version 1, event schema 2)
 
 A trace is a JSON document, stored either plainly (`.bptrace.json`) or gzip-compressed (`.bptrace`, recommended). Readers
 detect compression by the gzip magic bytes (`1F 8B`). Property names are camelCase; enums are strings; `null` properties are
@@ -8,7 +8,7 @@ omitted.
 {
   "format": "blazor-profiler-trace",
   "formatVersion": 1,
-  "eventSchemaVersion": 1,
+  "eventSchemaVersion": 2,
   "metadata": { ... },
   "clock": { "frequency": 10000000, "anchorTimestamp": 26007650839, "anchorTime": "2026-11-04T10:04:47.1111266+00:00" },
   "collectors": [ ... ],
@@ -69,6 +69,10 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `browserLongTask` | `entryType`, `blockingMs`, `script` |
 | `browserResource` | `url`, `initiatorType`, `transferSize`, `decodedBodySize`, `fromCache`, `statusCode` |
 | `operation` | `name`, `category`, `componentType` |
+| `componentRetained` (schema 2) | component fields, `reason` (`Disposed`, `ScopeEnded`), `releasedTimestamp`, `survivedCollections`, `forcedCollection` |
+| `dbCommand` (schema 2) | `commandText` (normalized: literals replaced with `?`), `commandHash`, `parameterHash` (hash of text and argument values; values are never stored), `parameterCount`, `executeMethod` (`Reader`, `NonQuery`, `Scalar`), `isAsync`, `rowsRead`, `contextType`, `contextInstanceId`, `provider`, `originComponentType`, `originComponentInstanceId`, `originLifecycleMethod`, `onRendererThread`, `source` |
+| `browserStartup` (schema 2) | `navigationType`, `runtimeKind`, `timeToFirstByteMs`, `firstContentfulPaintMs`, `domContentLoadedMs`, `loadMs`, `interactiveMs`, `frameworkFiles`, `frameworkTransferBytes`, `frameworkDecodedBytes`, `frameworkCachedFiles`, `frameworkUncompressedFiles`, `frameworkDownloadMs`, `largestFiles` (`name`, `transferSize`, `decodedSize`, `durationMs`, `cached`) |
+| `browserVital` (schema 2) | `name` (`LCP`, `CLS`, `INP`), `value`, `targetTag`, `rating` (computed; ignored on import) |
 
 "component fields" = `componentType`, `componentInstanceId`, `source`.
 

@@ -63,7 +63,7 @@ public static class BlazorProfilerServiceCollectionExtensions
         services.TryAddSingleton<JSInteropCollector>();
         services.TryAddSingleton(sp => CreateHost(sp, options));
         services.TryAddSingleton<IProfiler>(sp => sp.GetRequiredService<ProfilerHost>());
-        services.TryAddSingleton(sp => new ProfilerApi(sp.GetRequiredService<IProfiler>(), hosting.Source));
+        services.TryAddSingleton(sp => new ProfilerApi(sp.GetRequiredService<IProfiler>(), hosting.Source, null, sp.GetServices<IProfilerCommand>()));
         services.TryAddScoped<IProfiledJSRuntime>(sp => ProfiledJSRuntime.Create(sp.GetRequiredService<IJSRuntime>(), sp.GetRequiredService<JSInteropCollector>()));
 
         if (options.Enabled == false)
@@ -118,6 +118,11 @@ public static class BlazorProfilerServiceCollectionExtensions
         AddCollector<RuntimeCollector>(services);
         AddCollector<HttpCollector>(services);
         AddCollector<BrowserCollector>(services);
+        AddCollector<ComponentRetentionCollector>(services);
+        AddCollector<DatabaseCollector>(services);
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IProfilerCommand, LeakCheckCommand>());
+        services.TryAddSingleton<DevToolsTrackProcessor>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IProfilerEventProcessor, DevToolsTrackProcessor>(sp => sp.GetRequiredService<DevToolsTrackProcessor>()));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IProfilerCollector, JSInteropCollector>(sp => sp.GetRequiredService<JSInteropCollector>()));
         services.TryAddSingleton<ComponentInstrumentation>();
 
@@ -185,7 +190,10 @@ public static class BlazorProfilerServiceCollectionExtensions
                 existing is null ? null : CreateFromDescriptor(sp, existing),
                 sp.GetRequiredService<ComponentInstanceRegistry>(),
                 sp.GetRequiredService<ComponentActivationCollector>(),
-                sp.GetRequiredService<IProfiler>()),
+                sp.GetRequiredService<IProfiler>(),
+
+                // Scope-end retention tracking needs one activator per scope (circuit or request).
+                lifetime == ServiceLifetime.Scoped ? sp.GetService<ComponentRetentionCollector>() : null),
             lifetime));
     }
 

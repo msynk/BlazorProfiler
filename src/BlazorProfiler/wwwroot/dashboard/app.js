@@ -3,6 +3,7 @@
 import { settings, loadSettings, saveSettings, h, clear, downloadBlob } from './util.js';
 import { ApiSource, BridgeSource, FileSource } from './sources.js';
 import * as views from './views.js';
+import { interactions } from './interactions.js';
 
 const MAX_EVENTS = 150_000;
 const PAGE_SIZE = 5_000;
@@ -13,9 +14,11 @@ const SUMMARY_VIEWS = new Set(['overview', 'components']);
 const SESSIONLESS_VIEWS = new Set(['sessions', 'health']);
 const VIEWS = {
   overview: views.overview,
+  interactions,
   components: views.components,
   timeline: views.timeline,
   network: views.network,
+  database: views.database,
   interop: views.interop,
   runtime: views.runtime,
   circuits: views.circuits,
@@ -98,6 +101,7 @@ const ctx = {
     timelineRef = tl;
   },
   act,
+  runCommand,
   importFile,
   openLocalFile,
   exportSession,
@@ -626,6 +630,26 @@ async function act(fn, message) {
     }
 
     // Invalidate in-flight polls too: their data was loaded before the action took effect.
+    state.report = null;
+    state.generation++;
+    await poll();
+    render();
+  } catch (error) {
+    showBanner(error.message, 'error');
+  }
+}
+
+/** Runs a profiler command (see info.commands) and shows its result message. */
+async function runCommand(name, argument) {
+  const source = state.liveSource;
+  if (!source || !source.command) {
+    return;
+  }
+
+  try {
+    showBanner('Running…', '');
+    const result = await source.command(name, argument);
+    showBanner(result?.message || 'Done.', '');
     state.report = null;
     state.generation++;
     await poll();

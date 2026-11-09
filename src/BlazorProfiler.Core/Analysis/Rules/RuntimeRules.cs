@@ -214,6 +214,139 @@ public sealed class MemoryGrowthAcrossNavigationRule : DiagnosticRule
     }
 }
 
+/// <summary>BP5004: released components that are still reachable (memory leaks).</summary>
+/// <remarks>
+/// Blazor's renderer keeps the previous render tree of every live component, and that buffer can still reference the
+/// child most recently removed from a given position until the position is rendered again. Such retention is bounded (at
+/// most one instance per parent position) and is not a leak. The rule therefore treats a retained instance as a likely
+/// leak only when retention accumulates (two or more retained instances of the same type under the same parent), when the
+/// parent is gone too, or when the whole circuit or request scope ended; a single retained child of a live parent is
+/// reported at Info severity with low confidence.
+/// </remarks>
+public sealed class RetainedComponentsRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP5004",
+        Title = "Components retained after disposal",
+        Category = DiagnosticCategory.Memory,
+        Description = "Reports component instances that were still reachable after several full garbage collections although they had been disposed, or their circuit or request scope had ended, and separates accumulating retention (leaks) from the bounded retention of Blazor's previous render tree.",
+        RequiredSignals = [ProfilerEventKind.ComponentRetained],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var retainedEvents = context.OfType<ComponentRetainedEvent>().ToList();
+        if (retainedEvents.Count == 0)
+        {
+            yield break;
+        }
+
+        // Parents are known for children of instrumented components (component tree tracking).
+        var parentOf = new Dictionary<long, long>();
+        foreach (var children in context.OfType<ComponentChildrenEvent>())
+        {
+            foreach (var child in children.ChildInstanceIds)
+            {
+                parentOf[child] = children.ComponentInstanceId;
+            }
+        }
+
+        var gone = new HashSet<long>(context.OfType<ComponentDisposedEvent>().Select(e => e.ComponentInstanceId));
+        gone.UnionWith(retainedEvents.Where(e => e.Reason == RetentionReason.ScopeEnded).Select(e => e.ComponentInstanceId));
+
+        foreach (var group in retainedEvents.GroupBy(e => e.ComponentType ?? "(unknown)").OrderByDescending(g => g.Count()))
+        {
+            var retained = group.ToList();
+            var accumulating = new List<ComponentRetainedEvent>();
+            var single = new List<ComponentRetainedEvent>();
+            var unknownParents = 0;
+            foreach (var slot in retained.Where(e => e.Reason == RetentionReason.Disposed).GroupBy(e => parentOf.GetValueOrDefault(e.ComponentInstanceId)))
+            {
+                var instances = slot.ToList();
+                if (slot.Key == 0)
+                {
+                    unknownParents += instances.Count;
+                }
+
+                if (instances.Count >= 2 || (slot.Key != 0 && gone.Contains(slot.Key)))
+                {
+                    accumulating.AddRange(instances);
+                }
+                else
+                {
+                    single.AddRange(instances);
+                }
+            }
+
+            var scopeEnded = retained.Where(e => e.Reason == RetentionReason.ScopeEnded).ToList();
+            var likely = accumulating.Count + scopeEnded.Count;
+            var count = retained.Count;
+            var circuits = retained.Select(e => e.CircuitId).Where(c => c is not null).Distinct().Count();
+            var survived = retained.Max(e => e.SurvivedCollections);
+            var forced = retained.Any(e => e.ForcedCollection);
+            var oldestSeconds = retained.Max(e => context.Ms(e.Timestamp - e.ReleasedTimestamp)) / 1000;
+            var shortType = ShortType(group.Key);
+            var evidence = new List<FindingEvidence>
+            {
+                Evidence("Retained instances", FormatNumber(count)),
+                Evidence("Likely leaked", FormatNumber(likely), ValueQuality.Inferred),
+                Evidence("Released by", scopeEnded.Count == count ? "end of circuit/request scope" : scopeEnded.Count == 0 ? "disposal" : $"disposal ({FormatNumber(count - scopeEnded.Count)}), scope end ({FormatNumber(scopeEnded.Count)})"),
+                Evidence("Full collections survived (max)", FormatNumber(survived)),
+                Evidence("Circuits", circuits > 0 ? FormatNumber(circuits) : "none (WebAssembly or static rendering)", circuits > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
+                Evidence("Retaining path", "not determined (use a memory profiler or dotnet-gcdump)", ValueQuality.Unavailable),
+            };
+            var caveats = new List<string>
+            {
+                "Blazor keeps the previous render tree of a live component; it can reference the child most recently removed from a position until that position renders again. That retention is bounded and is not counted as a likely leak.",
+                "Work that legitimately outlives a component (for example an awaited request that completes after disposal) keeps it alive briefly; such instances are reported only after the configured number of full collections.",
+                "Components that do not inherit ProfiledComponentBase are watched only when their circuit or request scope ends.",
+            };
+
+            if (likely == 0)
+            {
+                yield return Create(
+                    $"{FormatNumber(count)} removed {shortType} instance(s) still referenced (possibly by the previous render tree)",
+                    DiagnosticSeverity.Info,
+                    DiagnosticConfidence.Low,
+                    $"{FormatNumber(count)} disposed instance(s) of {shortType} were still reachable after {survived} full garbage collection(s), at most one per parent position{(unknownParents > 0 ? " (or with an unknown parent)" : string.Empty)}. This matches Blazor keeping the parent's previous render tree, which is bounded and harmless.",
+                    "A real leak grows each time the component is shown and removed again; bounded retention by the renderer does not.",
+                    "Repeat the action that shows and removes the component several times and run the leak check again. If the count grows, look for event subscriptions on longer-lived services, timers, DotNetObjectReference instances, or static caches that reference the component.",
+                    evidence,
+                    new ImpactEstimate { Occurrences = count, Method = "Number of released instances still reachable at the check; their memory size is not measured.", Quality = ValueQuality.Measured },
+                    componentType: group.Key,
+                    subject: group.Key,
+                    caveats: caveats,
+                    related: retained);
+                continue;
+            }
+
+            var reason = scopeEnded.Count == likely
+                ? "their circuit or request scope had ended"
+                : scopeEnded.Count == 0 ? "they were disposed" : "they were disposed or their circuit or request scope had ended";
+            var knownStructure = scopeEnded.Count > 0 || accumulating.Any(e => parentOf.ContainsKey(e.ComponentInstanceId));
+            var confidence = (forced || survived >= 3) && knownStructure ? DiagnosticConfidence.High : DiagnosticConfidence.Medium;
+
+            yield return Create(
+                $"{FormatNumber(likely)} released {shortType} instance(s) are leaking",
+                Scale(likely, 1),
+                confidence,
+                $"{FormatNumber(likely)} instance(s) of {shortType} were still reachable after {survived} full garbage collection(s){(forced ? " (including collections forced by a leak check)" : string.Empty)}, although {reason}. The retention accumulates, so it is not explained by the renderer's previous render tree. The oldest was released {oldestSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} s before the check.",
+                "Something with a longer lifetime still references these components, so they (and everything they reference: render trees, parameters, injected scoped services) cannot be collected. On Blazor Server this memory accumulates per user until the process restarts; in WebAssembly it accumulates in the browser tab.",
+                "Unsubscribe from events of longer-lived services in Dispose (a frequent cause: `State.OnChange += StateHasChanged` without `-=`), dispose timers, CancellationTokenSources and DotNetObjectReference instances, and avoid static fields or caches that hold components, RenderFragments, or lambdas capturing `this`. Implement IDisposable/IAsyncDisposable in the component (`@implements IDisposable`) and release everything there.",
+                evidence,
+                new ImpactEstimate { Occurrences = likely, Method = "Number of released instances that accumulate in memory; their memory size is not measured.", Quality = ValueQuality.Measured },
+                componentType: group.Key,
+                subject: group.Key,
+                caveats: caveats,
+                related: accumulating.Concat(scopeEnded).Concat(single),
+                codeHint: $"{shortType}: Dispose, event subscriptions, timers");
+        }
+    }
+}
+
 /// <summary>BP6001: slow server render round trips.</summary>
 public sealed class SlowServerRenderRoundTripRule : DiagnosticRule
 {

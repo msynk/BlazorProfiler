@@ -106,6 +106,8 @@ public static class ProfilerEndpoints
             p.Unsuppress(Access(c), fingerprint);
             return Results.NoContent();
         });
+        api.MapPost("/commands/{name}", async (HttpContext c, ProfilerApi p, string name, string? argument) =>
+            Json(await p.ExecuteCommandAsync(Access(c), name, argument, c.RequestAborted), ProfilerJsonContext.Default.ProfilerCommandResult));
 
         return group;
     }

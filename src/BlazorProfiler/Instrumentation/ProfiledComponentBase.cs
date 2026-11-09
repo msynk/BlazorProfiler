@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using BlazorProfiler.Collectors;
 using BlazorProfiler.Correlation;
 using BlazorProfiler.Events;
 using Microsoft.AspNetCore.Components;
@@ -326,6 +327,12 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
                 LifetimeTicks = created > 0 ? now - created : 0,
                 Source = InstrumentationSource.ComponentInstrumentation,
             });
+
+            if (instrumentation.Retention is { IsCollecting: true } retention)
+            {
+                // Held weakly: reported only if the instance is still reachable after several full garbage collections.
+                retention.Watch(this, _typeName, _instanceId, RetentionReason.Disposed, ComponentRetentionCollector.CurrentCircuitId(instrumentation.Profiler));
+            }
         }
 
         // Release references held only for instrumentation.

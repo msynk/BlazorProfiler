@@ -35,6 +35,12 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Circuit inbound activity duration and hub method | M | — | — | circuits |
 | User-perceived interaction latency (input delay / processing / presentation) | M (browser) | M (browser) | — | browser |
 | Long animation frames / long tasks | M (browser) | M (browser) | — | browser |
+| Render causes (first render, parameters, handler, `StateHasChanged`, async completion) and changed parameter names | M (instrumented) | M (instrumented) | M (instrumented) | component-instrumentation |
+| Components retained after disposal (instrumented) or after their circuit/request scope ended (all) | M | M (disposal of instrumented components only; the app scope never ends) | M (request scope) | component-retention |
+| Database commands (Entity Framework Core): normalized SQL, duration incl. reading rows, rows read, sync/async, originating component | M | M (if EF Core runs in the browser) | M | database |
+| Page startup: TTFB, FCP, interactive time (E), `_framework` download (bytes, cache, compression, largest files) | M (browser) | M (browser) | — | browser |
+| Core Web Vitals: LCP, CLS, INP (E) | M (browser) | M (browser) | — | browser |
+| DOM updates per second, update highlighting (in-page) | M (browser only) | M (browser only) | — | toolbar (no collector) |
 
 ## Hosting-model notes
 
@@ -53,5 +59,8 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Event Timing (`event`, `interactionId`) | yes | yes (recent versions) | not at the time of writing |
 | Long Animation Frames | yes | no (falls back to `longtask` where available) | no |
 | Resource Timing | yes | yes | yes |
+| Largest Contentful Paint | yes | yes | yes (26.2+) |
+| Layout Shift (CLS) | yes | no | no |
+| DevTools custom tracks (`detail.devtools`) | yes (128+) | recorded as plain user timings | recorded as plain user timings |
 
 Unsupported entry types are skipped; the profiler never substitutes estimates for them.

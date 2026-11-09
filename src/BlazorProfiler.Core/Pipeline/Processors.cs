@@ -133,8 +133,12 @@ internal sealed class EventSampler
             or ProfilerEventKind.Circuit
             or ProfilerEventKind.RenderBatch
             or ProfilerEventKind.HttpRequest
+            or ProfilerEventKind.DatabaseCommand
             or ProfilerEventKind.ComponentCreated
-            or ProfilerEventKind.ComponentDisposed;
+            or ProfilerEventKind.ComponentDisposed
+            or ProfilerEventKind.ComponentRetained
+            or ProfilerEventKind.BrowserStartup
+            or ProfilerEventKind.BrowserVital;
 }
 
 /// <summary>Applies <see cref="FilterOptions"/>.</summary>

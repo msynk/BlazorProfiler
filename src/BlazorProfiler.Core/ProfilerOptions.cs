@@ -91,6 +91,7 @@ public sealed class ProfilerOptions
                 Instrumentation.TrackComponentTree = false;
                 Instrumentation.TrackRenderRequests = false;
                 Instrumentation.MinimumLifecycleDuration = TimeSpan.FromMilliseconds(1);
+                Collectors.ComponentRetention = false;
                 break;
             case ProfilerProfile.Detailed:
                 Retention.MaxEvents = 250_000;
@@ -103,6 +104,7 @@ public sealed class ProfilerOptions
                 Instrumentation.TrackComponentTree = true;
                 Instrumentation.TrackRenderRequests = true;
                 Instrumentation.MinimumLifecycleDuration = TimeSpan.Zero;
+                Collectors.ComponentRetention = true;
                 break;
             default:
                 Retention.MaxEvents = 100_000;
@@ -115,6 +117,7 @@ public sealed class ProfilerOptions
                 Instrumentation.TrackComponentTree = true;
                 Instrumentation.TrackRenderRequests = true;
                 Instrumentation.MinimumLifecycleDuration = TimeSpan.FromMilliseconds(0.1);
+                Collectors.ComponentRetention = true;
                 break;
         }
 
@@ -160,6 +163,11 @@ public sealed class ProfilerOptions
         if (Collectors.RuntimeSampleInterval < TimeSpan.FromMilliseconds(100))
         {
             throw new ArgumentException("Collectors.RuntimeSampleInterval must be at least 100 ms.");
+        }
+
+        if (Collectors.RetentionGcCycles < 1)
+        {
+            throw new ArgumentException("Collectors.RetentionGcCycles must be at least 1.");
         }
     }
 }
@@ -301,6 +309,12 @@ public sealed class CollectorOptions
     /// <summary>Estimates serialized interop argument sizes. Adds serialization cost to every call.</summary>
     public bool JSInteropPayloadEstimation { get; set; }
 
+    /// <summary>
+    /// Records database commands executed through Entity Framework Core (normalized SQL with literals replaced; parameter
+    /// values are hashed, never stored).
+    /// </summary>
+    public bool Database { get; set; } = true;
+
     /// <summary>Collects periodic runtime and garbage-collection samples.</summary>
     public bool Runtime { get; set; } = true;
 
@@ -315,6 +329,25 @@ public sealed class CollectorOptions
 
     /// <summary>The minimum interaction duration reported by the browser Event Timing observer.</summary>
     public int BrowserInteractionThresholdMs { get; set; } = 40;
+
+    /// <summary>
+    /// Watches released component instances (disposed <c>ProfiledComponentBase</c> components, and every component of an
+    /// ended circuit or request scope) through weak references, and reports instances still reachable after full garbage
+    /// collections (rule BP5004). Costs one weak reference per watched instance.
+    /// </summary>
+    public bool ComponentRetention { get; set; } = true;
+
+    /// <summary>
+    /// The number of full (generation 2) garbage collections a released instance must survive before it is reported as
+    /// retained. Higher values reduce false positives from work that briefly outlives a component.
+    /// </summary>
+    public int RetentionGcCycles { get; set; } = 2;
+
+    /// <summary>
+    /// The minimum time between an instance's release and a retention report, so work still in flight when a component is
+    /// disposed (for example an awaited request) is not reported.
+    /// </summary>
+    public TimeSpan RetentionMinimumAge { get; set; } = TimeSpan.FromSeconds(2);
 }
 
 /// <summary>Options for opt-in component instrumentation (<c>ProfiledComponentBase</c>).</summary>
@@ -399,6 +432,12 @@ public sealed class DiagnosticOptions
     /// <summary>Requests to one endpoint template within one operation that suggest an N+1 pattern.</summary>
     public int NPlusOneThreshold { get; set; } = 5;
 
+    /// <summary>BP8001: executions of one query shape with different arguments in one operation that count as N+1.</summary>
+    public int NPlusOneQueryThreshold { get; set; } = 5;
+
+    /// <summary>BP8003: the p95 duration (milliseconds) above which a query shape is slow.</summary>
+    public double SlowQueryMs { get; set; } = 100;
+
     /// <summary>Request duration considered slow.</summary>
     public double SlowRequestMs { get; set; } = 1_000;
 
@@ -461,6 +500,15 @@ public sealed class DiagnosticOptions
 
     /// <summary>Browser long animation frame duration considered a blocking task.</summary>
     public double LongTaskMs { get; set; } = 150;
+
+    /// <summary>BP7003: framework bytes transferred at startup above which the download is large.</summary>
+    public long LargeFrameworkDownloadBytes { get; set; } = 5L * 1024 * 1024;
+
+    /// <summary>BP7003: framework download time (milliseconds) above which startup is slow.</summary>
+    public double SlowStartupMs { get; set; } = 3_000;
+
+    /// <summary>BP7004: time (milliseconds) between First Contentful Paint and interactivity above which it is reported.</summary>
+    public double InteractivityGapMs { get; set; } = 2_000;
 
     /// <summary>Returns whether a rule is enabled.</summary>
     public bool IsRuleEnabled(string ruleId) => !Rules.TryGetValue(ruleId, out var settings) || settings.Enabled;

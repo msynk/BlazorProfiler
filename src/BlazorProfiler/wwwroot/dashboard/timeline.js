@@ -6,11 +6,12 @@ export const LANES = [
   { id: 'operation', label: 'Operations', color: '--lane-operation', types: ['operation'] },
   { id: 'navigation', label: 'Navigation', color: '--lane-navigation', types: ['navigation'] },
   { id: 'batch', label: 'Render batches', color: '--lane-batch', types: ['renderBatch'] },
-  { id: 'component', label: 'Components', color: '--lane-component', types: ['componentRender', 'parametersSet', 'lifecycle', 'componentCreated', 'componentDisposed'] },
+  { id: 'component', label: 'Components', color: '--lane-component', types: ['componentRender', 'parametersSet', 'lifecycle', 'componentCreated', 'componentDisposed', 'componentRetained'] },
   { id: 'http', label: 'HTTP', color: '--lane-http', types: ['http'] },
+  { id: 'database', label: 'Database', color: '--lane-database', types: ['dbCommand'] },
   { id: 'interop', label: 'JS interop', color: '--lane-interop', types: ['jsInterop'] },
   { id: 'circuit', label: 'Circuit', color: '--lane-circuit', types: ['circuit', 'circuitActivity'] },
-  { id: 'browser', label: 'Browser', color: '--lane-browser', types: ['browserLongTask', 'browserResource'] },
+  { id: 'browser', label: 'Browser', color: '--lane-browser', types: ['browserLongTask', 'browserResource', 'browserStartup', 'browserVital'] },
   { id: 'runtime', label: 'Runtime (heap)', color: '--lane-marker', types: ['runtime'] },
   { id: 'marker', label: 'Markers', color: '--lane-marker', types: ['marker'] },
 ];
@@ -454,16 +455,20 @@ export function describeShort(e) {
     case 'lifecycle': return `${e.method} ${short(e.componentType)}`;
     case 'componentCreated': return `Created ${short(e.componentType)}`;
     case 'componentDisposed': return `Disposed ${short(e.componentType)}`;
+    case 'componentRetained': return `Retained ${short(e.componentType)} #${e.componentInstanceId} (leak?)`;
     case 'componentChildren': return `Children of ${short(e.componentType)}`;
     case 'renderRequest': return `StateHasChanged ${short(e.componentType)} (${e.result})`;
     case 'navigation': return `Navigate ${e.route || short(e.componentType)}`;
     case 'http': return `${e.method} ${e.url}`;
+    case 'dbCommand': return `SQL ${e.commandText ? (e.commandText.length > 90 ? `${e.commandText.slice(0, 90)}…` : e.commandText) : ''}`;
     case 'jsInterop': return `${e.direction === 'JSToDotNet' ? '←' : '→'} ${e.identifier}`;
     case 'runtime': return 'Runtime sample';
     case 'circuit': return `Circuit ${e.change}`;
     case 'circuitActivity': return `Circuit ${e.activityName || 'activity'}`;
     case 'browserLongTask': return `${e.entryType || 'Long task'}`;
     case 'browserResource': return `${e.initiatorType || 'resource'} ${e.url}`;
+    case 'browserStartup': return `Startup: interactive at ${Math.round(e.interactiveMs)} ms`;
+    case 'browserVital': return `${e.name} ${e.name === 'CLS' ? e.value : `${Math.round(e.value)} ms`} (${e.rating || '?'})`;
     case 'operation': return e.name || 'Operation';
     case 'marker': return e.name || e.markerType || 'Marker';
     default: return e.type;

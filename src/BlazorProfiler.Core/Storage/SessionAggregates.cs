@@ -27,12 +27,15 @@ public sealed class SessionAggregates
     private readonly Dictionary<string, HandlerAggregate> _handlers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EndpointAggregate> _endpoints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, InteropAggregate> _interop = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, QueryAggregate> _queries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, double> _navigations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CircuitAggregate> _circuits = new(StringComparer.Ordinal);
     private readonly double[] _kindCounts = new double[(int)ProfilerEventKind.Operation + 1];
     private readonly DurationStats _batches = new();
     private readonly DurationStats _interactions = new();
     private readonly DurationStats _longTasks = new();
+    private readonly Dictionary<string, BrowserVitalEvent> _vitals = new(StringComparer.Ordinal);
+    private BrowserStartupEvent? _startup;
 
     private double _batchUpdatedComponents;
     private int _batchMaxUpdatedComponents;
@@ -124,6 +127,18 @@ public sealed class SessionAggregates
                     break;
                 }
 
+            case ComponentRetainedEvent retained:
+                {
+                    GetComponent(retained.ComponentType).Retained += weight;
+                    var instance = TrackInstance(retained);
+                    if (instance is not null)
+                    {
+                        instance.Retained = true;
+                    }
+
+                    break;
+                }
+
             case ParametersSetEvent parameters:
                 {
                     var component = GetComponent(parameters.ComponentType);
@@ -135,17 +150,11 @@ public sealed class SessionAggregates
                     else if (parameters.ChangeState == ParameterChangeState.ChangedByReferenceOnly)
                     {
                         component.ParametersChangedByReferenceOnly += weight;
-                        if (parameters.ChangedParameters is not null)
-                        {
-                            foreach (var name in parameters.ChangedParameters)
-                            {
-                                component.ReferenceOnlyParameterNames.TryGetValue(name, out var count);
-                                if (count > 0 || component.ReferenceOnlyParameterNames.Count < 32)
-                                {
-                                    component.ReferenceOnlyParameterNames[name] = count + weight;
-                                }
-                            }
-                        }
+                        CountNames(component.ReferenceOnlyParameterNames, parameters.ChangedParameters, weight);
+                    }
+                    else if (parameters.ChangeState == ParameterChangeState.Changed)
+                    {
+                        CountNames(component.ChangedParameterNames, parameters.ChangedParameters, weight);
                     }
 
                     if (parameters.Outcome == ProfilerOutcome.Error)
@@ -180,6 +189,7 @@ public sealed class SessionAggregates
                     var component = GetComponent(render.ComponentType);
                     component.Instrumented = true;
                     component.Renders.Add(render.Duration, weight);
+                    component.RenderReasons[(int)render.Reason] += weight;
                     if (render.OutputUnchanged == true)
                     {
                         component.RendersWithUnchangedOutput += weight;
@@ -351,6 +361,35 @@ public sealed class SessionAggregates
                     break;
                 }
 
+            case DatabaseCommandEvent db:
+                {
+                    var key = db.CommandHash.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var aggregate = GetOrAdd(_queries, key, k => new QueryAggregate(db.CommandText));
+                    aggregate.Durations.Add(db.Duration, weight);
+                    if (db.Outcome != ProfilerOutcome.Success)
+                    {
+                        aggregate.Failures += weight;
+                    }
+
+                    if (!db.IsAsync)
+                    {
+                        aggregate.Synchronous += weight;
+                    }
+
+                    aggregate.RowsRead += db.RowsRead ?? 0;
+                    if (db.ContextType is not null)
+                    {
+                        aggregate.ContextType ??= db.ContextType;
+                    }
+
+                    if (bucket is not null)
+                    {
+                        bucket.DatabaseCommands += weight;
+                    }
+
+                    break;
+                }
+
             case JSInteropEvent js:
                 {
                     var key = string.Concat(js.Direction == InteropDirection.DotNetToJS ? "→ " : "← ", js.Identifier);
@@ -439,6 +478,14 @@ public sealed class SessionAggregates
                 _interactions.Add(interaction.Duration, weight);
                 break;
 
+            case BrowserStartupEvent startup:
+                _startup = startup;
+                break;
+
+            case BrowserVitalEvent vital when vital.Name is not null:
+                _vitals[vital.Name] = vital;
+                break;
+
             case BrowserLongTaskEvent longTask:
                 _longTasks.Add(longTask.Duration, weight);
                 break;
@@ -489,7 +536,30 @@ public sealed class SessionAggregates
             },
             BrowserInteractions = _interactions.ToSummary(_clock),
             BrowserLongTasks = _longTasks.ToSummary(_clock),
+            Startup = _startup is null ? null : new StartupSummary
+            {
+                Timestamp = _startup.Timestamp,
+                NavigationType = _startup.NavigationType,
+                RuntimeKind = _startup.RuntimeKind,
+                TimeToFirstByteMs = _startup.TimeToFirstByteMs,
+                FirstContentfulPaintMs = _startup.FirstContentfulPaintMs,
+                DomContentLoadedMs = _startup.DomContentLoadedMs,
+                LoadMs = _startup.LoadMs,
+                InteractiveMs = _startup.InteractiveMs,
+                FrameworkFiles = _startup.FrameworkFiles,
+                FrameworkTransferBytes = _startup.FrameworkTransferBytes,
+                FrameworkDecodedBytes = _startup.FrameworkDecodedBytes,
+                FrameworkCachedFiles = _startup.FrameworkCachedFiles,
+                FrameworkUncompressedFiles = _startup.FrameworkUncompressedFiles,
+                FrameworkDownloadMs = _startup.FrameworkDownloadMs,
+                LargestFiles = [.. _startup.LargestFiles],
+            },
         };
+
+        foreach (var (name, vital) in _vitals)
+        {
+            summary.Vitals[name] = new VitalSummary { Value = vital.Value, Rating = vital.Rating, TargetTag = vital.TargetTag };
+        }
 
         for (var i = 0; i < _kindCounts.Length; i++)
         {
@@ -547,6 +617,19 @@ public sealed class SessionAggregates
                 NoResponse = Math.Round(interop.NoResponse, 2),
                 PayloadBytes = interop.PayloadBytes,
                 MaxPayloadBytes = interop.MaxPayloadBytes,
+            });
+        }
+
+        foreach (var query in _queries.Values)
+        {
+            summary.Queries.Add(new QuerySummary
+            {
+                CommandText = query.CommandText,
+                ContextType = query.ContextType,
+                Durations = query.Durations.ToSummary(_clock),
+                Failures = Math.Round(query.Failures, 2),
+                Synchronous = Math.Round(query.Synchronous, 2),
+                RowsRead = query.RowsRead,
             });
         }
 
@@ -625,6 +708,24 @@ public sealed class SessionAggregates
         }
 
         return bucket;
+    }
+
+    /// <summary>Counts parameter names, keeping at most 32 distinct names per map (existing names are always counted).</summary>
+    private static void CountNames(Dictionary<string, double> map, string[]? names, double weight)
+    {
+        if (names is null)
+        {
+            return;
+        }
+
+        foreach (var name in names)
+        {
+            map.TryGetValue(name, out var count);
+            if (count > 0 || map.Count < 32)
+            {
+                map[name] = count + weight;
+            }
+        }
     }
 
     private ComponentAggregate GetComponent(string? type) =>
@@ -708,6 +809,7 @@ public sealed class SessionAggregates
         public bool Instrumented { get; set; }
         public double Created { get; set; }
         public double Disposed { get; set; }
+        public double Retained { get; set; }
         public DurationStats Renders { get; } = new();
         public double RendersWithUnchangedOutput { get; set; }
         public double RendersWithOutputComparison { get; set; }
@@ -715,6 +817,8 @@ public sealed class SessionAggregates
         public double ParametersUnchanged { get; set; }
         public double ParametersChangedByReferenceOnly { get; set; }
         public Dictionary<string, double> ReferenceOnlyParameterNames { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, double> ChangedParameterNames { get; } = new(StringComparer.Ordinal);
+        public double[] RenderReasons { get; } = new double[(int)RenderReason.AsyncLifecycleCompletion + 1];
         public double RenderRequestsCoalesced { get; set; }
         public double RenderRequestsSuppressed { get; set; }
         public DurationStats EventHandlers { get; } = new();
@@ -727,6 +831,7 @@ public sealed class SessionAggregates
             Instrumented = Instrumented,
             Created = Math.Round(Created, 2),
             Disposed = Math.Round(Disposed, 2),
+            Retained = Math.Round(Retained, 2),
             Renders = Renders.ToSummary(clock),
             RendersWithUnchangedOutput = Math.Round(RendersWithUnchangedOutput, 2),
             RendersWithOutputComparison = Math.Round(RendersWithOutputComparison, 2),
@@ -734,12 +839,28 @@ public sealed class SessionAggregates
             ParametersUnchanged = Math.Round(ParametersUnchanged, 2),
             ParametersChangedByReferenceOnly = Math.Round(ParametersChangedByReferenceOnly, 2),
             ReferenceOnlyParameters = ReferenceOnlyParameterNames.ToDictionary(p => p.Key, p => Math.Round(p.Value, 2), StringComparer.Ordinal),
+            ChangedParameters = ChangedParameterNames.ToDictionary(p => p.Key, p => Math.Round(p.Value, 2), StringComparer.Ordinal),
+            RenderReasons = CreateReasonMap(RenderReasons),
             RenderRequestsCoalesced = Math.Round(RenderRequestsCoalesced, 2),
             RenderRequestsSuppressed = Math.Round(RenderRequestsSuppressed, 2),
             EventHandlers = EventHandlers.ToSummary(clock),
             Lifecycle = Lifecycle.ToDictionary(p => p.Key.ToString(), p => p.Value.ToSummary(clock), StringComparer.Ordinal),
             Errors = Errors,
         };
+
+        private static Dictionary<string, double> CreateReasonMap(double[] counts)
+        {
+            var map = new Dictionary<string, double>(StringComparer.Ordinal);
+            for (var i = 0; i < counts.Length; i++)
+            {
+                if (counts[i] > 0)
+                {
+                    map[((RenderReason)i).ToString()] = Math.Round(counts[i], 2);
+                }
+            }
+
+            return map;
+        }
     }
 
     private sealed class InstanceAggregate(long id, string? type)
@@ -755,6 +876,7 @@ public sealed class SessionAggregates
         public int ParametersSets { get; set; }
         public int UnchangedParametersSets { get; set; }
         public long? LastRender { get; set; }
+        public bool Retained { get; set; }
 
         public void SetCreated(long timestamp) => Created = timestamp;
 
@@ -773,6 +895,7 @@ public sealed class SessionAggregates
             ParametersSets = ParametersSets,
             UnchangedParametersSets = UnchangedParametersSets,
             LastRenderTimestamp = LastRender,
+            Retained = Retained,
         };
     }
 
@@ -794,6 +917,16 @@ public sealed class SessionAggregates
         public double CacheHits { get; set; }
         public long ResponseBytes { get; set; }
         public Dictionary<int, double> StatusCodes { get; } = [];
+    }
+
+    private sealed class QueryAggregate(string? commandText)
+    {
+        public string? CommandText { get; } = commandText;
+        public string? ContextType { get; set; }
+        public DurationStats Durations { get; } = new();
+        public double Failures { get; set; }
+        public double Synchronous { get; set; }
+        public long RowsRead { get; set; }
     }
 
     private sealed class InteropAggregate(InteropDirection direction, string? identifier)
@@ -832,6 +965,7 @@ public sealed class SessionAggregates
         public double EventHandlerMs { get; set; }
         public double HttpRequests { get; set; }
         public double InteropCalls { get; set; }
+        public double DatabaseCommands { get; set; }
         public long AllocatedBytes { get; set; }
         public int GcCollections { get; set; }
         public long? HeapBytes { get; set; }
@@ -849,6 +983,7 @@ public sealed class SessionAggregates
             EventHandlerMs = Math.Round(EventHandlerMs, 3),
             HttpRequests = Math.Round(HttpRequests, 2),
             InteropCalls = Math.Round(InteropCalls, 2),
+            DatabaseCommands = Math.Round(DatabaseCommands, 2),
             AllocatedBytes = AllocatedBytes,
             GcCollections = GcCollections,
             HeapBytes = HeapBytes,

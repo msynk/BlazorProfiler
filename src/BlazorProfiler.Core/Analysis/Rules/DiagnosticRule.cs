@@ -208,6 +208,7 @@ public static class BuiltInRules
         new HighGcPressureRule(),
         new AllocationSpikeRule(),
         new MemoryGrowthAcrossNavigationRule(),
+        new RetainedComponentsRule(),
         new SlowServerRenderRoundTripRule(),
         new CircuitInstabilityRule(),
         new SlowCircuitActivityRule(),
@@ -215,5 +216,13 @@ public static class BuiltInRules
         new ServerSaturationRule(),
         new SlowBrowserInteractionRule(),
         new LongTaskRule(),
+        new LargeFrameworkDownloadRule(),
+        new SlowInteractivityRule(),
+        new CoreWebVitalsRule(),
+        new NPlusOneQueriesRule(),
+        new DuplicateQueriesRule(),
+        new SlowQueryRule(),
+        new SynchronousQueryOnRendererRule(),
+        new LongLivedDbContextRule(),
     ];
 }
