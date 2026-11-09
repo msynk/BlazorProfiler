@@ -33,7 +33,7 @@ jobs:
       - name: End-to-end tests
         run: dotnet test tests/BlazorProfiler.E2E.Tests --no-build -c Release
       - name: Pack
-        run: dotnet pack src --no-build -c Release -o artifacts/packages
+        run: dotnet pack BlazorProfiler.slnx --no-build -c Release -o artifacts/packages
       - uses: actions/upload-artifact@v4
         with:
           name: packages
