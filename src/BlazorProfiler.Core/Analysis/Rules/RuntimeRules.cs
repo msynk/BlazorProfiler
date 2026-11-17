@@ -281,6 +281,26 @@ public sealed class RetainedComponentsRule : DiagnosticRule
                 }
             }
 
+            // An instance with an identified retainer (an event handler on a service, a static event, an undisposed
+            // DotNetObjectReference) is held by something other than the renderer's previous render tree.
+            // Tentative retainers (a timer that may already be disposed) are shown but do not decide the classification.
+            static bool HasRetainer(ComponentRetainedEvent e) => e.RetainedBy?.Any(r => !ComponentRetainedEvent.IsTentative(r)) == true;
+            var held = single.Where(HasRetainer).ToList();
+            if (held.Count > 0)
+            {
+                accumulating.AddRange(held);
+                single.RemoveAll(HasRetainer);
+            }
+
+            var definite = retained.Any(HasRetainer);
+            var retainers = retained
+                .SelectMany(e => e.RetainedBy ?? [])
+                .OrderBy(r => ComponentRetainedEvent.IsTentative(r))
+                .GroupBy(r => r, StringComparer.Ordinal)
+                .OrderByDescending(g => g.Count())
+                .Take(3)
+                .Select(g => g.Count() > 1 ? $"{g.Key} (×{g.Count()})" : g.Key)
+                .ToList();
             var scopeEnded = retained.Where(e => e.Reason == RetentionReason.ScopeEnded).ToList();
             var likely = accumulating.Count + scopeEnded.Count;
             var count = retained.Count;
@@ -296,7 +316,9 @@ public sealed class RetainedComponentsRule : DiagnosticRule
                 Evidence("Released by", scopeEnded.Count == count ? "end of circuit/request scope" : scopeEnded.Count == 0 ? "disposal" : $"disposal ({FormatNumber(count - scopeEnded.Count)}), scope end ({FormatNumber(scopeEnded.Count)})"),
                 Evidence("Full collections survived (max)", FormatNumber(survived)),
                 Evidence("Circuits", circuits > 0 ? FormatNumber(circuits) : "none (WebAssembly or static rendering)", circuits > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
-                Evidence("Retaining path", "not determined (use a memory profiler or dotnet-gcdump)", ValueQuality.Unavailable),
+                retainers.Count > 0
+                    ? Evidence("Likely retained by", string.Join("; ", retainers), ValueQuality.Inferred)
+                    : Evidence("Retaining path", "not determined (no event subscription, static event, DotNetObjectReference, or timer found; use dotnet-gcdump)", ValueQuality.Unavailable),
             };
             var caveats = new List<string>
             {
@@ -327,7 +349,7 @@ public sealed class RetainedComponentsRule : DiagnosticRule
                 ? "their circuit or request scope had ended"
                 : scopeEnded.Count == 0 ? "they were disposed" : "they were disposed or their circuit or request scope had ended";
             var knownStructure = scopeEnded.Count > 0 || accumulating.Any(e => parentOf.ContainsKey(e.ComponentInstanceId));
-            var confidence = (forced || survived >= 3) && knownStructure ? DiagnosticConfidence.High : DiagnosticConfidence.Medium;
+            var confidence = ((forced || survived >= 3) && knownStructure) || definite ? DiagnosticConfidence.High : DiagnosticConfidence.Medium;
 
             yield return Create(
                 $"{FormatNumber(likely)} released {shortType} instance(s) are leaking",
@@ -335,14 +357,14 @@ public sealed class RetainedComponentsRule : DiagnosticRule
                 confidence,
                 $"{FormatNumber(likely)} instance(s) of {shortType} were still reachable after {survived} full garbage collection(s){(forced ? " (including collections forced by a leak check)" : string.Empty)}, although {reason}. The retention accumulates, so it is not explained by the renderer's previous render tree. The oldest was released {oldestSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} s before the check.",
                 "Something with a longer lifetime still references these components, so they (and everything they reference: render trees, parameters, injected scoped services) cannot be collected. On Blazor Server this memory accumulates per user until the process restarts; in WebAssembly it accumulates in the browser tab.",
-                "Unsubscribe from events of longer-lived services in Dispose (a frequent cause: `State.OnChange += StateHasChanged` without `-=`), dispose timers, CancellationTokenSources and DotNetObjectReference instances, and avoid static fields or caches that hold components, RenderFragments, or lambdas capturing `this`. Implement IDisposable/IAsyncDisposable in the component (`@implements IDisposable`) and release everything there.",
+                (retainers.Count > 0 ? $"Start with the retainer found: {retainers[0]}. " : string.Empty) + "Unsubscribe from events of longer-lived services in Dispose (a frequent cause: `State.OnChange += StateHasChanged` without `-=`), dispose timers, CancellationTokenSources and DotNetObjectReference instances, and avoid static fields or caches that hold components, RenderFragments, or lambdas capturing `this`. Implement IDisposable/IAsyncDisposable in the component (`@implements IDisposable`) and release everything there.",
                 evidence,
                 new ImpactEstimate { Occurrences = likely, Method = "Number of released instances that accumulate in memory; their memory size is not measured.", Quality = ValueQuality.Measured },
                 componentType: group.Key,
                 subject: group.Key,
                 caveats: caveats,
                 related: accumulating.Concat(scopeEnded).Concat(single),
-                codeHint: $"{shortType}: Dispose, event subscriptions, timers");
+                codeHint: retainers.Count > 0 ? retainers[0] : $"{shortType}: Dispose, event subscriptions, timers");
         }
     }
 }
@@ -638,7 +660,13 @@ public sealed class LongTaskRule : DiagnosticRule
 
         var totalBlocking = tasks.Sum(t => t.BlockingMs);
         var maxMs = context.Ms(tasks.Max(t => t.Duration));
-        var scripts = tasks.Select(t => t.Script).Where(s => !string.IsNullOrEmpty(s)).GroupBy(s => s).OrderByDescending(g => g.Count()).Take(3).Select(g => g.Key!).ToList();
+        // Long Animation Frame script attribution (function, source, duration) when available; otherwise the longest script's source.
+        var allAttributed = LongFrameScriptStats.Aggregate(tasks);
+        var attributed = allAttributed.Take(3).ToList();
+        var scripts = attributed.Count > 0
+            ? attributed.Select(s => $"{s.Label} ({FormatMs(s.TotalMs)} in {s.Frames} frame(s){(s.IsFramework ? ", Blazor/.NET runtime" : string.Empty)})").ToList()
+            : tasks.Select(t => t.Script).Where(s => !string.IsNullOrEmpty(s)).GroupBy(s => s).OrderByDescending(g => g.Count()).Take(3).Select(g => g.Key!).ToList();
+        var frameworkShare = allAttributed.Count > 0 ? allAttributed.Where(s => s.IsFramework).Sum(s => s.TotalMs) / Math.Max(1, allAttributed.Sum(s => s.TotalMs)) : 0;
         var overlapping = context.Events
             .Where(e => e is RenderBatchEvent or EventHandlerEvent)
             .Where(e => tasks.Any(t => e.Timestamp <= t.EndTimestamp && e.EndTimestamp >= t.Timestamp))
@@ -657,7 +685,8 @@ public sealed class LongTaskRule : DiagnosticRule
             [
                 Evidence("Long frames", FormatNumber(tasks.Count)),
                 Evidence("Maximum", FormatMs(maxMs)),
-                Evidence("Top scripts", scripts.Count > 0 ? string.Join(", ", scripts) : "not reported", scripts.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
+                Evidence("Top scripts", scripts.Count > 0 ? string.Join("; ", scripts) : "not reported", scripts.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
+                Evidence("Share of attributed script time in Blazor/.NET runtime", attributed.Count > 0 ? FormatPercent(frameworkShare) : "unavailable", attributed.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
                 Evidence("Overlapping .NET work", FormatNumber(overlapping.Count), ValueQuality.Inferred),
             ],
             new ImpactEstimate { TotalMs = Math.Round(totalBlocking, 3), Occurrences = tasks.Count, Method = "Sum of browser-reported blocking durations.", Quality = ValueQuality.Measured },

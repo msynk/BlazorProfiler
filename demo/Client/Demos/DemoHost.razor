@@ -20,6 +20,9 @@
       case "interop": <InteropChatter /> break;
       case "allocations": <AllocationSpike /> break;
       case "leaky": <LeakyComponent /> break;
+      case "churn": <KeyedReload /> break;
+      case "layout": <LayoutThrash /> break;
+      case "frustration": <Frustration /> break;
       default: <p>Pick a demo. Each one reproduces a performance problem that a diagnostic rule detects.</p> break;
     }
   </section>

@@ -2,7 +2,41 @@
 
 ## Unreleased
 
-Improvements from a [study of profilers across ecosystems](docs/competitive-analysis.md).
+Improvements from a [second study of profilers across ecosystems](docs/competitive-analysis.md#second-study-late-november-2026).
+
+- **MCP** for coding agents: `/_blazor-profiler/mcp` (Streamable HTTP; read-only by default, `McpAllowControl` adds
+  session control and commands; same access rules as the API) and `blazor-profiler mcp <trace>` (stdio). Tools:
+  `list_sessions`, `get_overview`, `list_findings`, `explain_finding`, `list_interactions`, `get_interaction`,
+  `list_components`, `get_component`, `get_report`, `control_session`, `run_command`.
+- **Long Animation Frame script attribution** (invoker, invoker type, sanitized source, function, forced layout, pause;
+  frame render and style/layout phases) and rule **BP7006** (forced synchronous layout, attributed to the script or to the
+  JS interop call running in the frame). BP7002 evidence lists attributed scripts and the share spent in Blazor/.NET.
+- **Frustration signals** (rage clicks, dead clicks; `Collectors.FrustrationSignals`, `FrustrationIgnoreSelector`) and rule
+  **BP7007** with the correlated .NET work.
+- **BP5004 retainers**: event subscriptions on referenced services, static events, undisposed `DotNetObjectReference`
+  instances, and timers (`ComponentRetainedEvent.RetainedBy`).
+- Rule **BP1008**: components recreated instead of reused (unstable `@key`, objects recreated on reload, markup replaced
+  while loading).
+- **OpenTelemetry** (opt-in, `ProfilerOptions.Telemetry`): `BlazorProfiler` meter and activity source.
+- Dashboard: **Responsiveness** view; render-tree **flame graph** per interaction; per-component render p50/p95 in the
+  session comparison; script attribution and retainers in event details.
+- CLI: `compare` reports per-component regressions; new `mcp` command.
+- Benchmarks: allocation regression gate in CI (`benchmarks/check-allocations.ps1`, `benchmarks/allocation-baseline.json`).
+- Demos: *Rows recreated*, *Layout thrashing*, *Rage and dead clicks*.
+- **Interaction contentful paint** (`BrowserInteractionEvent.ContentPaintMs`, Chromium) and rule **BP7008**: interaction
+  results that paint long after the first paint.
+- Interactions: **latency heatmap** with "explain the selection" (attributes over-represented among slow operations).
+- Timeline: **compare two windows** of one session (select a range, use it as baseline, compare another).
+- Toolbar: **deep capture** (CPU samples, GC dump, runtime counters as `.nettrace`) in WebAssembly builds with
+  `EnableDiagnostics`, recorded as timeline markers.
+- End-to-end tests in Firefox and WebKit, and for Blazor Server circuit reconnection; CI installs all three browsers.
+- A two-hour simulated session test: storage, aggregates, analysis, the API, MCP, and export stay bounded and consistent
+  after eviction.
+- Event schema version 3 (see [migration notes](docs/migration.md)).
+
+### Earlier unreleased changes
+
+Improvements from the [first study of profilers across ecosystems](docs/competitive-analysis.md).
 
 - Dashboard: **Interactions** view (operations with duration, browser latency, renders, batches, HTTP, database, interop,
   findings; per-operation waterfall and components ranked by render time); **Database** view; **Startup** panel; render

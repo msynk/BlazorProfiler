@@ -1,0 +1,35 @@
+<h2>Rage and dead clicks</h2>
+<p><em>Pay</em> waits three seconds without any feedback, so users click it again and again (a rage click). <em>Help</em>
+   has no click handler at all, so clicking it changes nothing (a dead click). The browser module detects both from clicks
+   and DOM changes; rule BP7007 reports them with the .NET work that was running. <em>Pay (with feedback)</em> shows the fix.</p>
+<button id="pay" @onclick="PayAsync">Pay</button>
+<button id="pay-feedback" @onclick="PayWithFeedbackAsync" disabled="@busy">@(busy ? "Paying…" : "Pay (with feedback)")</button>
+<button id="help">Help</button>
+<p id="frustration-status">@status</p>
+@code {
+    private bool busy;
+    private string status = "";
+    private int payments;
+
+    private async Task PayAsync()
+    {
+        // The bug: no busy state, no progress, and repeated clicks start the work again.
+        await Task.Delay(3000);
+        payments++;
+        status = $"Paid ({payments} payment(s) started)";
+    }
+
+    private async Task PayWithFeedbackAsync()
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        StateHasChanged();
+        await Task.Delay(3000);
+        busy = false;
+        status = "Paid once";
+    }
+}

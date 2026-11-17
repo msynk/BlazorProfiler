@@ -137,8 +137,17 @@ public sealed class BrowserInteractionEvent : ProfilerEvent
     /// <summary>Time from the end of processing until the next frame was presented, in milliseconds.</summary>
     public double PresentationDelayMs { get; set; }
 
+    /// <summary>
+    /// Time from the input until the content the interaction changed was painted, in milliseconds (the browser's
+    /// <c>interaction-contentful-paint</c> entries, Chromium). Unlike <see cref="ProfilerEvent.Duration"/>, which ends at the
+    /// first paint after the event handlers, it includes content rendered after asynchronous work, such as an awaited
+    /// WebAssembly handler that loads data. Null when the browser did not report it: other browsers, interactions that
+    /// painted no new content, and Blazor Server, whose updates arrive over the circuit outside the interaction's task chain.
+    /// </summary>
+    public double? ContentPaintMs { get; set; }
+
     /// <inheritdoc />
-    public override int EstimateSize() => base.EstimateSize() + StringSize(EventType) + StringSize(TargetTag) + 24;
+    public override int EstimateSize() => base.EstimateSize() + StringSize(EventType) + StringSize(TargetTag) + 32;
 }
 
 /// <summary>A long task or long animation frame observed by the browser.</summary>
@@ -157,8 +166,132 @@ public sealed class BrowserLongTaskEvent : ProfilerEvent
     /// <summary>The sanitized source of the longest script, when reported (long animation frames only).</summary>
     public string? Script { get; set; }
 
+    /// <summary>
+    /// Time the frame spent in forced (synchronous) style and layout, summed over its scripts, in milliseconds: layout that a
+    /// script triggered by reading geometry after changing the DOM (long animation frames only; zero when not reported).
+    /// </summary>
+    public double ForcedStyleAndLayoutMs { get; set; }
+
+    /// <summary>Time from the start of the frame's rendering phase (<c>renderStart</c>) until its end, in milliseconds.</summary>
+    public double RenderMs { get; set; }
+
+    /// <summary>Time from the start of style and layout (<c>styleAndLayoutStart</c>) until the end of the frame, in milliseconds.</summary>
+    public double StyleAndLayoutMs { get; set; }
+
+    /// <summary>
+    /// The longest scripts that ran in the frame (long animation frames only; at most <see cref="MaxScripts"/>), with Long
+    /// Animation Frame script attribution.
+    /// </summary>
+    public List<LongFrameScript>? Scripts { get; set; }
+
+    /// <summary>The maximum number of scripts kept per frame.</summary>
+    public const int MaxScripts = 5;
+
     /// <inheritdoc />
-    public override int EstimateSize() => base.EstimateSize() + StringSize(EntryType) + StringSize(Script) + 8;
+    public override int EstimateSize() =>
+        base.EstimateSize() + StringSize(EntryType) + StringSize(Script) + 32 + (Scripts?.Sum(s => s.EstimateSize()) ?? 0);
+}
+
+/// <summary>
+/// A script that ran during a long animation frame (a <c>PerformanceScriptTiming</c> entry of the Long Animation Frames API).
+/// Script contents are never captured; only the invoker, the sanitized source location, and timings.
+/// </summary>
+public sealed class LongFrameScript
+{
+    /// <summary>
+    /// What invoked the script, as reported by the browser: for example <c>BUTTON#save.onclick</c>,
+    /// <c>Window.requestAnimationFrame</c>, <c>Response.json.then</c>, or a script URL.
+    /// </summary>
+    public string? Invoker { get; set; }
+
+    /// <summary>
+    /// The invoker type: <c>user-callback</c>, <c>event-listener</c>, <c>resolve-promise</c>, <c>reject-promise</c>,
+    /// <c>classic-script</c>, or <c>module-script</c>.
+    /// </summary>
+    public string? InvokerType { get; set; }
+
+    /// <summary>The sanitized URL of the script source, when known.</summary>
+    public string? SourceUrl { get; set; }
+
+    /// <summary>The name of the function that was invoked, when known.</summary>
+    public string? SourceFunctionName { get; set; }
+
+    /// <summary>The character position of the function in the source, or -1 when unknown.</summary>
+    public int SourceCharPosition { get; set; } = -1;
+
+    /// <summary>Total script duration in milliseconds (including microtasks it scheduled).</summary>
+    public double DurationMs { get; set; }
+
+    /// <summary>Time spent in forced (synchronous) style and layout caused by this script, in milliseconds.</summary>
+    public double ForcedStyleAndLayoutMs { get; set; }
+
+    /// <summary>Time the script spent paused in synchronous operations (alert, synchronous XHR), in milliseconds.</summary>
+    public double PauseMs { get; set; }
+
+    /// <summary>A display label: the function name and source file when known, otherwise the invoker.</summary>
+    public string Label
+    {
+        get
+        {
+            var file = SourceUrl is { Length: > 0 } url ? url[(url.LastIndexOf('/') + 1)..] : null;
+            if (file is { Length: > 0 } && file.IndexOfAny(['?', '#']) is var cut and > 0)
+            {
+                file = file[..cut];
+            }
+
+            var function = SourceFunctionName is { Length: > 0 } name ? name : null;
+            return (function, file) switch
+            {
+                (not null, not null) => $"{function} ({file})",
+                (not null, null) => function,
+                (null, not null) => $"{Invoker ?? "script"} ({file})",
+                _ => Invoker ?? "(unknown script)",
+            };
+        }
+    }
+
+    internal int EstimateSize() => 64 + Size(Invoker) + Size(InvokerType) + Size(SourceUrl) + Size(SourceFunctionName);
+
+    private static int Size(string? value) => value is null ? 0 : 22 + (value.Length * 2);
+}
+
+/// <summary>The kind of a <see cref="BrowserFrustrationEvent"/>.</summary>
+public enum FrustrationSignal
+{
+    /// <summary>Several clicks in quick succession on the same spot, typically because the page did not respond.</summary>
+    RageClick = 0,
+
+    /// <summary>A click on an interactive element (button, link, input) after which the page did not change.</summary>
+    DeadClick = 1,
+}
+
+/// <summary>
+/// A user frustration signal observed in the browser: a rage click or a dead click. Detected by the browser module from
+/// click positions and DOM mutations; element content, text, and input values are never captured.
+/// </summary>
+public sealed class BrowserFrustrationEvent : ProfilerEvent
+{
+    /// <inheritdoc />
+    [JsonIgnore]
+    public override ProfilerEventKind Kind => ProfilerEventKind.BrowserFrustration;
+
+    /// <summary>The signal.</summary>
+    public FrustrationSignal Signal { get; set; }
+
+    /// <summary>The number of clicks the signal covers (one for a dead click).</summary>
+    public int ClickCount { get; set; } = 1;
+
+    /// <summary>The lower-case tag name of the clicked element.</summary>
+    public string? TargetTag { get; set; }
+
+    /// <summary>
+    /// A short structural description of the clicked element: its tag, <c>id</c>, and up to two class names (for example
+    /// <c>button#save.btn.btn-primary</c>). Never contains text or attribute values other than the id and classes.
+    /// </summary>
+    public string? Target { get; set; }
+
+    /// <inheritdoc />
+    public override int EstimateSize() => base.EstimateSize() + 8 + StringSize(TargetTag) + StringSize(Target);
 }
 
 /// <summary>

@@ -138,7 +138,8 @@ internal sealed class EventSampler
             or ProfilerEventKind.ComponentDisposed
             or ProfilerEventKind.ComponentRetained
             or ProfilerEventKind.BrowserStartup
-            or ProfilerEventKind.BrowserVital;
+            or ProfilerEventKind.BrowserVital
+            or ProfilerEventKind.BrowserFrustration;
 }
 
 /// <summary>Applies <see cref="FilterOptions"/>.</summary>
@@ -235,8 +236,26 @@ internal sealed class RedactionProcessor : IProfilerEventProcessor
             case JSInteropEvent js when js.Identifier is not null:
                 js.Identifier = _policy.SanitizeIdentifier(js.Identifier);
                 break;
-            case BrowserLongTaskEvent longTask when longTask.Script is not null:
-                longTask.Script = _policy.SanitizeUrl(longTask.Script);
+            case BrowserLongTaskEvent longTask:
+                if (longTask.Script is not null)
+                {
+                    longTask.Script = _policy.SanitizeUrl(longTask.Script);
+                }
+
+                foreach (var script in longTask.Scripts ?? [])
+                {
+                    if (script.SourceUrl is not null)
+                    {
+                        script.SourceUrl = _policy.SanitizeUrl(script.SourceUrl);
+                    }
+
+                    // Script and module invokers are the script's URL.
+                    if (script.Invoker is not null && script.Invoker.Contains("://", StringComparison.Ordinal))
+                    {
+                        script.Invoker = _policy.SanitizeUrl(script.Invoker);
+                    }
+                }
+
                 break;
         }
 

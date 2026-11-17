@@ -1,7 +1,8 @@
 # Competitive analysis
 
 A survey of profilers, devtools, and diagnostics tools across ecosystems (November 2026), the gaps it revealed in
-BlazorProfiler, and what was changed as a result. The goal was not feature parity with every tool. The goal was to adopt
+BlazorProfiler, and what was changed as a result. A [second study](#second-study-late-november-2026) at the end of this
+document covers the roadmap items left by the first and what changed in the field since. The goal was not feature parity with every tool. The goal was to adopt
 the ideas that proved themselves elsewhere and that fit a profiler running *inside* a Blazor app, with its constraints:
 components have no DOM element of their own, Blazor Server renders on the server and ships diffs over SignalR, and
 WebAssembly runs .NET on the browser's main thread.
@@ -149,3 +150,97 @@ Two findings came out of verifying the new features against the real renderer:
 5. Statistics per component across sessions (histograms, p50/p95 deltas) in the comparison view.
 6. A Blazor-precise dead-click rule and an `@key` churn rule (same component type disposed and recreated at the same
    position within one operation).
+
+## Second study (late November 2026)
+
+A second pass looked at what the first one left on the roadmap and at what changed in the field since: Chrome's agent
+tooling and new performance APIs, Microsoft's .NET 10/11 diagnostics, continuous profilers, and the comparison and
+statistics views of native and game profilers. Three areas were researched in parallel from official documentation,
+release notes, and source code:
+
+1. **.NET and Blazor**: Bit.BevTools, BlazorDeveloperTools, Blazor.WhyDidYouRender, WebVella.BlazorTrace, the .NET 10/11
+   Components and SignalR instrumentation, WebAssembly diagnostics, MiniProfiler, dotMemory, Visual Studio, Datadog,
+   Pyroscope, Aspire, and Avalonia's MCP server.
+2. **JavaScript frameworks and the browser**: Long Animation Frames script attribution, web-vitals v5 attribution, soft
+   navigations and interaction contentful paint (Chrome 151), the DevTools extensibility API and agent tooling, React,
+   Angular, Vue, and Nuxt devtools, and RUM frustration signals (Datadog, Sentry).
+3. **Everything else**: server toolbars (Symfony, Django, Laravel, Phoenix LiveDebugger and LiveDashboard), continuous
+   profiling and OpenTelemetry (Pyroscope, Sentry, Datadog, Honeycomb, the OTel profiles signal), native and game
+   profilers (Tracy, Unity Profile Analyzer, Unreal Insights, Instruments, Flutter, Compose, LeakCanary), and MCP servers
+   of profiling and observability products (Chrome DevTools, Sentry, Datadog, Grafana, Tidewave, Laravel Boost, Next.js).
+
+### What the field added
+
+| Pattern | Seen in | Relevance to BlazorProfiler |
+|---|---|---|
+| In-app MCP endpoints for coding agents, read-only by default, "list, then explain" tools, aggregates before raw data | Tidewave (`/tidewave/mcp`), Laravel Boost, Next.js `/_next/mcp`, Chrome DevTools MCP (`performance_analyze_insight`), Datadog, Aspire | The roadmap's first item; the shape of the tools matters as much as the transport |
+| Long Animation Frame script attribution (`invoker`, `invokerType`, `sourceURL`, `sourceFunctionName`, `forcedStyleAndLayoutDuration`, `pauseDuration`) | Chrome DevTools "Forced reflow" insight, web-vitals v5 `longestScript`, SpeedCurve, DebugBear | Explains *which script* blocked the main thread; in Blazor the entry point is often the framework itself |
+| Frustration signals: rage clicks, dead clicks, error clicks | Datadog RUM, Sentry session replay (`slowClickIgnoreSelector`) | Blazor can do better than RUM: it knows whether a handler ran |
+| Leak "held by" classification and grouped leak signatures | BevTools (event handler, lambda, timer, `DotNetObjectReference`), LeakCanary, Flutter leak_tracker, Chrome DevTools MCP retaining paths | The roadmap's BP5004 retaining-path item |
+| Spans and metrics in the user's own observability stack | Blazor.WhyDidYouRender (OpenTelemetry output), Sentry `ui.long-animation-frame` spans, Pyroscope span profiles, Aspire browser telemetry | The roadmap's OpenTelemetry item |
+| Render tree flame graphs with skipped work greyed out | React DevTools, Angular DevTools profiler (components that did not run are greyed), Perfetto area flame graphs | Shows what memoization (`ShouldRender`, unchanged parameters) saved |
+| Distribution-aware comparison (p50/p95, histograms, box plots), per-marker regression detection | Unity Profile Analyzer, Tracy compare, Sentry function regressions, Grafana diff flame graphs | The roadmap's per-component cross-session statistics item |
+| Unstable-identity diagnostics (components rebuilt instead of reused) | Compose stability reports, Flutter rebuild stats, React key warnings | The roadmap's `@key` churn item |
+| Interaction contentful paint and soft navigations (Chrome 151), `navigationId` on entries | Chrome, web-vitals | Fixes INP's blind spot for async and Blazor Server work; not adopted yet (see below) |
+| In-page agent tools (`devtoolstooldiscovery`) and WebMCP | Chrome DevTools for agents (June 2026), Angular | Promising but experimental; not adopted yet |
+
+### Gaps found in BlazorProfiler
+
+| Gap | Severity for users |
+|---|---|
+| No way for a coding agent to read sessions and findings (only "Copy for AI" by hand) | High: agents are now a primary consumer of profiler output |
+| Long frames named only "the longest script's URL"; forced layout invisible | High: layout thrashing in interop code is a common, invisible cost |
+| No frustration signals; the dead-click rule was only an idea | Medium |
+| BP5004 said *that* a component leaked, never *why* | High: the fix depends entirely on the retainer |
+| No OpenTelemetry output; profiler data could not be seen next to traces in Aspire | Medium |
+| Components recreated instead of reused were invisible (only counted as "many instances") | Medium |
+| Interactions showed a ranked list but no hierarchy; no view of skipped components | Medium |
+| Comparison and the CLI compared totals only; a regression in one component could hide in the sum | Medium |
+| Long animation frames, interactions, and frustration had no view of their own | Low |
+
+### What changed
+
+| Improvement | Inspired by | Where |
+|---|---|---|
+| **MCP endpoint** `/_blazor-profiler/mcp` (Streamable HTTP, JSON responses): `list_sessions`, `get_overview`, `list_findings` then `explain_finding`, `list_interactions` then `get_interaction`, `list_components`, `get_component`, `get_report`; `control_session` and `run_command` only with `McpAllowControl`. Same access rules as the API; JSON content type and local `Origin` required | Tidewave, Laravel Boost, Next.js MCP, Chrome DevTools MCP (list then analyze), Datadog (aggregates first) | `ProfilerMcpServer` (Core), `MapBlazorProfiler` (Server) |
+| **`blazor-profiler mcp <trace>`**: the same tools over stdio for exported traces (WebAssembly apps, CI artifacts) | BevTools (MCP over exports) | CLI |
+| **Long animation frame script attribution**: the 5 longest scripts per frame (invoker, invoker type, sanitized source, function, forced layout, pause), frame render and style/layout phases | Chrome DevTools insights, web-vitals, SpeedCurve | `BrowserLongTaskEvent.Scripts`; BP7002 evidence |
+| **BP7006 Forced synchronous layout**: names the script that forced layout, or the JS interop call running in the frame when the browser attributes the time to Blazor's own entry point (verified end to end: in WebAssembly, interop called from a handler is attributed to `blazor.web.js`) | Chrome "Forced reflow" insight | `BrowserRules.cs` |
+| **Frustration signals** and **BP7007**: rage clicks (3+ clicks within 1 s on one spot) and dead clicks (no DOM or URL change within 1 s), grouped by element (tag, id, classes), with the .NET work running at that moment: a slow handler without feedback, a blocked main thread, requests in flight, or *no handler at all* | Datadog, Sentry | `BrowserFrustrationEvent`; browser module; `FrustrationIgnoreSelector` |
+| **Retainers for BP5004**: event subscriptions on objects the component references (injected services), static events, undisposed `DotNetObjectReference` instances, and timers, reported as "held by" paths; a component with an identified retainer is a High-confidence leak | BevTools "held by", LeakCanary, dotMemory event-handler inspection | `RetainerInspector`, `ComponentRetainedEvent.RetainedBy` |
+| **BP1008 Components recreated instead of reused**: instances of one type disposed and created within one operation (unstable `@key`, objects recreated on reload, a list removed while loading) | Compose stability, React keys, Flutter rebuild stats | `RenderingRules.cs` |
+| **OpenTelemetry**: `BlazorProfiler` meter (render, lifecycle, interop, interaction, long frame, LCP/INP/CLS, retained, frustration) and activity source (render, lifecycle, and interop spans parented to the captured trace, so they nest under Blazor's `HandleEvent` span) | WhyDidYouRender, Sentry LoAF spans, Pyroscope span links | `ProfilerTelemetry`, `ProfilerOptions.Telemetry` |
+| **Render-tree flame graph** per interaction: width is render time including descendants, components that did not render are hatched | React and Angular profilers | Interactions → operation details |
+| **Responsiveness view**: interactions with subparts, long frames with a script table (Blazor/.NET scripts marked), rage and dead clicks per element | DebugBear and SpeedCurve script tables, Chrome insights | Dashboard |
+| **Per-component comparison**: render p50/p95 changes in the dashboard comparison (sub-millisecond changes marked as noise); per-component render counts (and p95 with `--include-timings`) in `blazor-profiler compare` | Unity Profile Analyzer, Sentry function regressions | `compareTable`, `TraceCli.CompareComponents` |
+| Demos for each new rule: *Rows recreated*, *Layout thrashing*, *Rage and dead clicks* | | `demo/Client/Demos` |
+| **Interaction contentful paint** and **BP7008** (results that appear long after the first paint, invisible to INP). Verified with Chromium 156 before building on it: entries carry `interactionId`, `startTime`, `duration`, `paintTime`, `presentationTime`; they cover content painted after awaited JavaScript interop in WebAssembly, but not after `HttpClient` responses and only sometimes after `Task.Delay` (the runtime resumes those from its own shared timer and fetch callbacks), and are not emitted for Blazor Server | Chrome 151 soft navigations work, web-vitals | `BrowserInteractionEvent.ContentPaintMs`; Responsiveness view |
+| **Latency heatmap** of operations with "what differs in the selection": attributes over-represented among the selected (slow) operations, ranked by the difference in share | Honeycomb BubbleUp, Datadog latency distributions | Interactions view |
+| **Window comparison** within one session: select a range on the timeline, use it as baseline, compare another range (same table as session comparison) | Grafana Pyroscope baseline/comparison picker, Unity Profile Analyzer | Timeline selection panel |
+| **Deep capture** in WebAssembly: CPU samples, GC dump, and runtime counters through the runtime's diagnostics API (`collectCpuSamples`, `collectGcDump`, `collectMetrics`), offered only when the build enables diagnostics, with a marker on the timeline | .NET WebAssembly EventPipe diagnostics, Tracy/Superluminal capture buttons | Toolbar |
+| End-to-end coverage in **Firefox and WebKit** (WebAssembly collection and bridge, server collection, dashboard, rage clicks) and of **circuit reconnection** (offline, reconnect, collection resumes on the same circuit) | | E2E tests |
+
+Two findings came out of testing against real browsers:
+
+- In Blazor WebAssembly, JavaScript called through interop from an event handler runs inside Blazor's own event listener,
+  so the Long Animation Frames API attributes its forced layout to `blazor.web.js` (`onGlobalEvent`). A rule that trusted
+  script attribution alone would blame the framework; BP7006 therefore falls back to the interop call that ran during the
+  frame and says that the attribution is temporal.
+- A dead-click check that looked for "any DOM change since the click" missed real dead clicks whenever an unrelated update
+  (an earlier handler completing) happened later; the check is now bounded to one second after each click.
+
+### Deliberately not adopted (yet)
+
+| Idea | Why not now |
+|---|---|
+| Soft navigations (Chrome 151) | Verified with Chromium 156: Blazor's router and enhanced navigation produce **no** `soft-navigation` entries (Server or WebAssembly), so per-route vitals cannot rely on them; the profiler's own navigation events already split sessions by route. |
+| In-page agent tools (`devtoolstooldiscovery`) and WebMCP | Experimental flags in Chrome; the server MCP endpoint and the CLI cover agents today. |
+| Zero-code per-instance render timing through renderer internals (BlazorDeveloperTools) | Unchanged: depends on undocumented internals. |
+| Field-level state tracking (`[TrackState]`) and state-container history (BevTools `IBevStateProvider`) | Needs app cooperation through a new API; render causes and changed parameters cover the common case. |
+| OTLP profiles export | The OpenTelemetry profiles signal is still alpha. |
+| Parsing `.nettrace` captures inside the dashboard | The captures open in PerfView, Visual Studio, and `dotnet-trace report`; a trace parser in the dashboard would be a large dependency. |
+
+### Roadmap suggestions (updated)
+
+1. In-page agent tools through Chrome's DevTools extensibility once it leaves experimental status.
+2. Grouping leak reports across sessions by retainer signature (LeakCanary).

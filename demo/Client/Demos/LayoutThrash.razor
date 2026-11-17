@@ -1,0 +1,43 @@
+@implements IAsyncDisposable
+@inject IProfiledJSRuntime JS
+<h2>Layout thrashing</h2>
+<p>Resizes 400 boxes and reads the height of each one right after changing it, which forces the browser to recompute
+   layout 400 times in one frame. The fixed version writes everything first and reads once. Rule BP7006 names the script
+   that forced the layout (from Long Animation Frame attribution, Chromium only); BP7002 reports the long frame.</p>
+<button id="thrash" @onclick="ThrashAsync">Measure each box (thrashing)</button>
+<button id="batched-layout" @onclick="BatchedAsync">Measure once (batched)</button>
+<p id="layout-status">@status</p>
+<div id="layout-boxes" style="display:flex;flex-wrap:wrap;gap:2px;max-height:240px;overflow:hidden"></div>
+@code {
+    private IJSObjectReference? module;
+    private string status = "";
+
+    private async Task<IJSObjectReference> ModuleAsync() =>
+        module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./demo.js");
+
+    private async Task ThrashAsync()
+    {
+        var height = await (await ModuleAsync()).InvokeAsync<double>("thrashLayout", 400);
+        status = $"Measured 400 boxes one by one ({height:0} px total)";
+    }
+
+    private async Task BatchedAsync()
+    {
+        var height = await (await ModuleAsync()).InvokeAsync<double>("batchedLayout", 400);
+        status = $"Measured 400 boxes in one pass ({height:0} px total)";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (module is not null)
+        {
+            try
+            {
+                await module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
+}

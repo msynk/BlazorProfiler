@@ -1,0 +1,8 @@
+@inherits ProfiledComponentBase
+@if (Show)
+{
+    <SubscribingChild />
+}
+@code {
+    [Parameter] public bool Show { get; set; } = true;
+}

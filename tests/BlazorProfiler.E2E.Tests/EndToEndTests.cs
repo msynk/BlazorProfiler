@@ -34,7 +34,7 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         return page;
     }
 
-    private static async Task<JsonElement> BridgeAsync(IPage page, object payload)
+    internal static async Task<JsonElement> BridgeAsync(IPage page, object payload)
     {
         var json = await page.EvaluateAsync<string>(BridgeCall, new { payload });
         var response = JsonDocument.Parse(json).RootElement;
@@ -42,7 +42,7 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         return response;
     }
 
-    private static async Task ClickWhenInteractiveAsync(IPage page, string selector, string expectedText, string resultSelector)
+    internal static async Task ClickWhenInteractiveAsync(IPage page, string selector, string expectedText, string resultSelector)
     {
         // Interactive rendering starts after the page loads: click, wait for the result, and retry only if the click was
         // made before the component became interactive.
@@ -362,6 +362,313 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
             var events = await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 });
             return events.GetProperty("page").GetProperty("events").EnumerateArray().Any(e => e.Str("type") == "browserInteraction" && e.GetProperty("duration").GetInt64() > 0);
         }, 30_000, "No browser interaction was reported.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ServerRageAndDeadClicksAreDetectedWithTheSlowHandler()
+    {
+        var session = await app.StartSessionAsync("frustration");
+        var page = await OpenAsync("server/frustration");
+        await ClickWhenInteractiveAsync(page, "#pay-feedback", "Paid once", "#frustration-status");
+
+        await Task.Delay(3200);
+
+        // Two clicks on a button without a handler, then a burst of clicks on a button whose handler gives no feedback.
+        await page.ClickAsync("#help");
+        await Task.Delay(1500);
+        await page.ClickAsync("#help");
+        await Task.Delay(1500);
+        for (var i = 0; i < 4; i++)
+        {
+            await page.ClickAsync("#pay");
+            await Task.Delay(80);
+        }
+
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "browserFrustration") >= 3, 30_000, "Frustration signals were not reported.");
+        var events = await app.EventsAsync(session);
+        Assert.Contains(events, e => e.Str("type") == "browserFrustration" && e.Str("signal") == "RageClick" && e.Str("target") == "button#pay" && e.GetProperty("clickCount").GetInt32() >= 3);
+        Assert.Contains(events, e => e.Str("type") == "browserFrustration" && e.Str("signal") == "DeadClick" && e.Str("target") == "button#help");
+
+        // The handler event is recorded when PayAsync completes, three seconds after the first click.
+        await Waits.UntilAsync(
+            async () => (await app.FindingsAsync(session)).Any(f => f.Str("ruleId") == "BP7007" && f.Str("subject") == "button#pay" && f.Str("summary").Contains("PayAsync", StringComparison.Ordinal)),
+            20_000,
+            "BP7007 did not name the slow handler.");
+        var findings = await app.FindingsAsync(session);
+        Assert.Contains(findings, f => f.Str("ruleId") == "BP7007" && f.Str("subject") == "button#help");
+
+        // Steady clicking (one click every 700 ms) and keyboard activation are not rage clicks; each steady click on the
+        // handler-less button is a dead click.
+        var deadBefore = (await app.EventsAsync(session)).Count(e => e.Str("type") == "browserFrustration" && e.Str("signal") == "DeadClick");
+        for (var i = 0; i < 3; i++)
+        {
+            await page.ClickAsync("#help");
+            await Task.Delay(700);
+        }
+
+        await page.FocusAsync("#help");
+        for (var i = 0; i < 4; i++)
+        {
+            await page.Keyboard.PressAsync("Enter");
+        }
+
+        await Waits.UntilAsync(
+            async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "browserFrustration" && e.Str("signal") == "DeadClick") >= deadBefore + 3,
+            20_000,
+            "Steady clicks were not reported as dead clicks.");
+        await Task.Delay(2500);
+        Assert.DoesNotContain(await app.EventsAsync(session), e => e.Str("type") == "browserFrustration" && e.Str("signal") == "RageClick" && e.Str("target") == "button#help");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ServerRowsRecreatedOnReloadAreReportedButIdKeyedRowsAreNot()
+    {
+        var session = await app.StartSessionAsync("churn");
+        var page = await OpenAsync("server/churn");
+        await ClickWhenInteractiveAsync(page, "#reload-id-key", "Reloaded (IdKey)", "#reload-status");
+
+        // The first reload switched from object keys to id keys (every row recreated once); later id-keyed reloads reuse rows.
+        await app.ApiAsync($"/sessions/{session}/clear", HttpMethod.Post);
+        await page.ClickAsync("#reload-id-key");
+        await Task.Delay(300);
+        await page.ClickAsync("#reload-id-key");
+        await Task.Delay(1000);
+        Assert.DoesNotContain(await app.FindingsAsync(session), f => f.Str("ruleId") == "BP1008");
+
+        await ClickWhenInteractiveAsync(page, "#reload-object-key", "Reloaded (ObjectKey)", "#reload-status");
+        await ClickWhenInteractiveAsync(page, "#reload-object-key", "Reloaded (ObjectKey)", "#reload-status");
+        await Waits.UntilAsync(async () => (await app.FindingsAsync(session)).Any(f => f.Str("ruleId") == "BP1008"), 20_000, "BP1008 was not reported.");
+        var finding = (await app.FindingsAsync(session)).First(f => f.Str("ruleId") == "BP1008");
+        Assert.EndsWith("ReloadRow", finding.Str("componentType"), StringComparison.Ordinal);
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task WebAssemblyLayoutThrashingIsAttributedToTheScript()
+    {
+        var page = await OpenAsync("wasm/layout");
+        await ClickWhenInteractiveAsync(page, "#thrash", "one by one", "#layout-status");
+        await page.ClickAsync("#thrash");
+
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var report = await BridgeAsync(page, new { op = "findings", sessionId });
+            return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP7006" && f.Str("title").Contains("thrashLayout", StringComparison.Ordinal));
+        }, 30_000, "BP7006 did not attribute the forced layout to thrashLayout.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ServerCircuitReconnectionIsRecordedAndCollectionResumes()
+    {
+        var session = await app.StartSessionAsync("reconnect");
+        await using var context = await app.Browser.NewContextAsync();
+
+        // Keep the page's WebSockets reachable, so the test can drop the circuit's connection at once (network emulation
+        // only takes effect when the server's keep-alive times out, about 30 seconds later).
+        await context.AddInitScriptAsync("""
+            window.WebSocket = new Proxy(window.WebSocket, {
+              construct(target, args) {
+                const socket = new target(...args);
+                (window.__sockets ||= []).push(socket);
+                return socket;
+              },
+            });
+            """);
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(app.BaseUrl + "server/slow-handler");
+        await ClickWhenInteractiveAsync(page, "#block", "Computed", "#slow-status");
+
+        // Dropping the connection makes Blazor reconnect to the same circuit.
+        await page.EvaluateAsync("() => { for (const s of window.__sockets || []) { s.close(); } }");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Any(e => e.Str("type") == "circuit" && e.Str("change") == "ConnectionDown"), 30_000, "No ConnectionDown was recorded.");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "circuit" && e.Str("change") == "ConnectionUp") >= 2, 45_000, "The circuit did not reconnect.");
+
+        // The same circuit keeps being profiled after the reconnection.
+        var circuit = (await app.EventsAsync(session)).First(e => e.Str("type") == "circuit" && e.Str("change") == "ConnectionDown").Str("circuitId");
+        await page.ClickAsync("#block");
+        await Waits.UntilAsync(
+            async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "Block" && e.Str("circuitId") == circuit) >= 2,
+            30_000,
+            "Handlers were not recorded after the reconnection.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task DeepCaptureIsOfferedOnlyInDiagnosticsBuilds()
+    {
+        // The sample is built without <EnableDiagnostics>, so the runtime's capture functions are null: no buttons, and a
+        // programmatic capture explains what is missing instead of failing obscurely.
+        var page = await OpenAsync("wasm/slow-handler");
+        await ClickWhenInteractiveAsync(page, "#block", "Computed", "#slow-status");
+        var available = await page.EvaluateAsync<string>("async () => JSON.stringify((await import('./_content/BlazorProfiler/blazor-profiler.js')).availableCaptures())");
+        Assert.Equal("[]", available);
+        var buttons = await page.EvaluateAsync<string>("() => [...document.querySelector('[data-blazor-profiler=toolbar]').shadowRoot.querySelectorAll('button')].map(b => b.textContent).join('|')");
+        Assert.DoesNotContain("GC dump", buttons, StringComparison.Ordinal);
+        var error = await page.EvaluateAsync<string>("async () => { try { await (await import('./_content/BlazorProfiler/blazor-profiler.js')).captureDiagnostics('gc'); return 'no error'; } catch (e) { return e.message; } }");
+        Assert.Contains("EnableDiagnostics", error, StringComparison.Ordinal);
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task TimelineComparesTwoWindowsOfOneSession()
+    {
+        var session = await app.StartSessionAsync("windows");
+        var page = await OpenAsync("server/slow-handler");
+        await ClickWhenInteractiveAsync(page, "#block", "Computed", "#slow-status");
+        await Task.Delay(1500);
+        await page.ClickAsync("#block");
+        await page.ClickAsync("#block");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "eventHandler") >= 3, 20_000);
+
+        var dashboard = await OpenAsync("_blazor-profiler/");
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        await dashboard.SelectOptionAsync("#session-select", session);
+        await dashboard.ClickAsync("a[data-view=timeline]");
+        var canvas = dashboard.Locator(".timeline-wrap canvas");
+        await canvas.WaitForAsync();
+        async Task SelectAsync(double from, double to)
+        {
+            // Clicking the selection panel's buttons can scroll the page, so the canvas is located again each time.
+            await canvas.ScrollIntoViewIfNeededAsync();
+            var box = (await canvas.BoundingBoxAsync())!;
+            // The canvas can be taller than the viewport; press near its bottom, which scrolling into view keeps visible.
+            var y = box.Y + box.Height - 30;
+            await dashboard.Keyboard.DownAsync("Shift");
+            await dashboard.Mouse.MoveAsync((float)(box.X + (box.Width * from)), (float)y);
+            await dashboard.Mouse.DownAsync();
+            await dashboard.Mouse.MoveAsync((float)(box.X + (box.Width * to)), (float)y, new() { Steps = 5 });
+            await dashboard.Mouse.UpAsync();
+            await dashboard.Keyboard.UpAsync("Shift");
+        }
+
+        await SelectAsync(0.15, 0.5);
+        await dashboard.ClickAsync("#window-baseline");
+        await SelectAsync(0.5, 0.98);
+        await dashboard.ClickAsync("#window-compare");
+        await dashboard.WaitForSelectorAsync("table[aria-label='Metric comparison']", new() { Timeout = 10_000 });
+        Assert.Contains("Baseline", await dashboard.InnerTextAsync("#view"), StringComparison.Ordinal);
+        await dashboard.CloseAsync();
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task WebAssemblyAsyncResultsAreMeasuredByInteractionContentfulPaint()
+    {
+        // "Slow JavaScript" awaits three JavaScript promises before it renders its result: the first paint after the click is
+        // fast, the result paints about half a second later. The browser attributes that paint to the click because the
+        // .NET continuation resumes from a JavaScript promise of the click's task chain. (Continuations resumed by .NET
+        // timers, such as Task.Delay, are attributed only sometimes, because the runtime multiplexes its timers onto one
+        // JavaScript timer.) Each attempt checks what the browser reported, with an independent observer, and then that
+        // the profiler recorded it and BP7008 reported it.
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await using var context = await app.Browser.NewContextAsync();
+            await context.AddInitScriptAsync("""
+                window.__latePaint = 0;
+                new PerformanceObserver(l => { for (const e of l.getEntries()) window.__latePaint = Math.max(window.__latePaint, e.duration); })
+                  .observe({ type: 'interaction-contentful-paint', buffered: true });
+                """);
+            var page = await context.NewPageAsync();
+            await page.GotoAsync(app.BaseUrl + "wasm/interop");
+            await ClickWhenInteractiveAsync(page, "#slow-js", "JavaScript", "#interop-status");
+            await Task.Delay(500);
+            if (await page.EvaluateAsync<double>("() => window.__latePaint") < 400)
+            {
+                continue;
+            }
+
+            await Waits.UntilAsync(async () =>
+            {
+                var info = await BridgeAsync(page, new { op = "info" });
+                var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+                var events = (await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 })).GetProperty("page").GetProperty("events").EnumerateArray();
+                if (!events.Any(e => e.Str("type") == "browserInteraction" && e.TryGetProperty("contentPaintMs", out var cp) && cp.GetDouble() >= 400))
+                {
+                    return false;
+                }
+
+                var report = await BridgeAsync(page, new { op = "findings", sessionId });
+                return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP7008");
+            }, 20_000, "The browser reported a late content paint, but the profiler did not record it or BP7008 did not report it.");
+            return;
+        }
+
+        Assert.Skip("The browser did not attribute the late paint to the click in any attempt; nothing to verify.");
+    }
+
+    [Fact]
+    public async Task LatencyHeatmapExplainsTheSlowestOperations()
+    {
+        var session = await app.StartSessionAsync("heatmap");
+        var page = await OpenAsync("server/slow-handler");
+        await ClickWhenInteractiveAsync(page, "#block", "Computed", "#slow-status");
+        for (var i = 0; i < 5; i++)
+        {
+            await page.ClickAsync("#block");
+            await Task.Delay(800); // spaced out: clicks queued behind a blocked circuit would lengthen each other
+        }
+
+        await page.ClickAsync("#slow-load");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Any(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "LoadAsync"), 20_000);
+
+        var dashboard = await OpenAsync("_blazor-profiler/");
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        await dashboard.SelectOptionAsync("#session-select", session);
+        await dashboard.ClickAsync("a[data-view=interactions]");
+        await dashboard.ClickAsync("#heat-slowest");
+        var table = dashboard.Locator("table[aria-label='Attributes over-represented in the selection']");
+        await table.WaitForAsync(new() { Timeout = 10_000 });
+
+        // The slowest operation awaited the slow endpoint; no other operation called it.
+        var text = await table.InnerTextAsync();
+        Assert.True(text.Contains("api/slow", StringComparison.Ordinal), text + Environment.NewLine + await dashboard.InnerTextAsync("table[aria-label=Operations]"));
+        await dashboard.CloseAsync();
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task McpEndpointServesFindingsToAgents()
+    {
+        var session = await app.StartSessionAsync("mcp");
+        var page = await OpenAsync("server/requests");
+        await ClickWhenInteractiveAsync(page, "#reload", "Reloaded", "#requests-status");
+        await Waits.UntilAsync(async () => (await app.FindingsAsync(session)).Any(f => f.Str("ruleId") == "BP3002"), 20_000);
+
+        static System.Net.Http.StringContent Body(string json) => new(json, System.Text.Encoding.UTF8, "application/json");
+        using var init = await app.Http.PostAsync("_blazor-profiler/mcp", Body("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"""));
+        Assert.Equal(HttpStatusCode.OK, init.StatusCode);
+        var call = """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_findings","arguments":{"session":"SESSION"}}}""".Replace("SESSION", session, StringComparison.Ordinal);
+        using var response = await app.Http.PostAsync("_blazor-profiler/mcp", Body(call));
+        var text = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("result").GetProperty("content")[0].Str("text");
+        Assert.Contains("BP3002", text, StringComparison.Ordinal);
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ResponsivenessViewAndRenderTreeFlameGraphRender()
+    {
+        var session = await app.StartSessionAsync("responsiveness view");
+        var page = await OpenAsync("server/churn");
+        await ClickWhenInteractiveAsync(page, "#reload-object-key", "Reloaded (ObjectKey)", "#reload-status");
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Any(e => e.Str("type") == "componentRender" && e.Str("componentType").EndsWith("ReloadRow", StringComparison.Ordinal)), 20_000);
+
+        var dashboard = await OpenAsync("_blazor-profiler/");
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        await dashboard.SelectOptionAsync("#session-select", session);
+        await dashboard.ClickAsync("a[data-view=responsiveness]");
+        await dashboard.WaitForSelectorAsync("#view h1:has-text('Responsiveness')");
+
+        await dashboard.ClickAsync("a[data-view=interactions]");
+        await dashboard.WaitForSelectorAsync("table[aria-label=Operations] tbody tr", new() { Timeout = 20_000 });
+        await dashboard.ClickAsync("table[aria-label=Operations] tbody tr:has-text('KeyedReload')");
+        await dashboard.WaitForSelectorAsync(".flame .flame-node", new PageWaitForSelectorOptions { Timeout = 15_000 });
+        Assert.True(await dashboard.Locator(".flame .flame-node").CountAsync() > 1);
+        await dashboard.CloseAsync();
         await page.CloseAsync();
     }
 }

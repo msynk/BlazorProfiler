@@ -175,6 +175,56 @@ public class BrowserIngestionTests
     }
 
     [Fact]
+    public async Task IngestsLongAnimationFrameScriptsAndFrustrationSignals()
+    {
+        await using var f = ProfilerFixture.Create();
+        var collector = f.Root.GetRequiredService<BrowserCollector>();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var json = $$"""
+            [
+              {"k":"l","n":"long-animation-frame","t":{{now}},"d":180,"b":130,"s":"https://app.test/grid.js","fl":42.5,"rd":30,"sl":12,
+               "sc":[{"inv":"BUTTON#sort.onclick","it":"event-listener","src":"https://app.test/grid.js?token=abc","fn":"measure","cp":120,"d":95,"fl":42.5,"p":0},
+                     {"inv":"Window.requestAnimationFrame","it":"user-callback","d":-3,"fl":-1}]},
+              {"k":"f","n":"rage","t":{{now}},"d":800,"c":6,"tag":"button","tg":"button#pay.btn"},
+              {"k":"f","n":"dead","t":{{now}},"d":0,"c":1,"tag":"a","tg":"a.help"},
+              {"k":"f","n":"other","t":{{now}},"d":0},
+              {"k":"m","n":"GC dump capture: .nettrace downloaded (512 KB)","t":{{now}},"d":900},
+              {"k":"m","n":"","t":{{now}},"d":0},
+              {"k":"i","n":"click","t":{{now}},"d":24,"id":2,"pr":10,"pd":12,"tag":"button","cp":1180.5},
+              {"k":"i","n":"click","t":{{now}},"d":24,"id":2,"pr":10,"pd":12,"tag":"button","cp":-4}
+            ]
+            """;
+        Assert.Equal(6, collector.Ingest(json, 0));
+        var interactions = f.All<BrowserInteractionEvent>();
+        Assert.Contains(interactions, i => i.ContentPaintMs == 1180.5);
+        Assert.Contains(interactions, i => i.ContentPaintMs is null);
+        var marker = Assert.Single(f.All<MarkerEvent>(), m => m.MarkerType == MarkerType.Custom);
+        Assert.StartsWith("GC dump capture", marker.Name, StringComparison.Ordinal);
+
+        var frame = Assert.Single(f.All<BrowserLongTaskEvent>());
+        Assert.Equal(42.5, frame.ForcedStyleAndLayoutMs);
+        Assert.Equal(30, frame.RenderMs);
+        Assert.Equal(12, frame.StyleAndLayoutMs);
+        Assert.Equal(2, frame.Scripts!.Count);
+        var script = frame.Scripts[0];
+        Assert.Equal("measure", script.SourceFunctionName);
+        Assert.Equal("event-listener", script.InvokerType);
+        Assert.Equal(120, script.SourceCharPosition);
+        Assert.Equal("https://app.test/grid.js?token=[redacted]", script.SourceUrl);
+
+        // Invalid numbers are sanitized instead of failing the batch.
+        Assert.Equal(0, frame.Scripts[1].DurationMs);
+        Assert.Equal(-1, frame.Scripts[1].SourceCharPosition);
+
+        var signals = f.All<BrowserFrustrationEvent>();
+        Assert.Equal(2, signals.Count);
+        var rage = Assert.Single(signals, s => s.Signal == FrustrationSignal.RageClick);
+        Assert.Equal(6, rage.ClickCount);
+        Assert.Equal("button#pay.btn", rage.Target);
+        Assert.Equal("a.help", Assert.Single(signals, s => s.Signal == FrustrationSignal.DeadClick).Target);
+    }
+
+    [Fact]
     public async Task IngestsStartupAndWebVitals()
     {
         await using var f = ProfilerFixture.Create();

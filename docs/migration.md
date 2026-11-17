@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Event schema version 3.** New event type `browserFrustration`; new optional properties on `browserLongTask`
+  (script attribution and forced layout) and `componentRetained` (`retainedBy`). Traces written with schema 1 and 2 still
+  import; traces written with schema 3 are rejected by readers that only know schema 2.
+- `ProfilerEventKind` gained `BrowserFrustration` (85). Code that switches over it exhaustively should handle it.
+- New rules BP1008, BP7006, and BP7007 are on by default. Disable one with `options.Diagnostics.Rules["BP7007"] = new() { Enabled = false }`.
+- The server maps an MCP endpoint at `{RoutePrefix}/mcp` by default (read-only, same access rules as the dashboard API).
+  Set `ProfilerServerOptions.EnableMcp = false` to remove it.
+- Frustration signals are collected by default (`Collectors.FrustrationSignals`); the browser module adds one passive
+  click listener and a mutation observer.
+- `TraceCli.RunAsync` has an overload that takes the standard input reader (used by `blazor-profiler mcp`).
+
 - **Event schema version 2.** New event types: `componentRetained`, `dbCommand`, `browserStartup`, `browserVital`. Traces
   written with schema 1 still import; traces written with schema 2 are rejected by 0.1.0-preview.1 readers.
 - `ProfilerEventKind`, `DiagnosticCategory` (`Database`), and `InstrumentationSource` (`DatabaseDiagnostics`) gained

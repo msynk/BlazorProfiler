@@ -68,6 +68,9 @@ public sealed class ProfilerOptions
     /// <summary>Diagnostic rule thresholds and overrides.</summary>
     public DiagnosticOptions Diagnostics { get; } = new();
 
+    /// <summary>Publishing of profiler measurements as OpenTelemetry-compatible metrics and spans (off by default).</summary>
+    public TelemetryOptions Telemetry { get; } = new();
+
     /// <summary>Applies the defaults of a predefined profile. Call before customizing individual values.</summary>
     public ProfilerOptions UseProfile(ProfilerProfile profile)
     {
@@ -331,6 +334,18 @@ public sealed class CollectorOptions
     public int BrowserInteractionThresholdMs { get; set; } = 40;
 
     /// <summary>
+    /// Detects rage clicks (bursts of clicks on one spot) and dead clicks (clicks on buttons and links after which the page
+    /// does not change) in the browser (rule BP7007). Only the clicked element's tag, id, and class names are recorded.
+    /// </summary>
+    public bool FrustrationSignals { get; set; } = true;
+
+    /// <summary>
+    /// A CSS selector of elements excluded from frustration signals, for example buttons that intentionally change nothing
+    /// visible (<c>.copy-button, [data-no-feedback]</c>).
+    /// </summary>
+    public string? FrustrationIgnoreSelector { get; set; }
+
+    /// <summary>
     /// Watches released component instances (disposed <c>ProfiledComponentBase</c> components, and every component of an
     /// ended circuit or request scope) through weak references, and reports instances still reachable after full garbage
     /// collections (rule BP5004). Costs one weak reference per watched instance.
@@ -387,6 +402,39 @@ public sealed class RuleSettings
 
     /// <summary>An optional severity override.</summary>
     public Analysis.DiagnosticSeverity? Severity { get; set; }
+}
+
+/// <summary>Options for publishing profiler measurements as OpenTelemetry-compatible metrics and spans (see <see cref="Pipeline.ProfilerTelemetry"/>).</summary>
+public sealed class TelemetryOptions
+{
+    /// <summary>
+    /// Publishes metrics through the <c>BlazorProfiler</c> meter: component render and lifecycle durations, JavaScript
+    /// interop durations, browser interaction latency, long animation frames, Core Web Vitals, retained components, and
+    /// frustration signals. Collect them with <c>.AddMeter("BlazorProfiler")</c>. Defaults to false.
+    /// </summary>
+    public bool Metrics { get; set; }
+
+    /// <summary>
+    /// Publishes spans through the <c>BlazorProfiler</c> activity source for component renders, lifecycle methods, and
+    /// JavaScript interop calls (children of the trace active where they ran, for example Blazor's <c>HandleEvent</c>
+    /// span). Collect them with <c>.AddSource("BlazorProfiler")</c>. Defaults to false.
+    /// </summary>
+    public bool Traces { get; set; }
+
+    /// <summary>Spans shorter than this many milliseconds are not published. Defaults to 1 ms.</summary>
+    public double MinimumSpanDurationMs { get; set; } = 1;
+
+    /// <summary>
+    /// Whether browser interactions and long animation frames are published as spans as well (they start traces of their
+    /// own, because the browser's work has no .NET trace context). Defaults to false.
+    /// </summary>
+    public bool BrowserSpans { get; set; }
+
+    /// <summary>
+    /// Whether spans are published for work that ran without a captured trace context (they become root spans). Defaults
+    /// to false, which keeps traces limited to work that happened inside a traced request, event, or navigation.
+    /// </summary>
+    public bool RootSpans { get; set; }
 }
 
 /// <summary>Thresholds used by the built-in diagnostic rules. All durations are in milliseconds.</summary>
@@ -509,6 +557,18 @@ public sealed class DiagnosticOptions
 
     /// <summary>BP7004: time (milliseconds) between First Contentful Paint and interactivity above which it is reported.</summary>
     public double InteractivityGapMs { get; set; } = 2_000;
+
+    /// <summary>
+    /// BP1008: instances of one component type disposed and recreated within one operation (the same work rebuilt instead
+    /// of reused, typically a missing or unstable <c>@key</c>) before the churn is reported.
+    /// </summary>
+    public int ComponentChurnThreshold { get; set; } = 10;
+
+    /// <summary>BP7006: forced (synchronous) style and layout time in one frame, in milliseconds, considered layout thrashing.</summary>
+    public double ForcedLayoutMs { get; set; } = 30;
+
+    /// <summary>BP7007: rage clicks plus dead clicks on one target before frustration is reported.</summary>
+    public int FrustrationThreshold { get; set; } = 2;
 
     /// <summary>Returns whether a rule is enabled.</summary>
     public bool IsRuleEnabled(string ruleId) => !Rules.TryGetValue(ruleId, out var settings) || settings.Enabled;

@@ -13,6 +13,10 @@ benchmark suite in `benchmarks/BlazorProfiler.Benchmarks`.
   render, so every child re-renders. The "recording" variants run the Development profile (framework metrics, activities,
   component activation, instrumentation with parameter-change detection and the component tree; render-output hashing off).
 - Reproduce: `dotnet run -c Release --project benchmarks/BlazorProfiler.Benchmarks -- --job short --filter "*"`.
+- Regression gate: allocations per operation are deterministic, so CI compares them with
+  `benchmarks/allocation-baseline.json` (10% plus 64 bytes of tolerance): run the benchmarks with `--exporters json`, then
+  `pwsh benchmarks/check-allocations.ps1`. After an intended change, refresh the baseline with `-Update` and commit it.
+  Timings are reported but not gated, because shared CI runners are too noisy for a reliable threshold.
 
 ## Results
 

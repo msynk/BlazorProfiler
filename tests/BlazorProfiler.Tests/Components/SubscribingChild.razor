@@ -1,0 +1,8 @@
+@inherits ProfiledComponentBase
+@* The classic leak: subscribes to an event of a longer-lived service and never unsubscribes. *@
+<span>subscriber</span>
+@code {
+    [Inject] public AppState State { get; set; } = default!;
+
+    protected override void OnInitialized() => State.Changed += StateHasChanged;
+}

@@ -24,17 +24,28 @@ batches, HTTP, JavaScript interop, runtime/GC, Blazor Server circuits, and brows
   a leak check forces collections and separates accumulating leaks from the renderer's bounded retention.
 - **Measures startup and Core Web Vitals**: time to interactive after first paint, the `_framework` download (size,
   cache, compression, largest files), LCP, CLS, and INP, with Blazor-specific advice.
-- **Explains** problems with 42 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
+- **Explains** problems with 46 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
   value labelled measured / estimated / inferred / unavailable), an impact estimate with its calculation method, a suggested
   fix, conditions under which the advice may not apply, and suppression support.
 - **Shows** it all in a dependency-free dashboard (overview, interactions with per-operation waterfalls and ranked
   components, components with render causes and tree, unified timeline, network and startup, database, interop, runtime,
   circuits with latency simulation, diagnostics with "Copy for AI", sessions and comparison, profiler health). The dashboard
   is plain JavaScript, so it never adds renders or interop calls to the app being measured.
+- **Explains the main thread**: long animation frames with script attribution (which script, how it was invoked, how much
+  forced layout it caused, attributed to the JS interop call when the browser blames Blazor's entry point), and rage and
+  dead clicks with the .NET work running at that moment, and results that paint long after the first paint (interaction
+  contentful paint), which INP cannot see.
+- **Says what holds a leak**: the event subscription on an injected service, static event, undisposed
+  `DotNetObjectReference`, or timer that keeps a disposed component alive.
+- **Talks to coding agents**: an MCP endpoint (`/_blazor-profiler/mcp`) and `blazor-profiler mcp <trace>` let agents list
+  findings, explain them, and inspect interactions and components, with the dashboard's access rules.
+- **Feeds OpenTelemetry** (opt-in): render, lifecycle, and interop spans nested under Blazor's own `HandleEvent` spans, and
+  metrics for renders, interop, interaction latency, web vitals, leaks, and frustration signals, for the Aspire dashboard
+  or any backend.
 - **Shows it in the page and in the browser's DevTools**: an optional in-page toolbar (live INP, long frames, DOM updates)
   with update highlighting, and Blazor tracks in the Chrome/Edge Performance panel next to the browser's own tracks.
 - **Gates CI**: `ProfilerAssert` and `ProfilerBudget` in tests, and the `blazor-profiler` CLI (`check`, `report`,
-  `compare`; SARIF and GitHub annotations) for exported traces.
+  `compare` including per-component regressions, `mcp`; SARIF and GitHub annotations) for exported traces.
 - **Exports** traces in a versioned native format (gzip JSON), plain JSON, Chrome Trace Event format (Perfetto), and a
   Markdown report, and imports traces back for re-analysis or offline viewing.
 
@@ -111,7 +122,8 @@ See [Getting started](docs/getting-started.md) for authorization, configuration 
 
 `demo/Server` is a Blazor Web App with static SSR, Interactive Server, and Interactive WebAssembly pages.
 Each demo reproduces a problem that specific rules detect (render storms, large lists, slow handlers, rapid input, N+1 and
-duplicate requests, failing endpoints, interop chatter, allocation spikes, leaky components).
+duplicate requests, failing endpoints, interop chatter, allocation spikes, leaky components, rows recreated on reload,
+layout thrashing, rage and dead clicks).
 
 ```bash
 dotnet run --project demo/Server
@@ -124,7 +136,7 @@ dotnet build
 dotnet test tests/BlazorProfiler.Core.Tests
 dotnet test tests/BlazorProfiler.Tests
 dotnet test tests/BlazorProfiler.Server.Tests
-dotnet test tests/BlazorProfiler.E2E.Tests   # starts the sample app; needs Playwright Chromium installed
+dotnet test tests/BlazorProfiler.E2E.Tests   # starts the sample app; needs Playwright Chromium, Firefox, and WebKit installed
 dotnet run -c Release --project benchmarks/BlazorProfiler.Benchmarks -- --filter "*"
 ```
 

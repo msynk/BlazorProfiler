@@ -109,7 +109,9 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `JSInteropPayloadEstimation` | off | Serialize arguments a second time to estimate size. |
 | `Runtime`, `RuntimeSampleInterval` | on, 1 s | Runtime sampling. |
 | `Circuits` | on | Circuit handler and hub filter (server). |
-| `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries, startup, and Core Web Vitals (needs `BlazorProfilerClient`). |
+| `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries, startup, and Core Web Vitals (needs `BlazorProfilerClient`). Long animation frames carry script attribution (the 5 longest scripts per frame: invoker, sanitized source, function, forced layout). |
+| `FrustrationSignals` | on | Rage clicks and dead clicks (BP7007): a passive click listener and a mutation observer in the browser. Only the element's tag, id, and classes are recorded. |
+| `FrustrationIgnoreSelector` | `null` | CSS selector of elements excluded from frustration signals (for example buttons that intentionally change nothing visible). |
 | `Database` | on | Entity Framework Core commands through its `DiagnosticListener`: normalized SQL (literals replaced), duration including reading rows, rows read, sync/async, `DbContext`, originating component. Argument values are hashed, never stored. |
 | `ComponentRetention` | on (off in LowOverhead) | Watch released components through weak references and report those still reachable after full GCs (BP5004). One weak reference per watched instance. |
 | `RetentionGcCycles` | 2 | Full collections a released instance must survive before it is reported. |
@@ -130,7 +132,35 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 
 Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules["BP1001"] = new RuleSettings { Enabled = false, Severity = DiagnosticSeverity.Low }`.
 `MaxFindingsPerRule` limits output (default 10). Newer thresholds: `NPlusOneQueryThreshold` (5), `SlowQueryMs` (100),
-`LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000).
+`LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000), `ComponentChurnThreshold`
+(10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007).
+
+### `Telemetry` (OpenTelemetry)
+
+Off by default. When on, the profiler publishes what the framework does not measure itself through the `BlazorProfiler`
+meter and activity source (`ProfilerTelemetry.Name`). HTTP, database, and Blazor's own `HandleEvent`/`Navigate` spans are
+not republished.
+
+| Option | Default | Description |
+|---|---|---|
+| `Metrics` | off | Histograms `blazor_profiler.component.render.duration`, `blazor_profiler.component.lifecycle.duration`, `blazor_profiler.js_interop.duration`, `blazor_profiler.browser.interaction.duration`, `blazor_profiler.browser.long_animation_frame.duration`, `blazor_profiler.browser.lcp`/`.inp`/`.cls`; counters `blazor_profiler.component.retained`, `blazor_profiler.browser.frustration`. |
+| `Traces` | off | Spans for component renders, lifecycle methods, and JS interop calls, created with their measured times as children of the trace that was active where they ran (for example Blazor's `HandleEvent`). |
+| `MinimumSpanDurationMs` | 1 | Shorter work is not published as spans. |
+| `BrowserSpans` | off | Also publish browser interactions and long animation frames as (root) spans. |
+| `RootSpans` | off | Also publish spans for work that ran without a trace context. |
+
+```csharp
+builder.AddBlazorProfiler(o => { o.Telemetry.Metrics = true; o.Telemetry.Traces = true; });
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(m => m.AddMeter("BlazorProfiler"))
+    .WithTracing(t => t.AddSource("BlazorProfiler"));
+```
+
+Spans are parented through the trace context captured on each event (`CaptureTraceContext`, on by default); with
+`Traces` on, the context is also captured for every component render, lifecycle method, and interop call (two short
+string allocations per event), and spans follow the parent's sampling decision. Metrics record
+one measurement per event that reaches the pipeline, so with sampling enabled histogram counts are lower than the real
+counts.
 
 ## Server options (`ProfilerServerOptions`)
 
@@ -144,6 +174,9 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 | `RetainedCircuitSessions` | 4 | Automatic circuit sessions kept (stopped) after their circuit closes, visible to the circuit's owner. Older ones are removed, and a retained one is removed when a new circuit needs room under `MaxSessions`, except sessions a dashboard showed in the last 5 minutes (`RetainedSessionViewWindow`), which are never removed automatically. `0` removes them on close. |
 | `MaxImportBytes` | 64 MB | Upload limit for trace import. |
 | `SimulatedLatency` | 0 (off) | Delay added to every message from the browser to circuits, to reproduce a slow connection; changeable at runtime with the `simulate-latency` command (Circuits view). Never active in Production. |
+| `EnableMcp` | `true` | Map the Model Context Protocol endpoint `{RoutePrefix}/mcp` for coding agents (see [getting started](getting-started.md#coding-agents-mcp)). Same access rules as the API. |
+| `McpAllowControl` | `false` | Also offer MCP tools that change state (`control_session`, `run_command`). |
+| `MaxMcpRequestBytes` | 1 MB | Request size limit of the MCP endpoint. |
 
 ## `BlazorProfilerClient` parameters
 
@@ -153,7 +186,7 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 | `Shortcut` | `Alt+Shift+P` | Opens the dashboard; empty disables. |
 | `ShowLauncher` | `false` | Floating button that opens the dashboard. |
 | `DashboardUrl` | hosting default | Override the dashboard URL. |
-| `ShowToolbar` | `false` | In-page toolbar: estimated INP, last interaction latency, long frames, DOM updates per second, update highlighting switch, dashboard button. Replaces the launcher. Runs only in the browser (no .NET work or circuit traffic). |
+| `ShowToolbar` | `false` | In-page toolbar: estimated INP, last interaction latency, long frames, DOM updates per second, update highlighting switch, dashboard button. Replaces the launcher. Runs only in the browser (no .NET work or circuit traffic). In WebAssembly builds with `EnableDiagnostics`, it also offers CPU, GC dump, and counter captures (see [getting started](getting-started.md#deep-capture-webassembly)). |
 | `HighlightUpdates` | `false` | Start with update highlighting on (outlines DOM elements as render batches change them). The toolbar/shortcut choice is remembered per tab. |
 | `HighlightShortcut` | `Alt+Shift+H` | Toggles update highlighting; empty disables. |
 | `DevToolsTracks` | `false` | Write Blazor activity (renders, batches, handlers, HTTP, interop, database) into the Chrome/Edge Performance panel as a "Blazor" track group (enable "Show custom tracks"). Sent once per second; on Blazor Server only the current circuit's events, as extra circuit traffic. |

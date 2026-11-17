@@ -286,3 +286,16 @@ ul.compact { margin: 0; padding-left: 18px; }
 .vital.good { color: var(--ok); }
 .vital.needs-improvement { color: var(--warn); }
 .vital.poor { color: var(--bad); }
+
+/* Render tree flame graph (Interactions → operation details). */
+.flame { position: relative; width: 100%; margin: 6px 0; overflow: hidden; border-radius: 4px; }
+.flame-node { position: absolute; box-sizing: border-box; padding: 0 4px; font-size: 11px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #fff; background: var(--lane-component); border: 1px solid var(--surface, #fff); border-radius: 3px; cursor: default; }
+.flame-node.skipped { color: var(--muted); background: repeating-linear-gradient(45deg, transparent 0 4px, var(--border) 4px 6px); }
+
+/* Latency heatmap (Interactions). */
+.heatmap { width: 100%; max-width: 900px; height: auto; display: block; user-select: none; cursor: crosshair; }
+.heat-cell { fill: var(--accent); }
+.heat-axis { fill: var(--muted); font-size: 10px; }
+.heat-brush { fill: var(--accent); fill-opacity: 0.12; stroke: var(--accent); stroke-dasharray: 3 2; }
+.heat-bar { display: inline-block; height: 8px; background: var(--warn); border-radius: 2px; }

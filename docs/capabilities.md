@@ -41,6 +41,14 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Page startup: TTFB, FCP, interactive time (E), `_framework` download (bytes, cache, compression, largest files) | M (browser) | M (browser) | — | browser |
 | Core Web Vitals: LCP, CLS, INP (E) | M (browser) | M (browser) | — | browser |
 | DOM updates per second, update highlighting (in-page) | M (browser only) | M (browser only) | — | toolbar (no collector) |
+| Long animation frame script attribution (invoker, source, function, forced layout, pause) | M (Chromium) | M (Chromium) | — | browser |
+| Forced layout attributed to a JS interop call | I (temporal, when the browser attributes it to Blazor) | I (same) | — | browser + js-interop |
+| Rage clicks and dead clicks | M (browser) | M (browser) | — | browser |
+| Input to the paint of the content an interaction changed (interaction contentful paint) | — (updates arrive over the circuit) | M (Chromium; after JavaScript interop promises; not after HttpClient responses; after `Task.Delay` only sometimes) | — | browser |
+| Retainers of a leaked component (event subscriptions on referenced services, static events, `DotNetObjectReference`, timers) | I (heuristic inspection) | I (same) | I (same) | component-retention |
+| Component recreation (dispose + create of one type in one operation) | M (instrumented) | M (instrumented) | — | component-activation + instrumentation |
+| CPU samples, GC dump, runtime counters (`.nettrace` download, marker on the timeline) | — (use `dotnet-trace`, `dotnet-gcdump`) | M (builds with `EnableDiagnostics`; CPU samples also need `WasmPerformanceInstrumentation`) | — | toolbar |
+| OpenTelemetry metrics and spans of profiler measurements | M (opt-in) | M (opt-in; needs an OTLP exporter in the browser) | M (opt-in) | telemetry processor |
 
 ## Hosting-model notes
 
@@ -56,11 +64,17 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 
 | Entry | Chromium | Firefox | Safari |
 |---|---|---|---|
-| Event Timing (`event`, `interactionId`) | yes | yes (recent versions) | not at the time of writing |
+| Event Timing (`event`, `interactionId`) | yes | yes (recent versions) | yes (26.2+) |
 | Long Animation Frames | yes | no (falls back to `longtask` where available) | no |
 | Resource Timing | yes | yes | yes |
 | Largest Contentful Paint | yes | yes | yes (26.2+) |
 | Layout Shift (CLS) | yes | no | no |
 | DevTools custom tracks (`detail.devtools`) | yes (128+) | recorded as plain user timings | recorded as plain user timings |
+| Script attribution of long frames (BP7006) | yes | no | no |
+| Interaction contentful paint (BP7008) | yes (verified with 156) | no | no |
+| Rage and dead clicks | yes | yes | yes |
+
+The end-to-end suite runs WebAssembly collection, the dashboard bridge, server collection, the dashboard, and rage-click
+detection in Chromium, Firefox, and WebKit (Playwright builds).
 
 Unsupported entry types are skipped; the profiler never substitutes estimates for them.

@@ -115,7 +115,17 @@ per-instance data. Components with an explicit `@inherits` keep their base class
 Disposed components and the components of closed circuits are watched through weak references. Navigate back and forth a
 few times, then press **Check for leaks** on the Components page: it forces full garbage collections and reports
 instances that are still reachable (rule BP5004), separating leaks that accumulate from the single child Blazor's renderer
-keeps in a parent's previous render tree.
+keeps in a parent's previous render tree. For each reported instance the profiler names what most likely holds it: an
+event of an injected service that still has its handler (`AppState.OnChange → Counter.StateHasChanged`), a static event,
+an undisposed `DotNetObjectReference`, or a timer.
+
+## Responsiveness
+
+The **Responsiveness** page shows what users felt on the browser's main thread: slow interactions split into input delay,
+processing, and presentation; long animation frames with the scripts that ran in them (Chromium's Long Animation Frames
+API) and how much forced layout each caused (BP7006); and rage or dead clicks (BP7007) with the .NET work that was running.
+In the **Interactions** view, each operation also has a render-tree flame graph: width is render time including
+descendants, and components that did not render are hatched.
 
 ## Database queries
 
@@ -152,11 +162,69 @@ and check it with the CLI:
 ```bash
 dotnet tool install -g BlazorProfiler.Cli
 blazor-profiler check trace.bptrace --fail-on medium --budget budget.json --format github   # or sarif, markdown, text
-blazor-profiler compare baseline.bptrace current.bptrace --threshold 10                      # fails on count regressions
+blazor-profiler compare baseline.bptrace current.bptrace --threshold 10                      # fails on count regressions,
+                                                                                             # including per-component renders
 blazor-profiler report trace.bptrace --output report.md
 ```
 
 Exit codes: 0 success, 1 findings, budget violations, or regressions, 2 invalid usage or input.
+
+## Comparing before and after
+
+To compare two sessions (before and after a change), use **Sessions → Compare**: totals, per-component render counts, and
+render p50/p95 per component. To compare two moments of one session (the first and second time a page loads, or before
+and after a cache warms up), select a range in the **Timeline** with Shift+drag, press **Use as baseline**, select another
+range, and press **Compare with baseline**.
+
+To find out what slow interactions have in common, use the **latency heatmap** on the Interactions page (operations by
+start time and duration): drag over the slow cells, or press **Explain the slowest 10%**, and the profiler ranks the
+attributes that occur more often in the selection than in the other operations (trigger, components rendered, endpoints,
+queries, interop calls, circuit, errors, findings).
+
+## Deep capture (WebAssembly)
+
+For questions the profiler's events cannot answer (which .NET methods use the CPU, what fills the heap), build the
+WebAssembly app with the runtime's diagnostics support, for example only in a dedicated configuration:
+
+```xml
+<PropertyGroup Condition="'$(Configuration)' == 'Profiling'">
+  <EnableDiagnostics>true</EnableDiagnostics>
+  <!-- CPU samples also need method instrumentation; limit it to your own code. -->
+  <WasmPerformanceInstrumentation>N:MyApp</WasmPerformanceInstrumentation>
+</PropertyGroup>
+```
+
+The toolbar then shows **CPU**, **GC dump**, and **Counters** buttons. Each one downloads a `.nettrace` file (open it in
+PerfView or Visual Studio; convert heap dumps with `dotnet-gcdump`) and records a marker on the profiler timeline, so the
+capture lines up with the interactions around it. Without these properties the buttons do not appear. Do not ship such
+builds: diagnostics support makes the download larger and the app slower.
+
+## Coding agents (MCP)
+
+The server maps a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/_blazor-profiler/mcp`
+(Streamable HTTP) with the same access rules as the dashboard: in Development, local requests only. Agents can list
+sessions, read an overview, list findings and explain one, list the slowest interactions and see what one did, and ask why
+a component rendered. Register it in your agent, for example:
+
+```json
+{ "mcpServers": { "blazor-profiler": { "type": "http", "url": "https://localhost:5001/_blazor-profiler/mcp" } } }
+```
+
+Tools: `list_sessions`, `get_overview`, `list_findings`, `explain_finding`, `list_interactions`, `get_interaction`,
+`list_components`, `get_component`, `get_report`. The endpoint is read-only unless `ProfilerServerOptions.McpAllowControl`
+is set, which adds `control_session` and `run_command` (for example `check-leaks`). For WebAssembly apps and CI, export a
+trace and serve it from the CLI over standard input and output:
+
+```json
+{ "mcpServers": { "blazor-profiler": { "command": "blazor-profiler", "args": ["mcp", "trace.bptrace"] } } }
+```
+
+## OpenTelemetry
+
+Set `options.Telemetry.Metrics` and `options.Telemetry.Traces` and add the `BlazorProfiler` meter and activity source to
+your OpenTelemetry setup to see component render and lifecycle spans, JS interop spans, interaction latency, Core Web
+Vitals, leaks, and frustration signals in the Aspire dashboard or any OTLP backend. Render and interop spans appear inside
+Blazor's own `HandleEvent` span of the click that caused them. See [configuration](configuration.md#telemetry-opentelemetry).
 
 ## Manual instrumentation
 

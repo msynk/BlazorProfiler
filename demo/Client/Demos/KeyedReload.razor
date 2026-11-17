@@ -1,0 +1,55 @@
+<h2>Rows recreated on reload</h2>
+<p>Reloads 60 products. The first button keys rows by the product <em>object</em>, and reloading creates new objects, so
+   every row is disposed and recreated (OnInitialized runs again). The second hides the list behind a loading flag, which
+   removes and rebuilds it on every reload. The third keys rows by <code>Id</code> and keeps the list rendered, so rows are
+   reused. Rule BP1008 reports the first two.</p>
+<button id="reload-object-key" @onclick="() => ReloadAsync(Mode.ObjectKey)">Reload (keyed by object)</button>
+<button id="reload-loading" @onclick="() => ReloadAsync(Mode.Loading)">Reload (hidden while loading)</button>
+<button id="reload-id-key" @onclick="() => ReloadAsync(Mode.IdKey)">Reload (keyed by Id)</button>
+<p id="reload-status">@status</p>
+@if (mode == Mode.Loading && loading)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <ul class="reload-list">
+        @foreach (var item in items)
+        {
+            if (mode == Mode.IdKey)
+            {
+                <ReloadRow @key="item.Id" Item="item" />
+            }
+            else
+            {
+                <ReloadRow @key="item" Item="item" />
+            }
+        }
+    </ul>
+}
+@code {
+    private enum Mode { ObjectKey, Loading, IdKey }
+
+    private List<Product> items = Load();
+    private Mode mode;
+    private bool loading;
+    private string status = "";
+
+    // A reload returns equal data in new objects, as deserializing an API response does.
+    private static List<Product> Load() => [.. Enumerable.Range(1, 60).Select(i => new Product(i, $"Product {i}", i * 1.5m))];
+
+    private async Task ReloadAsync(Mode next)
+    {
+        mode = next;
+        loading = true;
+        if (next == Mode.Loading)
+        {
+            StateHasChanged();
+        }
+
+        await Task.Delay(30);
+        items = Load();
+        loading = false;
+        status = $"Reloaded ({next})";
+    }
+}

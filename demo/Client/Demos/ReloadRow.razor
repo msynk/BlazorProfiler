@@ -1,0 +1,10 @@
+<li class="reload-row">@Item.Name — @Item.Price.ToString("0.00")</li>
+@code {
+    [Parameter, EditorRequired] public Product Item { get; set; } = default!;
+
+    protected override void OnInitialized()
+    {
+        // Stands in for per-row work that runs again every time a row is recreated (formatting, lookups, data loading).
+        Thread.SpinWait(20_000);
+    }
+}

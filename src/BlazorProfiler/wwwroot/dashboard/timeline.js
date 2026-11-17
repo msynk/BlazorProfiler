@@ -11,7 +11,7 @@ export const LANES = [
   { id: 'database', label: 'Database', color: '--lane-database', types: ['dbCommand'] },
   { id: 'interop', label: 'JS interop', color: '--lane-interop', types: ['jsInterop'] },
   { id: 'circuit', label: 'Circuit', color: '--lane-circuit', types: ['circuit', 'circuitActivity'] },
-  { id: 'browser', label: 'Browser', color: '--lane-browser', types: ['browserLongTask', 'browserResource', 'browserStartup', 'browserVital'] },
+  { id: 'browser', label: 'Browser', color: '--lane-browser', types: ['browserLongTask', 'browserResource', 'browserStartup', 'browserVital', 'browserFrustration'] },
   { id: 'runtime', label: 'Runtime (heap)', color: '--lane-marker', types: ['runtime'] },
   { id: 'marker', label: 'Markers', color: '--lane-marker', types: ['marker'] },
 ];
@@ -465,7 +465,8 @@ export function describeShort(e) {
     case 'runtime': return 'Runtime sample';
     case 'circuit': return `Circuit ${e.change}`;
     case 'circuitActivity': return `Circuit ${e.activityName || 'activity'}`;
-    case 'browserLongTask': return `${e.entryType || 'Long task'}`;
+    case 'browserLongTask': return `${e.entryType || 'Long task'}${e.forcedStyleAndLayoutMs >= 1 ? ` (forced layout ${Math.round(e.forcedStyleAndLayoutMs)} ms)` : ''}`;
+    case 'browserFrustration': return `${e.signal === 'RageClick' ? `Rage click ×${e.clickCount}` : 'Dead click'} on ${e.target || e.targetTag || 'element'}`;
     case 'browserResource': return `${e.initiatorType || 'resource'} ${e.url}`;
     case 'browserStartup': return `Startup: interactive at ${Math.round(e.interactiveMs)} ms`;
     case 'browserVital': return `${e.name} ${e.name === 'CLS' ? e.value : `${Math.round(e.value)} ms`} (${e.rating || '?'})`;

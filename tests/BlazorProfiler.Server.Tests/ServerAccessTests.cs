@@ -135,6 +135,110 @@ public sealed class ServerAccessTests
         public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 
+    private static StringContent McpBody(string json) => new(json, System.Text.Encoding.UTF8, "application/json");
+
+    [Fact]
+    public async Task McpEndpointAnswersJsonRpcWithTheApiAccessRules()
+    {
+        await using var app = await CreateAppAsync("Development", enabled: null);
+        var client = Client(app);
+
+        using (var init = await client.PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}""")))
+        {
+            Assert.Equal(HttpStatusCode.OK, init.StatusCode);
+            Assert.Equal("application/json", init.Content.Headers.ContentType?.MediaType);
+            var body = await init.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("2025-06-18", body.GetProperty("result").GetProperty("protocolVersion").GetString());
+        }
+
+        using (var notification = await client.PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","method":"notifications/initialized"}""")))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, notification.StatusCode);
+        }
+
+        using (var tools = await client.PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")))
+        {
+            var names = (await tools.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToList();
+            Assert.Contains("get_overview", names);
+            Assert.DoesNotContain("run_command", names);
+        }
+
+        // No CSRF header is needed (MCP clients cannot send one), but a cross-site form or a foreign browser origin is refused.
+        using (var form = await client.PostAsync("/_blazor-profiler/mcp", new StringContent("{}", System.Text.Encoding.UTF8, "text/plain")))
+        {
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, form.StatusCode);
+        }
+
+        using (var foreign = new HttpRequestMessage(HttpMethod.Post, "/_blazor-profiler/mcp") { Content = McpBody("""{"jsonrpc":"2.0","id":3,"method":"ping"}""") })
+        {
+            foreign.Headers.Add("Origin", "https://evil.example");
+            using var response = await client.SendAsync(foreign);
+
+            // A page on another origin is not a local request, so the endpoint does not even exist for it.
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+
+        using (var local = new HttpRequestMessage(HttpMethod.Post, "/_blazor-profiler/mcp") { Content = McpBody("""{"jsonrpc":"2.0","id":4,"method":"ping"}""") })
+        {
+            local.Headers.Add("Origin", "http://localhost:6274");
+            using var response = await client.SendAsync(local);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        using (var get = await client.GetAsync("/_blazor-profiler/mcp"))
+        {
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, get.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task McpEndpointIsHiddenWithoutAccessAndCanBeDisabledOrAllowControl()
+    {
+        await using (var production = await CreateAppAsync("Production", enabled: true, s => s.AuthorizationPolicy = "Developers"))
+        {
+            using var anonymous = await Client(production).PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":1,"method":"ping"}"""));
+            Assert.Equal(HttpStatusCode.NotFound, anonymous.StatusCode);
+            using var developer = await Client(production, "dev", "Developer").PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":1,"method":"ping"}"""));
+            Assert.Equal(HttpStatusCode.OK, developer.StatusCode);
+
+            // An authorized user's browser on a foreign origin (DNS rebinding, a malicious page) is refused.
+            using var foreign = new HttpRequestMessage(HttpMethod.Post, "/_blazor-profiler/mcp") { Content = McpBody("""{"jsonrpc":"2.0","id":2,"method":"ping"}""") };
+            foreign.Headers.Add("Origin", "https://evil.example");
+            using var rejected = await Client(production, "dev", "Developer").SendAsync(foreign);
+            Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
+        }
+
+        await using (var hidden = await CreateAppAsync("Production", enabled: true, s => s.AuthorizationPolicy = "Developers"))
+        {
+            // Without access every method answers 404, so the endpoint cannot be discovered.
+            using var get = await Client(hidden).GetAsync("/_blazor-profiler/mcp");
+            Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+            using var developerGet = await Client(hidden, "dev", "Developer").GetAsync("/_blazor-profiler/mcp");
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, developerGet.StatusCode);
+
+            // Oversized bodies are refused even when sent without Content-Length (chunked).
+            var big = new string(' ', 1024 * 1024 + 10) + "{}";
+            using var chunked = new StreamContent(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(big)));
+            chunked.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/_blazor-profiler/mcp") { Content = chunked };
+            request.Headers.TransferEncodingChunked = true;
+            using var tooLarge = await Client(hidden, "dev", "Developer").SendAsync(request);
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooLarge.StatusCode);
+        }
+
+        await using (var disabled = await CreateAppAsync("Development", enabled: null, s => s.EnableMcp = false))
+        {
+            using var response = await Client(disabled).PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":1,"method":"ping"}"""));
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+
+        await using var control = await CreateAppAsync("Development", enabled: null, s => s.McpAllowControl = true);
+        using var tools = await Client(control).PostAsync("/_blazor-profiler/mcp", McpBody("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}"""));
+        var names = (await tools.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToList();
+        Assert.Contains("run_command", names);
+        Assert.Contains("control_session", names);
+    }
+
     [Fact]
     public async Task DevelopmentAllowsLocalRequestsWithoutPolicy()
     {

@@ -176,7 +176,9 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
                 _owner,
                 ShowToolbar,
                 HighlightUpdates,
-                HighlightShortcut ?? string.Empty));
+                HighlightShortcut ?? string.Empty,
+                options.FrustrationSignals,
+                options.FrustrationIgnoreSelector));
 
             _callbacks.Value.ClockOffsetMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - clientNow;
             if (DevToolsTracks)
@@ -258,7 +260,7 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
         }
     }
 
-    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner, bool toolbar, bool highlight, string highlightShortcut)
+    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner, bool toolbar, bool highlight, string highlightShortcut, bool frustration, string? frustrationIgnoreSelector)
     {
         // Serialized explicitly (no reflection) so the payload is trimming-safe in WebAssembly.
         using var buffer = new MemoryStream();
@@ -279,6 +281,12 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
             writer.WriteBoolean("toolbar", toolbar);
             writer.WriteBoolean("highlight", highlight);
             writer.WriteString("highlightShortcut", highlightShortcut);
+            writer.WriteBoolean("frustration", frustration);
+            if (!string.IsNullOrWhiteSpace(frustrationIgnoreSelector))
+            {
+                writer.WriteString("frustrationIgnoreSelector", frustrationIgnoreSelector);
+            }
+
             writer.WriteEndObject();
         }
 

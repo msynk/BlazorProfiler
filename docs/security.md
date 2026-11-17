@@ -69,6 +69,13 @@ built-in rule reference.
   literals become `?`); argument values are reduced to a 64-bit hash used only to recognize identical queries.
 - Page content in the in-page toolbar and update highlighting: they read element geometry and mutation counts only, run
   entirely in the browser, and send nothing to the server.
+- Clicked elements beyond their structure: frustration signals record the tag, `id`, and up to two class names of the
+  clicked element (never text, values, or other attributes). Exclude elements with `Collectors.FrustrationIgnoreSelector`
+  or turn detection off with `Collectors.FrustrationSignals = false`.
+- Script contents: long animation frame attribution records the invoker, the sanitized source URL (query values redacted
+  like any URL), the function name, and timings.
+- Object contents during leak inspection: retainer hints contain type, member, and method names only; field values are
+  read in memory to find references to the component and are never recorded.
 
 ## Redaction
 
@@ -89,6 +96,25 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
   cannot be determined, nothing is sent.
 - Retention tracking holds weak references only; it never keeps a component alive.
 
+## MCP endpoint
+
+- `{RoutePrefix}/mcp` evaluates access exactly like the API (404 without access) and is read-only by default; tools that
+  change state are offered only with `McpAllowControl` and to callers with control access.
+- MCP clients cannot send the CSRF header, so the endpoint instead requires a JSON content type (a cross-site page cannot
+  send one without a CORS preflight, which is never answered) and rejects browser requests whose `Origin` is not a local
+  host (403), which also blocks DNS rebinding.
+- Requests are limited to `MaxMcpRequestBytes` (1 MB) and tool results to 60,000 characters. No server-sent event stream
+  or session state is kept.
+- Results contain the same data as the dashboard (sanitized URLs, normalized SQL). Treat an agent with access to the
+  endpoint like a developer with access to the dashboard.
+- `blazor-profiler mcp` serves only the trace files given on its command line, over standard input and output.
+
+## OpenTelemetry
+
+Telemetry is off by default. When enabled, spans and metrics carry component type names, JS interop identifiers
+(sanitized), render causes, and browser timing; no URLs, SQL, or parameter values are added. They go wherever your
+OpenTelemetry pipeline exports them, so apply the same care as for the dashboard before enabling them outside development.
+
 ## Resource limits (denial-of-service protection)
 
 - Bounded queue (events beyond capacity are dropped and counted, never buffered without limit).
@@ -99,7 +125,7 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
   interop call), so it stays within SignalR's default 32 KB message limit even when the JSON hub protocol escapes it again.
   Dashboard bridge requests above that size (trace imports) are streamed in chunks instead of sent as one message, up to
   96 MB.
-- Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 24
+- Trace import: input size, decompressed size (gzip bomb protection), event count, string length, JSON depth; only the 25
   known event types are accepted; no type names from the input are resolved and no code is executed.
 
 ## Production use

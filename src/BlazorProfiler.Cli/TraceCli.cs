@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using BlazorProfiler.Analysis;
+using BlazorProfiler.Api;
 using BlazorProfiler.Export;
 using BlazorProfiler.Storage;
 using BlazorProfiler.Testing;
@@ -30,13 +31,20 @@ internal static class TraceCli
                                   [--format text|markdown] [--output <file>]
               Compares key metrics. Fails when a count (renders, batches, requests, queries, interop calls, retained
               components) grows by more than --threshold percent (default 10). Durations fail only with --include-timings.
+              Per-component render counts (and, with --include-timings, render p95) are compared as well.
+          blazor-profiler mcp <trace> [<trace>...] [--allow-control]
+              Serves the traces to a coding agent as a Model Context Protocol server over standard input and output
+              (newline-delimited JSON-RPC). Configure it in the agent as: command "blazor-profiler", args ["mcp", "<trace>"].
 
         Severities: info, low, medium, high, critical. Rule ids: comma-separated, for example BP1006,BP3003.
         Budget file (JSON): { "maxComponentRenders": 50, "maxDatabaseCommands": 3, "maxRetainedComponents": 0,
                               "maxRendersByComponent": { "MyApp.Components.Row": 20 } }
         """;
 
-    public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken cancellationToken = default)
+    public static Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken cancellationToken = default) =>
+        RunAsync(args, TextReader.Null, output, error, cancellationToken);
+
+    public static async Task<int> RunAsync(string[] args, TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -52,6 +60,7 @@ internal static class TraceCli
                 "check" => await CheckAsync(options, output, cancellationToken).ConfigureAwait(false),
                 "report" => await ReportAsync(options, output, cancellationToken).ConfigureAwait(false),
                 "compare" => await CompareAsync(options, output, cancellationToken).ConfigureAwait(false),
+                "mcp" => await McpAsync(options, input, output, error, cancellationToken).ConfigureAwait(false),
                 _ => throw new CliException($"Unknown command '{args[0]}'."),
             };
         }
@@ -121,6 +130,27 @@ internal static class TraceCli
                 : $"{row.Name,-28} {row.Format(row.Baseline),12} {row.Format(row.Current),12} {change,8}  {status}");
         }
 
+        var componentRows = CompareComponents(baseline, current, threshold, includeTimings);
+        if (componentRows.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine(markdown ? "| Component metric | Baseline | Current | Change | |" : "Components (largest changes):");
+            if (markdown)
+            {
+                text.AppendLine("|---|---:|---:|---:|---|");
+            }
+
+            foreach (var row in componentRows)
+            {
+                var change = row.Baseline == 0 ? "new" : ((row.Current - row.Baseline) / row.Baseline).ToString("+0%;-0%;0%", CultureInfo.InvariantCulture);
+                var status = row.Regressed ? "REGRESSION" : row.Improved ? "improved" : string.Empty;
+                text.AppendLine(markdown
+                    ? $"| {row.Name} | {row.Format(row.Baseline)} | {row.Format(row.Current)} | {change} | {status} |"
+                    : $"  {row.Name,-48} {row.Format(row.Baseline),10} {row.Format(row.Current),10} {change,8}  {status}");
+            }
+        }
+
+        rows.AddRange(componentRows);
         var regressions = rows.Count(r => r.Regressed);
         text.AppendLine().AppendLine(regressions == 0 ? "No regressions." : $"{regressions} regression(s) above {threshold * 100:0.#}%.");
         await WriteAsync(options, output, text.ToString(), cancellationToken).ConfigureAwait(false);
@@ -159,6 +189,114 @@ internal static class TraceCli
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// Compares component types present in both sessions: render counts (or parameter updates for components without
+    /// instrumentation), and render p95 when timings are included. Only rows that changed by more than the threshold are
+    /// returned, largest relative change first (at most 20).
+    /// </summary>
+    internal static List<ComparisonRow> CompareComponents(SessionSummary baseline, SessionSummary current, double threshold, bool includeTimings)
+    {
+        static string Count(double v) => DiagnosticContext.FormatNumber(v);
+        static string Ms(double v) => DiagnosticContext.FormatMs(v);
+        var before = baseline.Components.ToDictionary(c => c.ComponentType, StringComparer.Ordinal);
+        var rows = new List<(ComparisonRow Row, double Change)>();
+        foreach (var after in current.Components)
+        {
+            var name = DiagnosticContext.ShortType(after.ComponentType);
+            if (!before.TryGetValue(after.ComponentType, out var was))
+            {
+                var count = after.Instrumented ? after.Renders.Count : after.ParametersSets.Count;
+                if (count >= 10)
+                {
+                    rows.Add((new ComparisonRow($"{name} {(after.Instrumented ? "renders" : "parameter updates")} (new)", 0, count, Count, false, false), double.MaxValue));
+                }
+
+                continue;
+            }
+
+            var instrumented = after.Instrumented && was.Instrumented;
+            var a = instrumented ? was.Renders.Count : was.ParametersSets.Count;
+            var b = instrumented ? after.Renders.Count : after.ParametersSets.Count;
+            if (a > 0 && Math.Abs(b - a) >= 1 && Math.Abs(b - a) / a > threshold)
+            {
+                rows.Add((new ComparisonRow($"{name} {(instrumented ? "renders" : "parameter updates")}", a, b, Count, b > a, b < a), Math.Abs(b - a) / a));
+            }
+
+            if (includeTimings && instrumented && was.Renders.Count >= 5 && after.Renders.Count >= 5 && was.Renders.P95Ms > 0)
+            {
+                var pa = was.Renders.P95Ms;
+                var pb = after.Renders.P95Ms;
+
+                // Sub-millisecond differences are noise, whatever their relative size.
+                if (Math.Abs(pb - pa) >= 0.5 && Math.Abs(pb - pa) / pa > threshold)
+                {
+                    rows.Add((new ComparisonRow($"{name} render p95", pa, pb, Ms, pb > pa, pb < pa), Math.Abs(pb - pa) / pa));
+                }
+            }
+        }
+
+        return [.. rows.OrderByDescending(r => r.Row.Regressed).ThenByDescending(r => r.Change).Take(20).Select(r => r.Row)];
+    }
+
+    private static async Task<int> McpAsync(Options options, TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var paths = options.AllPositional;
+        if (paths.Count == 0)
+        {
+            throw new CliException("Missing argument <trace>.");
+        }
+
+        using var host = new ProfilerHost(new ProfilerOptions { Enabled = true, AutoStartSession = false });
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path))
+            {
+                throw new CliException($"File not found: {path}");
+            }
+
+            TraceDocument document;
+            await using (var stream = File.OpenRead(path))
+            {
+                document = await TraceImporter.ReadAsync(stream, new TraceImportOptions { MaxInputBytes = 1L << 31, MaxDecompressedBytes = 4L << 30, MaxEvents = 10_000_000 }, cancellationToken).ConfigureAwait(false);
+            }
+
+            document.Metadata.SessionName ??= Path.GetFileNameWithoutExtension(path);
+            host.AddImportedSession(document);
+        }
+
+        var api = new ProfilerApi(host, "trace");
+        var server = new ProfilerMcpServer(api, new ProfilerMcpOptions { AllowControl = options.Flag("--allow-control") });
+        await error.WriteLineAsync($"blazor-profiler MCP server: {paths.Count} trace(s) loaded; reading JSON-RPC from standard input.").ConfigureAwait(false);
+        await ServeMcpAsync(server, input, output, cancellationToken).ConfigureAwait(false);
+        return Success;
+    }
+
+    /// <summary>Serves newline-delimited JSON-RPC messages (the MCP stdio transport) until the input ends.</summary>
+    internal static async Task ServeMcpAsync(ProfilerMcpServer server, TextReader input, TextWriter output, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            if (line is null)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var response = await server.HandleAsync(line, ProfilerApiAccess.Full, cancellationToken).ConfigureAwait(false);
+            if (response is not null)
+            {
+                // Responses must not contain embedded newlines; Utf8JsonWriter output is compact.
+                await output.WriteAsync(response + "\n").ConfigureAwait(false);
+                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private static async Task<(TraceDocument Document, SessionSummary Summary, DiagnosticReport Report)> AnalyzeAsync(string path, CancellationToken cancellationToken)
@@ -349,7 +487,7 @@ internal static class TraceCli
     /// <summary>Parsed arguments: positional values, <c>--name value</c> options, and <c>--flag</c> switches.</summary>
     private sealed class Options
     {
-        private static readonly HashSet<string> s_flags = new(StringComparer.Ordinal) { "--include-timings" };
+        private static readonly HashSet<string> s_flags = new(StringComparer.Ordinal) { "--include-timings", "--allow-control" };
         private readonly List<string> _positional = [];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _switches = new(StringComparer.Ordinal);
@@ -383,6 +521,8 @@ internal static class TraceCli
 
         public string Positional(int index, string name) =>
             index < _positional.Count ? _positional[index] : throw new CliException($"Missing argument <{name}>.");
+
+        public IReadOnlyList<string> AllPositional => _positional;
 
         public string? Value(string name) => _values.GetValueOrDefault(name);
 

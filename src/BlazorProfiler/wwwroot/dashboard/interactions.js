@@ -4,6 +4,7 @@
 import { h, clear, fmtMs, fmtNum, shortType, emptyState, sortableTable, debounce, color } from './util.js';
 import { LANES, laneOf, describeShort } from './timeline.js';
 import { inRange } from './views.js';
+import { latencyHeatmap } from './heatmap.js';
 
 const KINDS = { eventHandler: 'interaction', navigation: 'navigation', operation: 'custom' };
 // Browser interactions are measured in the browser and carry no operation id: they are matched to a handler by time. On
@@ -178,6 +179,7 @@ export function interactions(ctx) {
   }
 
   render();
+  root.appendChild(latencyHeatmap(ops));
   root.appendChild(h('section', { class: 'panel', 'aria-label': 'Operations' },
     h('div', { class: 'panel-head' }, h('h2', null, `Operations (${fmtNum(ops.length)})`)),
     h('div', { class: 'toolbar' }, search, kind, minDuration, h('label', null, withFindings, ' With findings only')),
@@ -219,12 +221,163 @@ function operationDetails(ctx, op) {
         h('span', { class: `badge sev-${f.severity}` }, f.severity), ' ',
         h('a', { href: '#diagnostics', onclick: e => { e.preventDefault(); ctx.navigate('diagnostics', { finding: f.fingerprint }); } }, f.title)))))
       : null,
+    ranked.length ? renderFlameGraph(ctx, op, sorted) : null,
     ranked.length
       ? h('div', null, h('h3', null, 'Components rendered (ranked by render time)'), rankedChart(ranked))
       : h('p', { class: 'muted' }, op.params ? 'Components received parameters, but none of them is instrumented (inherit ProfiledComponentBase for per-component render data).' : 'No component renders were recorded in this operation.'),
     h('h3', null, `Waterfall (${fmtNum(sorted.length)} events)`),
     waterfall(ctx, op, sorted),
     op.root ? h('p', null, h('button', { type: 'button', class: 'btn', onclick: () => ctx.navigate('timeline', { eventId: op.root.id }) }, 'Show in timeline')) : null);
+}
+
+// The parent of every known component instance, from the summary and from component tree events.
+function parentMap(ctx) {
+  const parents = new Map();
+  for (const i of ctx.state.summary?.instances || []) {
+    if (i.parentInstanceId) {
+      parents.set(i.instanceId, i.parentInstanceId);
+    }
+  }
+
+  for (const e of ctx.state.events) {
+    if (e.type === 'componentChildren') {
+      for (const child of e.childInstanceIds || []) {
+        parents.set(child, e.componentInstanceId);
+      }
+    }
+  }
+
+  return parents;
+}
+
+/**
+ * Builds the render tree of one operation: every instance that rendered, with its ancestors (which did not necessarily
+ * render; shown hatched, as the work Blazor skipped). Self time is the instance's BuildRenderTree time in the operation;
+ * total time includes its descendants. Returns the roots, or null when the hierarchy is unknown.
+ */
+export function buildRenderTree(ctx, renders, parents, types) {
+  const nodes = new Map();
+  const node = id => {
+    let n = nodes.get(id);
+    if (!n) {
+      n = { id, type: types.get(id) || '?', self: 0, renders: 0, reasons: {}, children: [], parent: null, rendered: false };
+      nodes.set(id, n);
+    }
+
+    return n;
+  };
+
+  for (const e of renders) {
+    const n = node(e.componentInstanceId);
+    n.type = e.componentType;
+    n.self += ctx.ticksToMs(e.duration);
+    n.renders++;
+    n.rendered = true;
+    n.reasons[e.reason || 'Unknown'] = (n.reasons[e.reason || 'Unknown'] || 0) + 1;
+  }
+
+  let linked = 0;
+  for (const n of [...nodes.values()]) {
+    let current = n;
+    const seen = new Set([current.id]);
+    while (!current.parent) {
+      const parentId = parents.get(current.id);
+      if (!parentId || seen.has(parentId)) {
+        break;
+      }
+
+      seen.add(parentId);
+      const parent = node(parentId);
+      current.parent = parent;
+      parent.children.push(current);
+      linked++;
+      current = parent;
+    }
+  }
+
+  if (!linked) {
+    return null;
+  }
+
+  const total = n => {
+    n.total = n.self + n.children.reduce((sum, c) => sum + total(c), 0);
+    n.children.sort((a, b) => b.total - a.total);
+    return n.total;
+  };
+  const roots = [...nodes.values()].filter(n => !n.parent);
+  for (const r of roots) {
+    total(r);
+  }
+
+  return roots.sort((a, b) => b.total - a.total);
+}
+
+const FLAME_ROW = 20;
+const FLAME_MAX_DEPTH = 40;
+
+function renderFlameGraph(ctx, op, sorted) {
+  const renders = sorted.filter(e => e.type === 'componentRender' && e.componentInstanceId);
+  const types = new Map();
+  for (const i of ctx.state.summary?.instances || []) {
+    types.set(i.instanceId, i.componentType);
+  }
+
+  for (const e of ctx.state.events) {
+    if (e.type === 'componentChildren') {
+      (e.childInstanceIds || []).forEach((id, k) => types.set(id, (e.childTypes || [])[k] || types.get(id)));
+    }
+  }
+
+  const roots = buildRenderTree(ctx, renders, parentMap(ctx), types);
+  if (!roots || !roots.length) {
+    return null;
+  }
+
+  const grand = roots.reduce((sum, r) => sum + r.total, 0) || 0.001;
+  const boxes = [];
+  let depth = 0;
+  const place = (n, x, d) => {
+    if (d >= FLAME_MAX_DEPTH) {
+      return;
+    }
+
+    depth = Math.max(depth, d + 1);
+    const width = (n.total / grand) * 100;
+    boxes.push({ n, x, width, d });
+    let cx = x;
+    for (const c of n.children) {
+      place(c, cx, d + 1);
+      cx += (c.total / grand) * 100;
+    }
+  };
+  let x = 0;
+  for (const r of roots) {
+    place(r, x, 0);
+    x += (r.total / grand) * 100;
+  }
+
+  const host = h('div', { class: 'flame', role: 'list', 'aria-label': 'Render tree flame graph', style: { height: `${depth * FLAME_ROW}px` } });
+  for (const { n, x: left, width, d } of boxes) {
+    if (width < 0.15) {
+      continue;
+    }
+
+    const reasons = Object.entries(n.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+    const title = `${n.type} #${n.id}
+${n.rendered ? `${n.renders} render(s): self ${fmtMs(n.self)}, total ${fmtMs(n.total)}${reasons ? `
+causes: ${reasons}` : ''}` : `did not render in this operation (descendants: ${fmtMs(n.total)})`}`;
+    host.appendChild(h('div', {
+      class: n.rendered ? 'flame-node' : 'flame-node skipped',
+      role: 'listitem',
+      title,
+      style: { left: `${left}%`, width: `${width}%`, top: `${d * FLAME_ROW}px`, height: `${FLAME_ROW - 2}px` },
+    }, width > 4 ? `${shortType(n.type)} ${n.rendered ? fmtMs(n.self) : ''}` : ''));
+  }
+
+  return h('div', null,
+    h('h3', null, 'Render tree (flame graph)'),
+    host,
+    h('p', { class: 'muted' }, 'Width is render time including descendants; the label shows self time (BuildRenderTree). Hatched components did not render in this operation (their parameters were unchanged or ShouldRender returned false). Hover for render causes.'));
 }
 
 function rankedChart(ranked) {

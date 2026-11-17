@@ -14,13 +14,18 @@ namespace BlazorProfiler.Collectors;
 /// <remarks>
 /// The approach follows leak trackers in other UI frameworks (Flutter's leak_tracker, Android's LeakCanary): weak
 /// references never keep instances alive, and the check runs only after collections that happen anyway, unless a leak
-/// check is requested explicitly (<see cref="CheckNow"/> with forced collections). The collector does not find what
-/// retains an instance; a memory profiler or heap dump answers that.
+/// check is requested explicitly (<see cref="CheckNow"/> with forced collections). When an instance is reported, the objects
+/// it references are inspected for the usual retainers (an event on an injected service that still holds one of its
+/// handlers, a static event, an undisposed <c>DotNetObjectReference</c>, a timer) and the result is recorded in
+/// <see cref="ComponentRetainedEvent.RetainedBy"/>; a memory profiler or heap dump remains the authoritative answer.
 /// </remarks>
 public sealed class ComponentRetentionCollector : ProfilerCollectorBase
 {
     /// <summary>The maximum number of released instances watched at once; the oldest are dropped beyond it.</summary>
     public const int MaxWatched = 50_000;
+
+    /// <summary>The maximum number of retained instances inspected for retainers per check.</summary>
+    public const int MaxInspectedPerCheck = 200;
 
     private static readonly TimeSpan s_checkInterval = TimeSpan.FromSeconds(2);
 
@@ -28,8 +33,37 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
     private readonly ConditionalWeakTable<object, object> _known = [];
     private List<Watched> _watched = [];
     private Timer? _timer;
+    private readonly Func<Type, bool>? _isService;
     private int _lastFullCollections = -1;
     private long _dropped;
+
+    /// <summary>Creates the collector without dependency-injection information (only injected properties are inspected).</summary>
+    public ComponentRetentionCollector()
+    {
+    }
+
+    /// <summary>
+    /// Creates the collector. The service provider tells which referenced objects are services (constructor injection) when
+    /// retainers are inspected.
+    /// </summary>
+    public ComponentRetentionCollector(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        if (services.GetService(typeof(Microsoft.Extensions.DependencyInjection.IServiceProviderIsService)) is Microsoft.Extensions.DependencyInjection.IServiceProviderIsService check)
+        {
+            _isService = type =>
+            {
+                try
+                {
+                    return check.IsService(type);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            };
+        }
+    }
 
     /// <inheritdoc />
     public override CollectorDescriptor Descriptor { get; } = new()
@@ -40,7 +74,7 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
         Capability = CapabilityLevel.Partial,
         Overhead = OverheadLevel.Low,
         Compatibility = "All hosting models. In WebAssembly the application scope never ends, so only disposed instances of ProfiledComponentBase components are watched.",
-        Degradation = "Detection waits for full garbage collections that happen anyway; use the leak check command (forces collections) for an immediate answer. What retains an instance is not determined.",
+        Degradation = "Detection waits for full garbage collections that happen anyway; use the leak check command (forces collections) for an immediate answer. Retainers are found heuristically (event subscriptions on injected services, static events, undisposed DotNetObjectReference instances, timers); other retaining paths need a heap dump.",
     };
 
     /// <summary>Whether the collector is running.</summary>
@@ -179,7 +213,7 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
             var now = profiler.Clock.GetTimestamp();
             var minimumAge = profiler.Clock.FromTimeSpan(profiler.Options.Collectors.RetentionMinimumAge);
             var cycles = Math.Max(1, profiler.Options.Collectors.RetentionGcCycles);
-            List<ComponentRetainedEvent>? reports = null;
+            List<(ComponentRetainedEvent Event, WeakReference Target)>? reports = null;
             lock (_lock)
             {
                 if (!forced && collections == _lastFullCollections)
@@ -201,7 +235,7 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
                     var survived = collections - w.FullCollectionsAtRelease;
                     if (survived >= cycles && now - w.ReleasedTimestamp >= minimumAge)
                     {
-                        (reports ??= []).Add(new ComponentRetainedEvent
+                        (reports ??= []).Add((new ComponentRetainedEvent
                         {
                             ComponentType = w.ComponentType,
                             ComponentInstanceId = w.InstanceId,
@@ -212,7 +246,7 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
                             ForcedCollection = forced,
                             Timestamp = now,
                             Correlation = CorrelationKind.None,
-                        });
+                        }, w.Target));
                         continue;
                     }
 
@@ -223,8 +257,18 @@ public sealed class ComponentRetentionCollector : ProfilerCollectorBase
                 result.Watched = keep.Count;
             }
 
-            foreach (var report in reports ?? [])
+            var inspected = 0;
+            foreach (var (report, target) in reports ?? [])
             {
+                // Look for likely retainers (event subscriptions on injected services, static events, undisposed
+                // DotNetObjectReference instances, timers). Bounded per instance and per check; the instance is only held
+                // strongly for the duration of the inspection.
+                if (inspected < MaxInspectedPerCheck && target.Target is { } instance)
+                {
+                    inspected++;
+                    report.RetainedBy = RetainerInspector.Find(instance, _isService);
+                }
+
                 Emit(report);
             }
 

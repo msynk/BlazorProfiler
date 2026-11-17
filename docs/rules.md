@@ -63,6 +63,17 @@ Types with at least `ExcessiveComponentInstances` (500) instances created, or a 
 Batches longer than `SlowLifecycleMs` that do not include a server round trip (WebAssembly and SSR). Impact is the time
 beyond a 16.7 ms frame budget. Browser layout and paint are not included.
 
+
+<a id="bp1008"></a>
+### BP1008 — Components recreated instead of reused
+
+Within one operation, at least `ComponentChurnThreshold` (10) instances of one component type were disposed and new
+instances of the same type created. Blazor reuses a child when it appears at the same position, or with the same `@key`, in
+its parent's next render; it recreates it when the key differs (object instances recreated by reloading data, values
+generated while rendering) or when the markup around it was replaced (a list rendered only when not loading). Recreation
+reruns `OnInitialized`, loses component state, and rebuilds DOM. The impact estimate multiplies the recreated instances by
+the type's mean initialization and render time. Requires `ProfiledComponentBase` (disposal events). High confidence when it
+happens in two or more operations. Demo: *Rows recreated*.
 ## Event handling
 
 <a id="bp2001"></a>
@@ -208,7 +219,24 @@ most recently removed from a position until the position renders again. That ret
 retained instances of one type under the same parent, a retained child whose parent is gone, or components of an ended
 scope. A single retained child of a live parent is reported at Info severity with Low confidence; repeat the action and
 check again to tell the two apart. The retaining path is not determined (use a memory profiler or `dotnet-gcdump`).
-Demo: *Leaky component* (navigate away and back several times, then check for leaks).
+When an instance is reported, the profiler inspects what the instance itself references for the usual retainers and
+records them in `ComponentRetainedEvent.RetainedBy` ("held by"):
+
+- an event, delegate field, or delegate collection of a service the component received (`[Inject]`,
+  `[CascadingParameter]`, or a constructor parameter whose type is registered in dependency injection) that still holds
+  one of the component's methods or a lambda capturing it, for example `AppState.OnChange → Counter.StateHasChanged`.
+  Objects the component created itself are not inspected: a subscription to them is a cycle the GC reclaims;
+- a static event or delegate in the component's assembly that holds the component (types with a static constructor are
+  skipped, so the inspection never runs application code);
+- a `DotNetObjectReference` the component created and did not dispose, as a *possible* retainer (the JavaScript runtime
+  keeps it alive only once it was passed to JavaScript);
+- a `System.Timers.Timer` the component owns that is still enabled; other timers it owns are listed as *possible*
+  retainers, because whether they were disposed cannot be read through public APIs.
+
+An instance with an identified (not merely possible) retainer is always treated as a likely leak, with High confidence, and the first retainer
+becomes the finding's "where to look" hint. Other retaining paths (caches, closures stored elsewhere) are not found; use a
+memory profiler or `dotnet-gcdump` for those. Demo: *Leaky component* (navigate away and back several times, then check
+for leaks).
 
 ## Blazor Server
 
@@ -252,7 +280,10 @@ measurement. Demo: *Slow handlers* (WebAssembly).
 <a id="bp7002"></a>
 ### BP7002 — Main thread blocked by long tasks
 
-Three or more long animation frames / long tasks at or above `LongTaskMs` (150).
+Three or more long animation frames / long tasks at or above `LongTaskMs` (150). With the Long Animation Frames API
+(Chromium) the evidence lists the scripts that ran longest (function and file, invoker type) and the share of script time
+spent in Blazor or the .NET WebAssembly runtime, which is where .NET handlers and rendering appear. Demo: *Layout
+thrashing*.
 
 <a id="bp7003"></a>
 ### BP7003 — Large framework download
@@ -276,6 +307,43 @@ Largest Contentful Paint, Cumulative Layout Shift (web-vitals session windows), 
 measured in the browser above the "good" thresholds (2.5 s, 0.1, 200 ms). "Needs improvement" is Low severity; "poor" is
 scaled. The advice is specific to Blazor (prerender the LCP content, keep prerendered and interactive layouts identical,
 reserve space for data loaded in `OnInitializedAsync`). Values are lab data from the profiling browser.
+
+<a id="bp7006"></a>
+### BP7006 — Forced synchronous layout
+
+Long animation frames whose scripts forced at least `ForcedLayoutMs` (30) of synchronous style and layout
+(`forcedStyleAndLayoutDuration`): DOM writes followed by geometry reads (`offsetHeight`, `getBoundingClientRect`), usually
+in JavaScript called through interop after a render batch, or measurements in `OnAfterRenderAsync`. The finding names the
+application script that caused it (High confidence) when that script forced at least as much layout as Blazor's own entry
+points. When the browser attributes the time to Blazor's own entry point
+(which happens whenever .NET calls JavaScript synchronously from an event handler, as in WebAssembly), the finding names
+the JS interop call that ran during the frame instead (Medium confidence, temporal). Requires Chromium. Demo: *Layout
+thrashing*.
+
+<a id="bp7007"></a>
+### BP7007 — Rage clicks or dead clicks
+
+Frustration signals detected by the browser module: **rage clicks** (3 or more clicks within one second on the same spot;
+keyboard activations are not counted) and **dead clicks** (a click on a button, link, or other interactive element after which the DOM and URL did not change
+within one second). Signals are grouped by element (tag, id, classes; never text). A rage click is Medium severity, High
+when a slow handler or a long frame ran at that moment; dead clicks are reported from `FrustrationThreshold` (2) per
+element at Low severity. The summary names the .NET work running within one second: a slow handler without feedback, a
+blocked main thread, requests in flight, or no handler at all (the element has no `@onclick`, or the component was not
+interactive yet). Exclude elements that intentionally change nothing with `Collectors.FrustrationIgnoreSelector`; turn
+detection off with `Collectors.FrustrationSignals = false`. Demo: *Rage and dead clicks*.
+
+<a id="bp7008"></a>
+### BP7008 — Interaction results appear late
+
+Interactions whose changed content painted at least `SlowInteractionMs` (200) after the input and at least twice as late as
+the first paint (Chromium's `interaction-contentful-paint`). INP ends at the first paint after the event handlers, so an
+asynchronous handler that renders a busy state and then the result looks fast to INP while users wait; this rule measures
+the wait. The summary names the .NET handlers, HTTP requests, and database commands that ran meanwhile (temporal).
+Verified behavior (Chromium 156, end to end): in WebAssembly the browser attributes content painted after awaited
+JavaScript interop calls to the interaction; content painted after an `HttpClient` response is never attributed, and after
+.NET timers (`Task.Delay`) only sometimes, because the runtime resumes those continuations from its own (shared) timer or
+fetch callbacks. Blazor Server reports nothing, because updates arrive over the circuit. BP2001 and BP6001 cover those
+cases. Demo: *Interop chatter* → *Slow JavaScript* in WebAssembly.
 
 ## Database
 

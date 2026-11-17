@@ -41,11 +41,12 @@ namespace BlazorProfiler.Events;
 [JsonDerivedType(typeof(BrowserResourceEvent), "browserResource")]
 [JsonDerivedType(typeof(BrowserStartupEvent), "browserStartup")]
 [JsonDerivedType(typeof(BrowserVitalEvent), "browserVital")]
+[JsonDerivedType(typeof(BrowserFrustrationEvent), "browserFrustration")]
 [JsonDerivedType(typeof(OperationEvent), "operation")]
 public abstract class ProfilerEvent
 {
     /// <summary>The version of the event schema implemented by this assembly.</summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     /// <summary>
     /// Process-unique, stable identifier assigned when the event is emitted.
@@ -95,6 +96,14 @@ public abstract class ProfilerEvent
     /// Every count derived from events (aggregates, diagnostics) uses this, so they agree under sampling.
     /// </summary>
     internal double Weight => SampleWeight > 0 ? SampleWeight : 1;
+
+    /// <summary>
+    /// Whether the ambient activity whose ids were captured in <see cref="TraceId"/>/<see cref="SpanId"/> was recorded
+    /// (sampled). In-process only (not serialized): spans published by <c>ProfilerTelemetry</c> follow the parent's sampling
+    /// decision.
+    /// </summary>
+    [JsonIgnore]
+    internal bool TraceRecorded { get; set; }
 
     /// <summary>W3C trace identifier of the ambient <see cref="System.Diagnostics.Activity"/>, when captured.</summary>
     public string? TraceId { get; set; }
@@ -175,6 +184,8 @@ public enum ProfilerEventKind
     BrowserStartup = 83,
     /// <summary>A Core Web Vitals value.</summary>
     BrowserVital = 84,
+    /// <summary>A user frustration signal (rage click or dead click).</summary>
+    BrowserFrustration = 85,
     /// <summary>A custom application operation.</summary>
     Operation = 90,
 }

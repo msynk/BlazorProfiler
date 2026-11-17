@@ -4,6 +4,10 @@ import {
   lineChart, color, settings, debounce, safeWebUrl,
 } from './util.js';
 import { Timeline, LANES, describeShort } from './timeline.js';
+import { summarizeWindow, eventsInWindow } from './windows.js';
+
+// The time window chosen as the baseline of a window comparison (Timeline: select a range, "Use as baseline").
+let baselineWindow = null;
 
 const SEVERITIES = ['Critical', 'High', 'Medium', 'Low', 'Info'];
 
@@ -454,7 +458,23 @@ export function timeline(ctx, params) {
       }
 
       const inside = tl.events.filter(e => e.__e >= range.start && e.__s <= range.end);
-      rangeHost.appendChild(panel(`Selection: ${fmtMs(range.end - range.start)}, ${fmtNum(inside.length)} events`, eventList(ctx, inside, 300)));
+      const window = { start: range.start, end: range.end, sessionId: ctx.state.sessionId };
+      const label = w => `${fmtMs(w.start)} – ${fmtMs(w.end)}`;
+      const baseline = baselineWindow && baselineWindow.sessionId === ctx.state.sessionId ? baselineWindow : null;
+      const compareHost = h('div');
+      const actions = h('div', { class: 'toolbar' },
+        h('button', { type: 'button', class: 'btn', id: 'window-baseline', onclick: () => {
+          baselineWindow = window;
+          clear(compareHost).appendChild(h('p', { class: 'muted', role: 'status' }, `Baseline window set to ${label(window)}. Select another range and press "Compare with baseline".`));
+        } }, 'Use as baseline'),
+        baseline ? h('button', { type: 'button', class: 'btn', id: 'window-compare', onclick: () => {
+          const a = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, baseline));
+          const b = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, window));
+          clear(compareHost).appendChild(panel(`Baseline ${label(baseline)} (${fmtMs(baseline.end - baseline.start)}) vs. selection ${label(window)} (${fmtMs(window.end - window.start)})`,
+            h('p', { class: 'muted' }, 'Totals depend on the window lengths; compare windows of similar length or the same action repeated. Percentiles are comparable directly.'),
+            compareTable(a, b)));
+        } }, `Compare with baseline (${label(baseline)})`) : null);
+      rangeHost.appendChild(panel(`Selection: ${fmtMs(range.end - range.start)}, ${fmtNum(inside.length)} events`, actions, compareHost, eventList(ctx, inside, 300)));
     },
   });
   ctx.registerTimeline(tl);
@@ -1228,7 +1248,7 @@ function compareView(ctx, list) {
   return host;
 }
 
-function compareTable(a, b) {
+export function compareTable(a, b) {
   if (!a || !b) {
     return emptyState('Summary unavailable', 'One of the sessions has no summary.');
   }
@@ -1281,13 +1301,38 @@ function compareTable(a, b) {
   }
 
   const changes = [...components.values()].map(c => ({ ...c, delta: c.b - c.a })).sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta)).slice(0, 10);
-  return h('div', { class: 'grid cols-2' },
+
+  // Render time distributions of components instrumented in both sessions (at least 5 renders each, so percentiles mean
+  // something). Sub-millisecond differences are shown but not colored: they are within measurement noise.
+  const before = new Map(a.components.filter(c => c.instrumented && c.renders.count >= 5).map(c => [c.componentType, c]));
+  const timing = b.components
+    .filter(c => c.instrumented && c.renders.count >= 5 && before.has(c.componentType))
+    .map(c => {
+      const was = before.get(c.componentType);
+      const d95 = c.renders.p95Ms - was.renders.p95Ms;
+      return { name: c.componentType, was, now: c, d95, rel: was.renders.p95Ms ? d95 / was.renders.p95Ms : 0 };
+    })
+    .sort((x, y) => Math.abs(y.d95) - Math.abs(x.d95))
+    .slice(0, 15);
+  const timingTable = timing.length
+    ? h('table', { 'aria-label': 'Component render time comparison' },
+      h('thead', null, h('tr', null, h('th', null, 'Component render time'), h('th', { class: 'num' }, 'p50'), h('th', { class: 'num' }, 'p95'), h('th', { class: 'num' }, 'Change (p95)'))),
+      h('tbody', null, timing.map(t => h('tr', null,
+        h('td', { title: t.name }, shortType(t.name)),
+        h('td', { class: 'num' }, `${fmtMs(t.was.renders.p50Ms)} → ${fmtMs(t.now.renders.p50Ms)}`),
+        h('td', { class: 'num' }, `${fmtMs(t.was.renders.p95Ms)} → ${fmtMs(t.now.renders.p95Ms)}`),
+        h('td', { class: `num ${Math.abs(t.d95) < 0.5 ? '' : t.rel > 0.1 ? 'compare-up' : t.rel < -0.1 ? 'compare-down' : ''}`, title: Math.abs(t.d95) < 0.5 ? 'Within measurement noise (under 0.5 ms)' : null },
+          `${t.d95 > 0 ? '+' : ''}${fmtMs(t.d95)} (${t.rel > 0 ? '+' : ''}${(t.rel * 100).toFixed(0)}%)`)))))
+    : null;
+
+  return h('div', null, h('div', { class: 'grid cols-2' },
     h('table', { 'aria-label': 'Metric comparison' },
       h('thead', null, h('tr', null, h('th', null, 'Metric'), h('th', { class: 'num' }, 'Baseline'), h('th', { class: 'num' }, 'Compared'), h('th', { class: 'num' }, 'Change'))),
       h('tbody', null, metrics.map(row))),
     h('table', { 'aria-label': 'Largest component changes' },
       h('thead', null, h('tr', null, h('th', null, 'Component (renders or param updates)'), h('th', { class: 'num' }, 'Baseline'), h('th', { class: 'num' }, 'Compared'))),
-      h('tbody', null, changes.map(c => h('tr', null, h('td', { title: c.name }, shortType(c.name)), h('td', { class: 'num' }, fmtNum(c.a)), h('td', { class: `num ${c.delta > 0 ? 'compare-up' : c.delta < 0 ? 'compare-down' : ''}` }, fmtNum(c.b)))))));
+      h('tbody', null, changes.map(c => h('tr', null, h('td', { title: c.name }, shortType(c.name)), h('td', { class: 'num' }, fmtNum(c.a)), h('td', { class: `num ${c.delta > 0 ? 'compare-up' : c.delta < 0 ? 'compare-down' : ''}` }, fmtNum(c.b))))))),
+    timingTable ? h('section', { class: 'panel' }, h('h2', null, 'Component render time distribution'), timingTable) : null);
 }
 
 // ----------------------------------------------------------------------------------------------- Health
@@ -1378,12 +1423,20 @@ export function eventDetails(ctx, e, related) {
       return fmtBytes(value);
     }
 
-    return Array.isArray(value) ? value.join(', ') : String(value);
+    if (key === 'scripts' && Array.isArray(value)) {
+      return value.map(sc => `${sc.sourceFunctionName || sc.invoker || 'script'}${sc.sourceUrl ? ` (${sc.sourceUrl})` : ''}: ${fmtMs(sc.durationMs)}${sc.forcedStyleAndLayoutMs >= 1 ? `, forced layout ${fmtMs(sc.forcedStyleAndLayoutMs)}` : ''} [${sc.invokerType || '?'}]`).join('\n');
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(v => (v !== null && typeof v === 'object' ? JSON.stringify(v) : v)).join(key === 'retainedBy' ? '\n' : ', ');
+    }
+
+    return String(value);
   };
 
   const root = h('div', null,
     h('p', null, h('strong', null, describeShort(e))),
-    h('dl', { class: 'kv' }, h('dt', null, 'kind'), h('dd', null, e.type), rows.map(([k, v]) => [h('dt', null, k), h('dd', { class: 'mono' }, format(k, v))])));
+    h('dl', { class: 'kv' }, h('dt', null, 'kind'), h('dd', null, e.type), rows.map(([k, v]) => [h('dt', null, k), h('dd', { class: 'mono', style: { whiteSpace: 'pre-wrap' } }, format(k, v))])));
 
   if (e.correlation) {
     root.appendChild(h('p', { class: 'muted' }, correlationText(e.correlation)));

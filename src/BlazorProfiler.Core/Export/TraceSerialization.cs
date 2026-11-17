@@ -278,6 +278,22 @@ public static class TraceImporter
                     navigation.ComponentType = Truncate(navigation.ComponentType, max);
                     navigation.Route = Truncate(navigation.Route, max);
                     break;
+                case ComponentRetainedEvent retained:
+                    retained.ComponentType = Truncate(retained.ComponentType, max);
+                    if (retained.RetainedBy is { Length: > 16 })
+                    {
+                        retained.RetainedBy = retained.RetainedBy[..16];
+                    }
+
+                    if (retained.RetainedBy is not null)
+                    {
+                        for (var i = 0; i < retained.RetainedBy.Length; i++)
+                        {
+                            retained.RetainedBy[i] = Truncate(retained.RetainedBy[i], 512) ?? string.Empty;
+                        }
+                    }
+
+                    break;
                 case ComponentEvent component:
                     component.ComponentType = Truncate(component.ComponentType, max);
                     break;
@@ -316,6 +332,28 @@ public static class TraceImporter
                 case BrowserLongTaskEvent longTask:
                     longTask.EntryType = Truncate(longTask.EntryType, 64);
                     longTask.Script = Truncate(longTask.Script, max);
+                    if (longTask.Scripts is { Count: > BrowserLongTaskEvent.MaxScripts })
+                    {
+                        longTask.Scripts = longTask.Scripts.GetRange(0, BrowserLongTaskEvent.MaxScripts);
+                    }
+
+                    if (longTask.Scripts is not null)
+                    {
+                        longTask.Scripts.RemoveAll(s => s is null);
+                        foreach (var script in longTask.Scripts)
+                        {
+                            script.Invoker = Truncate(script.Invoker, max);
+                            script.InvokerType = Truncate(script.InvokerType, 32);
+                            script.SourceUrl = Truncate(script.SourceUrl, max);
+                            script.SourceFunctionName = Truncate(script.SourceFunctionName, 256);
+                        }
+                    }
+
+                    break;
+                case BrowserFrustrationEvent frustration:
+                    frustration.TargetTag = Truncate(frustration.TargetTag, 64);
+                    frustration.Target = Truncate(frustration.Target, 256);
+                    frustration.ClickCount = Math.Clamp(frustration.ClickCount, 1, 1_000);
                     break;
                 case BrowserStartupEvent startup:
                     startup.NavigationType = Truncate(startup.NavigationType, 32);

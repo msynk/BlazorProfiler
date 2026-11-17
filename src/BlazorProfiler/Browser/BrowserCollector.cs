@@ -8,7 +8,10 @@ namespace BlazorProfiler.Browser;
 /// <summary>An entry reported by the browser module. Short property names keep the interop payload small.</summary>
 public sealed class BrowserEntry
 {
-    /// <summary>Entry kind: <c>i</c> interaction, <c>l</c> long task or long animation frame, <c>r</c> resource.</summary>
+    /// <summary>
+    /// Entry kind: <c>i</c> interaction, <c>l</c> long task or long animation frame, <c>r</c> resource, <c>s</c> startup,
+    /// <c>v</c> web vital, <c>f</c> frustration signal, <c>m</c> marker (deep captures).
+    /// </summary>
     public string? K { get; set; }
 
     /// <summary>Event type, entry type, or URL.</summary>
@@ -31,6 +34,9 @@ public sealed class BrowserEntry
 
     /// <summary>Lower-case target tag name (interactions).</summary>
     public string? Tag { get; set; }
+
+    /// <summary>Interaction contentful paint: input to content painted (ms), when reported.</summary>
+    public double? Cp { get; set; }
 
     /// <summary>Blocking duration in milliseconds (long tasks).</summary>
     public double B { get; set; }
@@ -91,6 +97,52 @@ public sealed class BrowserEntry
 
     /// <summary>Web vital: value.</summary>
     public double V { get; set; }
+
+    /// <summary>Long animation frames: forced style and layout (ms), summed over the frame's scripts.</summary>
+    public double Fl { get; set; }
+
+    /// <summary>Long animation frames: time from renderStart to the end of the frame (ms).</summary>
+    public double Rd { get; set; }
+
+    /// <summary>Long animation frames: time from styleAndLayoutStart to the end of the frame (ms).</summary>
+    public double Sl { get; set; }
+
+    /// <summary>Long animation frames: the longest scripts.</summary>
+    public BrowserScriptEntry[]? Sc { get; set; }
+
+    /// <summary>Frustration signals: number of clicks.</summary>
+    public int C { get; set; }
+
+    /// <summary>Frustration signals: structural description of the clicked element.</summary>
+    public string? Tg { get; set; }
+}
+
+/// <summary>A script of a long animation frame (wire format).</summary>
+public sealed class BrowserScriptEntry
+{
+    /// <summary>Invoker.</summary>
+    public string? Inv { get; set; }
+
+    /// <summary>Invoker type.</summary>
+    public string? It { get; set; }
+
+    /// <summary>Source URL.</summary>
+    public string? Src { get; set; }
+
+    /// <summary>Source function name.</summary>
+    public string? Fn { get; set; }
+
+    /// <summary>Source character position.</summary>
+    public int Cp { get; set; } = -1;
+
+    /// <summary>Duration (ms).</summary>
+    public double D { get; set; }
+
+    /// <summary>Forced style and layout (ms).</summary>
+    public double Fl { get; set; }
+
+    /// <summary>Pause duration (ms).</summary>
+    public double P { get; set; }
 }
 
 /// <summary>A framework file in a startup entry (wire format).</summary>
@@ -241,12 +293,41 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     InputDelayMs = Sanitize(entry.Id),
                     ProcessingMs = Sanitize(entry.Pr),
                     PresentationDelayMs = Sanitize(entry.Pd),
+                    ContentPaintMs = entry.Cp is { } cp && double.IsFinite(cp) && cp > 0 && cp <= 3_600_000 ? Sanitize(cp) : null,
                 },
                 "l" => new BrowserLongTaskEvent
                 {
                     EntryType = Truncate(entry.N, 64),
                     BlockingMs = Sanitize(entry.B),
                     Script = Truncate(entry.S, 512),
+                    ForcedStyleAndLayoutMs = Sanitize(entry.Fl),
+                    RenderMs = Sanitize(entry.Rd),
+                    StyleAndLayoutMs = Sanitize(entry.Sl),
+                    Scripts = entry.Sc is { Length: > 0 } scripts
+                        ? scripts.Where(x => x is not null).Take(BrowserLongTaskEvent.MaxScripts).Select(x => new LongFrameScript
+                        {
+                            Invoker = Truncate(x.Inv, 256),
+                            InvokerType = Truncate(x.It, 32),
+                            SourceUrl = Truncate(x.Src, 512),
+                            SourceFunctionName = Truncate(x.Fn, 128),
+                            SourceCharPosition = x.Cp >= 0 ? x.Cp : -1,
+                            DurationMs = Sanitize(x.D),
+                            ForcedStyleAndLayoutMs = Sanitize(x.Fl),
+                            PauseMs = Sanitize(x.P),
+                        }).ToList()
+                        : null,
+                },
+                "m" when !string.IsNullOrWhiteSpace(entry.N) => new MarkerEvent
+                {
+                    MarkerType = MarkerType.Custom,
+                    Name = Truncate(entry.N, 128),
+                },
+                "f" when entry.N is "rage" or "dead" => new BrowserFrustrationEvent
+                {
+                    Signal = entry.N == "rage" ? FrustrationSignal.RageClick : FrustrationSignal.DeadClick,
+                    ClickCount = Math.Clamp(entry.C, 1, 1_000),
+                    TargetTag = Truncate(entry.Tag, 32),
+                    Target = Truncate(entry.Tg, 160),
                 },
                 "s" => new BrowserStartupEvent
                 {

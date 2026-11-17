@@ -154,7 +154,7 @@ public sealed class DevToolsTrackProcessor : IProfilerEventProcessor
             case NavigationEvent n:
                 return ($"Blazor: navigate {n.Route}", string.Empty, "primary", $"Navigation to {n.Route} ({Short(n.ComponentType)})", [("Route", n.Route), ("Page", n.ComponentType)]);
             case ComponentRetainedEvent retained:
-                return ($"Blazor: {Short(retained.ComponentType)} retained", string.Empty, "error", $"{retained.ComponentType} #{retained.ComponentInstanceId} still reachable after {retained.SurvivedCollections} full GC(s)", [("Component", retained.ComponentType)]);
+                return ($"Blazor: {Short(retained.ComponentType)} retained", string.Empty, "error", $"{retained.ComponentType} #{retained.ComponentInstanceId} still reachable after {retained.SurvivedCollections} full GC(s)", [("Component", retained.ComponentType), ("Retained by", retained.RetainedBy is { Length: > 0 } by ? string.Join("; ", by) : null)]);
             default:
                 return (e.Kind.ToString(), "Other", "secondary", e.Kind.ToString(), []);
         }

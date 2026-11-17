@@ -28,8 +28,8 @@ jobs:
           dotnet test tests/BlazorProfiler.Core.Tests --no-build -c Release
           dotnet test tests/BlazorProfiler.Tests --no-build -c Release
           dotnet test tests/BlazorProfiler.Server.Tests --no-build -c Release
-      - name: Install Playwright Chromium
-        run: pwsh tests/BlazorProfiler.E2E.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: Install Playwright browsers
+        run: pwsh tests/BlazorProfiler.E2E.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium firefox webkit
       - name: End-to-end tests
         run: dotnet test tests/BlazorProfiler.E2E.Tests --no-build -c Release
       - name: Pack
@@ -40,7 +40,8 @@ jobs:
           path: artifacts/packages
 
   benchmarks:
-    if: github.event_name == 'workflow_dispatch' && inputs.benchmarks
+    # On demand, and on pull requests labelled "benchmarks". Allocations per operation are gated against the committed baseline.
+    if: (github.event_name == 'workflow_dispatch' && inputs.benchmarks) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmarks'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +49,12 @@ jobs:
         with:
           global-json-file: global.json
       - name: Run benchmarks
-        run: dotnet run -c Release --project benchmarks/BlazorProfiler.Benchmarks -- --job short --filter "*" --exporters github
+        run: dotnet run -c Release --project benchmarks/BlazorProfiler.Benchmarks -- --job short --filter "*" --exporters github json
+      - name: Check allocations against the baseline
+        shell: pwsh
+        run: ./benchmarks/check-allocations.ps1
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: benchmarks
           path: BenchmarkDotNet.Artifacts/results

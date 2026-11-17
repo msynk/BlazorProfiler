@@ -59,9 +59,10 @@ Values that are estimates carry a `ValueQuality` (for example `HttpRequestEvent.
 | browser | `PerformanceObserver` in a JS module started by `BlazorProfilerClient` | on when the component is rendered |
 | circuits | `CircuitHandler` + `IHubFilter` (also applies simulated latency) | on (server) |
 | database | `DiagnosticListener` subscription to `Microsoft.EntityFrameworkCore` (no EF reference) | on |
-| component-retention | Weak references registered on disposal (`ProfiledComponentBase`) and when the activator's scope ends; checked after full GCs | on (off in LowOverhead) |
+| component-retention | Weak references registered on disposal (`ProfiledComponentBase`) and when the activator's scope ends; checked after full GCs; reported instances are inspected for retainers (`RetainerInspector`) | on (off in LowOverhead) |
 
-The browser module also reports startup (once per page) and Core Web Vitals, runs the optional in-page toolbar and update
+The browser module also attributes long animation frames to scripts, detects rage and dead clicks, reports startup (once
+per page) and Core Web Vitals, runs the optional in-page toolbar and update
 highlighting (browser-only, nothing is sent to .NET), and writes DevTools tracks received from `DevToolsTrackProcessor`
 (an `IProfilerEventProcessor` that is inactive until a `BlazorProfilerClient` with `DevToolsTracks` subscribes).
 
@@ -137,5 +138,9 @@ reading are not re-rendered automatically (a refresh prompt appears instead), ex
 - Custom exporters: implement `IProfilerExporter`.
 - Manual instrumentation: `profiler.StartOperation("name")` and `profiler.Mark("name")`.
 - Commands the dashboard can run in the app: `IProfilerCommand` singletons (built in: `check-leaks`, `simulate-latency`).
+- Coding agents: `ProfilerMcpServer` implements the Model Context Protocol over `ProfilerApi` (transport independent); the
+  server maps it to Streamable HTTP at `{RoutePrefix}/mcp`, and the CLI serves it over stdio for exported traces.
+- OpenTelemetry: `ProfilerTelemetry` is a built-in processor (added last, when `Telemetry.Metrics` or `Telemetry.Traces` is
+  on) that republishes profiler measurements through the `BlazorProfiler` meter and activity source.
 - Tests and CI: `ProfilerAssert`, `ProfilerBudget` (`BlazorProfiler.Testing`), and the `blazor-profiler` CLI
   (`BlazorProfiler.Cli`) for exported traces.

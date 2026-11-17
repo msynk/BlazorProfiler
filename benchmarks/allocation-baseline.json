@@ -1,0 +1,20 @@
+{
+  "tolerancePercent": 10,
+  "minimumSlackBytes": 64,
+  "benchmarks": {
+    "BlazorProfiler.Benchmarks.AnalysisBenchmarks.AnalyzeAllRules": 14083490,
+    "BlazorProfiler.Benchmarks.AnalysisBenchmarks.ExportCompressed": 3127928,
+    "BlazorProfiler.Benchmarks.AnalysisBenchmarks.ImportCompressed": 14077954,
+    "BlazorProfiler.Benchmarks.AnalysisBenchmarks.Summary": 228526,
+    "BlazorProfiler.Benchmarks.EmitBenchmarks.IdleProfiler": 144,
+    "BlazorProfiler.Benchmarks.EmitBenchmarks.RecordingAsyncPipeline": 182,
+    "BlazorProfiler.Benchmarks.EmitBenchmarks.RecordingFullPipeline": 192,
+    "BlazorProfiler.Benchmarks.RedactionBenchmarks.EndpointKey": 856,
+    "BlazorProfiler.Benchmarks.RedactionBenchmarks.SanitizeUrl": 1560,
+    "BlazorProfiler.Benchmarks.RenderBenchmarks.ComponentBase_NoProfiler(Count: 200)": 16692,
+    "BlazorProfiler.Benchmarks.RenderBenchmarks.ComponentBase_ProfilerRecording(Count: 200)": 52739,
+    "BlazorProfiler.Benchmarks.RenderBenchmarks.ProfiledComponentBase_ProfilerIdle(Count: 200)": 16692,
+    "BlazorProfiler.Benchmarks.RenderBenchmarks.ProfiledComponentBase_ProfilerRecording(Count: 200)": 132536,
+    "BlazorProfiler.Benchmarks.StoreBenchmarks.AppendWithEviction": 0
+  }
+}

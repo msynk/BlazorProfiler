@@ -4,6 +4,7 @@ import { settings, loadSettings, saveSettings, h, clear, downloadBlob } from './
 import { ApiSource, BridgeSource, FileSource } from './sources.js';
 import * as views from './views.js';
 import { interactions } from './interactions.js';
+import { responsiveness } from './responsiveness.js';
 
 const MAX_EVENTS = 150_000;
 const PAGE_SIZE = 5_000;
@@ -17,6 +18,7 @@ const VIEWS = {
   interactions,
   components: views.components,
   timeline: views.timeline,
+  responsiveness,
   network: views.network,
   database: views.database,
   interop: views.interop,

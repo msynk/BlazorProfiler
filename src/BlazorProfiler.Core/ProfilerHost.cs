@@ -129,6 +129,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
     private readonly IProfilerCollector[] _collectors;
     private readonly IProfilerCorrelationProvider[] _correlationProviders;
     private readonly IProfilerEventProcessor[] _processors;
+    private readonly ProfilerTelemetry? _telemetry;
     private readonly ProfilerCollectorContext _collectorContext;
     private readonly EventSampler _sampler;
     private readonly Channel<ProfilerEvent>? _channel;
@@ -180,15 +181,17 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         loggerFactory ??= NullLoggerFactory.Instance;
         _logger = loggerFactory.CreateLogger<ProfilerHost>();
         _collectors = collectors?.ToArray() ?? [];
-        _correlationProviders = [new AmbientCorrelationProvider(options.CaptureTraceContext), .. correlationProviders ?? []];
+        _correlationProviders = [new AmbientCorrelationProvider(options.CaptureTraceContext, captureForSpans: options.Telemetry.Traces), .. correlationProviders ?? []];
         _sampler = new EventSampler(options.Sampling);
         RedactionPolicy = redactionPolicy ?? new DefaultRedactionPolicy(options.Redaction);
+        _telemetry = options.Telemetry.Metrics || options.Telemetry.Traces ? new ProfilerTelemetry(options.Telemetry, Clock) : null;
         _processors =
         [
             new FilterProcessor(options.Filters),
             new RedactionProcessor(RedactionPolicy),
             new BrowserResourceMergeProcessor(Clock, () => _processingSessions, ReplaceStoredEvent),
             .. processors ?? [],
+            .. _telemetry is null ? Array.Empty<IProfilerEventProcessor>() : [_telemetry],
         ];
         Diagnostics = new DiagnosticEngine(options.Diagnostics, rules ?? BuiltInRules.Create(), recommendationProviders);
         _collectorContext = new ProfilerCollectorContext(this, loggerFactory);
@@ -248,7 +251,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
             _started = true;
             if (_channel is not null)
             {
-                _consumer = Task.Run(() => ConsumeAsync(_shutdown.Token));
+                _consumer = StartConsumer();
             }
         }
 
@@ -366,7 +369,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
                 _started = true;
                 if (_channel is not null)
                 {
-                    _consumer = Task.Run(() => ConsumeAsync(_shutdown.Token));
+                    _consumer = StartConsumer();
                 }
             }
 
@@ -541,6 +544,7 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
             session.Dispose();
         }
 
+        _telemetry?.Dispose();
         _shutdown.Dispose();
     }
 
@@ -661,6 +665,19 @@ public sealed class ProfilerHost : IProfiler, IAsyncDisposable, IDisposable
         {
             Interlocked.Increment(ref _internalErrors);
             _logger.LogError(ex, "Profiler event consumer stopped unexpectedly.");
+        }
+    }
+
+    /// <summary>
+    /// Starts the consumer without the caller's execution context: the first session is often started inside a request,
+    /// whose ambient activity and profiler frames must not flow into the background consumer (spans published there
+    /// would otherwise become children of that long-finished request).
+    /// </summary>
+    private Task StartConsumer()
+    {
+        using (ExecutionContext.SuppressFlow())
+        {
+            return Task.Run(() => ConsumeAsync(_shutdown.Token));
         }
     }
 

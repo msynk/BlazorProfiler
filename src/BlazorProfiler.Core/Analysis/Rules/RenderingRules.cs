@@ -476,3 +476,124 @@ public sealed class SlowRenderBatchRule : DiagnosticRule
             related: slow.OrderByDescending(b => b.Duration));
     }
 }
+
+/// <summary>
+/// BP1008: instances of one component type disposed and recreated within one operation: list items keyed by a value that
+/// changes between renders (object instances recreated when data reloads, generated ids) or markup replaced around them
+/// (for example a list hidden behind <c>@if (loading)</c> while it reloads), so Blazor rebuilds them instead of reusing them.
+/// </summary>
+public sealed class ComponentChurnRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP1008",
+        Title = "Components recreated instead of reused",
+        Category = DiagnosticCategory.Rendering,
+        Description = "Detects operations in which many instances of one component type were disposed and new instances of the same type created: components rebuilt instead of reused because their @key changed (objects recreated on reload, generated ids) or because the markup around them was replaced.",
+        RequiredSignals = [ProfilerEventKind.ComponentCreated, ProfilerEventKind.ComponentDisposed],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var threshold = Math.Max(2, context.Options.ComponentChurnThreshold);
+        var disposed = context.OfType<ComponentDisposedEvent>();
+        if (disposed.Count == 0)
+        {
+            yield break;
+        }
+
+        // Per component type: the operations in which instances were both disposed and created, and how many.
+        var churn = new Dictionary<string, List<(long Operation, double Recreated, List<ProfilerEvent> Events)>>(StringComparer.Ordinal);
+        foreach (var (operation, events) in context.ByOperation)
+        {
+            var created = new Dictionary<string, List<ProfilerEvent>>(StringComparer.Ordinal);
+            var removed = new Dictionary<string, List<ProfilerEvent>>(StringComparer.Ordinal);
+            foreach (var e in events)
+            {
+                var target = e switch
+                {
+                    ComponentCreatedEvent => created,
+                    ComponentDisposedEvent => removed,
+                    _ => null,
+                };
+
+                if (target is null || ((ComponentEvent)e).ComponentType is not { } type)
+                {
+                    continue;
+                }
+
+                if (!target.TryGetValue(type, out var list))
+                {
+                    target[type] = list = [];
+                }
+
+                list.Add(e);
+            }
+
+            foreach (var (type, gone) in removed)
+            {
+                if (!created.TryGetValue(type, out var added))
+                {
+                    continue;
+                }
+
+                var recreated = Math.Min(Weighted(gone), Weighted(added));
+                if (recreated < threshold)
+                {
+                    continue;
+                }
+
+                if (!churn.TryGetValue(type, out var perType))
+                {
+                    churn[type] = perType = [];
+                }
+
+                perType.Add((operation, recreated, [.. gone.Take(10), .. added.Take(10)]));
+            }
+        }
+
+        foreach (var (type, operations) in churn.OrderByDescending(p => p.Value.Sum(o => o.Recreated)))
+        {
+            var total = operations.Sum(o => o.Recreated);
+            var worst = operations.MaxBy(o => o.Recreated);
+            var summary = context.Summary.Components.FirstOrDefault(c => c.ComponentType == type);
+            var initMs = summary is null ? 0 : summary.Lifecycle.Where(p => p.Key.StartsWith("OnInitialized", StringComparison.Ordinal)).Sum(p => p.Value.MeanMs);
+            var renderMs = summary?.Renders.MeanMs ?? 0;
+            var perInstanceMs = initMs + renderMs;
+            var shortType = ShortType(type);
+            yield return Create(
+                $"{shortType} recreated {FormatNumber(total)} times instead of reused",
+                Scale(worst.Recreated, threshold),
+                operations.Count >= 2 ? DiagnosticConfidence.High : DiagnosticConfidence.Medium,
+                $"In {operations.Count} operation(s), instances of {shortType} were disposed and new instances of the same type created ({FormatNumber(worst.Recreated)} in the worst operation, {FormatNumber(total)} in total).",
+                "Blazor reuses a child component when it appears at the same position, or with the same @key, in its parent's next render. It disposes the instance and creates a new one when the key differs (an object instance recreated when data is reloaded, a Guid or other value generated while rendering) or when the markup around it was replaced (for example a list rendered only when not loading, so every reload removes and rebuilds it). Recreation reruns OnInitialized (often with data loading), loses component state such as focus, scroll position, and input, and rebuilds the DOM.",
+                "Key list items by a stable identifier (@key=\"item.Id\"), not by object instances or values created during rendering. Keep the list rendered while it reloads (show progress next to it instead of replacing it). If the items really are new, for example after a filter change, cache what recreated components load so they initialize cheaply.",
+                [
+                    Evidence("Operations with recreation", FormatNumber(operations.Count)),
+                    Evidence("Instances recreated (worst operation)", FormatNumber(worst.Recreated)),
+                    Evidence("Instances recreated (total)", FormatNumber(total)),
+                    perInstanceMs > 0
+                        ? Evidence("Mean initialization and render time per instance", FormatMs(perInstanceMs), ValueQuality.Estimated)
+                        : Evidence("Mean initialization and render time per instance", "unavailable", ValueQuality.Unavailable),
+                ],
+                new ImpactEstimate
+                {
+                    TotalMs = perInstanceMs > 0 ? Math.Round(perInstanceMs * total, 3) : null,
+                    Occurrences = total,
+                    Method = "Recreated instances (the smaller of disposals and creations of the type in one operation), times the mean OnInitialized and render time of the type.",
+                    Quality = perInstanceMs > 0 ? ValueQuality.Estimated : ValueQuality.Measured,
+                },
+                componentType: type,
+                subject: type,
+                caveats:
+                [
+                    "Replacing a list with genuinely different items (paging, filtering, navigation) also disposes and creates components; that is expected.",
+                    "Disposals are observed only for components that inherit ProfiledComponentBase.",
+                ],
+                related: worst.Events,
+                codeHint: $"Look for the @key of <{shortType}> (stable id?) and for @if blocks around the loop that renders it.");
+        }
+    }
+}

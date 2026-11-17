@@ -11,6 +11,18 @@ const MAX_BATCHES_PER_FLUSH = 8;
 // of their escaped form (they travel as a string argument); the JSON hub protocol escapes them once more, which at most
 // doubles the size, so the default budget leaves room for that and the invocation envelope.
 const DEFAULT_MAX_BATCH_BYTES = 16000;
+// How long after an interaction its record stays buffered, so its interaction contentful paint can still be added.
+const INTERACTION_SETTLE_MS = 1500;
+// Scripts kept per long animation frame (BrowserLongTaskEvent.MaxScripts in .NET).
+const MAX_FRAME_SCRIPTS = 5;
+// Frustration signals: rage clicks are RAGE_CLICKS or more clicks within RAGE_WINDOW_MS and RAGE_RADIUS_PX of each other;
+// a dead click is a click on an interactive element after which the DOM does not change and the URL stays the same for
+// DEAD_CLICK_MS.
+const RAGE_CLICKS = 3;
+const RAGE_WINDOW_MS = 1000;
+const RAGE_RADIUS_PX = 30;
+const DEAD_CLICK_MS = 1000;
+const INTERACTIVE_SELECTOR = 'button, a[href], input[type=button], input[type=submit], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=tab], summary';
 // The interaction an entry was created for. A symbol key is not serialized by JSON.stringify.
 const INTERACTION_ID = Symbol('interactionId');
 
@@ -38,6 +50,8 @@ export function start(dotNetRef, optionsJson) {
     keyHandlers: [],
     launcher: null,
     interactions: new Map(),
+    // Interactions below the reporting threshold, kept briefly in case their content paints late.
+    recent: new Map(),
     collect: options.collect !== false,
     toolbar: null,
     highlight: null,
@@ -52,6 +66,10 @@ export function start(dotNetRef, optionsJson) {
   }
 
   if (state.collect) {
+    if (options.frustration !== false) {
+      observeFrustration(options.frustrationIgnoreSelector);
+    }
+
     observeResources();
     observeVitals();
     scheduleStartup();
@@ -113,6 +131,8 @@ export function stop(owner) {
   for (const handler of state.keyHandlers) {
     window.removeEventListener('keydown', handler);
   }
+
+  stopFrustration();
 
   if (state.launcher) {
     state.launcher.remove();
@@ -213,19 +233,24 @@ function cut(value, max) {
 }
 
 function observeInteractions(threshold, live) {
+  // Interaction contentful paint (Chromium): when the content an interaction changed was painted, including content
+  // rendered after asynchronous work (an awaited WebAssembly handler). Interactions faster than the threshold are kept
+  // aside (state.recent) so a late content paint can still report them.
+  const contentPaint = supports('interaction-contentful-paint');
+
   // The toolbar estimates INP from every interaction, so it lowers the observation threshold to the minimum (16 ms).
-  observe('event', { durationThreshold: live ? 16 : Math.max(16, threshold) }, entries => {
+  observe('event', { durationThreshold: live || contentPaint ? 16 : Math.max(16, threshold) }, entries => {
     for (const e of entries) {
       if (e.interactionId) {
         recordLiveInteraction(e);
       }
 
       // Only discrete interactions carry an interactionId; keep the longest entry per interaction.
-      if (!e.interactionId || e.duration < threshold || !state.collect) {
+      if (!e.interactionId || !state.collect) {
         continue;
       }
 
-      const existing = state.interactions.get(e.interactionId);
+      const existing = state.interactions.get(e.interactionId) || state.recent.get(e.interactionId);
       if (existing && existing.d >= e.duration) {
         continue;
       }
@@ -242,15 +267,56 @@ function observeInteractions(threshold, live) {
       };
 
       if (existing) {
-        // Still buffered (entries are forgotten once sent or dropped): update it in place.
+        // Still buffered or set aside: update it in place (keeping a content paint already recorded).
         Object.assign(existing, entry);
       } else {
         entry[INTERACTION_ID] = e.interactionId;
-        state.interactions.set(e.interactionId, entry);
-        push(entry);
+      }
+
+      const record = existing || entry;
+      if (state.interactions.get(e.interactionId) !== record) {
+        if (record.d >= threshold || (record.cp || 0) >= threshold) {
+          report(record, e.interactionId);
+        } else {
+          rememberRecent(e.interactionId, record);
+        }
       }
     }
   });
+
+  if (contentPaint) {
+    observe('interaction-contentful-paint', {}, entries => {
+      for (const e of entries) {
+        if (!e.interactionId || !state.collect) {
+          continue;
+        }
+
+        // Several entries can arrive per interaction as more content paints; the latest (largest) one counts.
+        const record = state.interactions.get(e.interactionId) || state.recent.get(e.interactionId);
+        if (!record) {
+          continue;
+        }
+
+        record.cp = Math.max(record.cp || 0, e.duration);
+        if (state.interactions.get(e.interactionId) !== record && record.cp >= threshold) {
+          report(record, e.interactionId);
+        }
+      }
+    });
+  }
+}
+
+function report(record, interactionId) {
+  state.recent.delete(interactionId);
+  state.interactions.set(interactionId, record);
+  push(record);
+}
+
+function rememberRecent(interactionId, record) {
+  state.recent.set(interactionId, record);
+  if (state.recent.size > 100) {
+    state.recent.delete(state.recent.keys().next().value);
+  }
 }
 
 function observeLongFrames() {
@@ -259,12 +325,45 @@ function observeLongFrames() {
       for (const e of entries) {
         recordLiveLongFrame(e);
         let script;
+        let scripts;
+        let forced = 0;
         if (Array.isArray(e.scripts) && e.scripts.length > 0) {
           const longest = e.scripts.reduce((a, b) => (b.duration > a.duration ? b : a));
-          script = longest.sourceURL || longest.invoker || undefined;
+          script = longest.sourceURL || longest.invoker || longest.name || undefined;
+          for (const s of e.scripts) {
+            forced += s.forcedStyleAndLayoutDuration || 0;
+          }
+
+          // Long Animation Frame script attribution: the longest scripts with invoker, source location, and forced layout.
+          // Origin-trial builds named the invoker `name`. Script contents are never read.
+          scripts = [...e.scripts]
+            .sort((a, b) => b.duration - a.duration)
+            .slice(0, MAX_FRAME_SCRIPTS)
+            .map(s => ({
+              inv: cut(s.invoker || s.name || undefined, 256),
+              it: cut(s.invokerType || s.type || undefined, 32),
+              src: cut(s.sourceURL || undefined, 512),
+              fn: cut(s.sourceFunctionName || undefined, 128),
+              cp: typeof s.sourceCharPosition === 'number' ? s.sourceCharPosition : -1,
+              d: s.duration || 0,
+              fl: s.forcedStyleAndLayoutDuration || 0,
+              p: s.pauseDuration || 0,
+            }));
         }
 
-        push({ k: 'l', n: 'long-animation-frame', t: epoch(e.startTime), d: e.duration, b: e.blockingDuration || 0, s: cut(script, 512) });
+        const end = e.startTime + e.duration;
+        push({
+          k: 'l',
+          n: 'long-animation-frame',
+          t: epoch(e.startTime),
+          d: e.duration,
+          b: e.blockingDuration || 0,
+          s: cut(script, 512),
+          fl: forced,
+          rd: e.renderStart > 0 ? Math.max(0, end - e.renderStart) : 0,
+          sl: e.styleAndLayoutStart > 0 ? Math.max(0, end - e.styleAndLayoutStart) : 0,
+          sc: scripts,
+        });
       }
     });
   } else {
@@ -275,6 +374,204 @@ function observeLongFrames() {
       }
     });
   }
+}
+
+// Describes an element structurally (tag, id, up to two classes), never by its text or other attributes. Blazor's CSS
+// isolation scope attributes are not classes, so they never appear.
+function describeElement(el) {
+  if (!el || el.nodeType !== 1) {
+    return undefined;
+  }
+
+  let text = el.tagName.toLowerCase();
+  if (el.id) {
+    text += '#' + cut(el.id, 48);
+  }
+
+  const classes = typeof el.className === 'string' ? el.className.split(/\s+/).filter(c => c).sort().slice(0, 2) : [];
+  for (const c of classes) {
+    text += '.' + cut(c, 32);
+  }
+
+  return cut(text, 160);
+}
+
+// Rage and dead clicks (frustration signals). A click listener in the capture phase records positions; a mutation
+// observer records when the DOM last changed. Nothing about the element except its structure (describeElement) is kept.
+function observeFrustration(ignoreSelector) {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') {
+    return;
+  }
+
+  // mutations: times (performance.now) at which the DOM changed, at most one per 16 ms and only while clicks are pending.
+  const f = { clicks: [], pending: [], observer: null, mutations: [], ignore: ignoreSelector || null, handler: null, timer: 0 };
+  f.observer = new MutationObserver(records => {
+    // Mutations only matter while a click waits for its verdict; otherwise the callback returns at once.
+    if (f.pending.length === 0) {
+      return;
+    }
+
+    for (const r of records) {
+      if (isOwnNode(r.target)) {
+        continue;
+      }
+
+      if (r.type === 'childList' && [...r.addedNodes, ...r.removedNodes].every(isOwnNode)) {
+        continue;
+      }
+
+      // At most one entry per 16 ms, except that the first change after the newest click is always recorded (it may be
+      // that click's only effect).
+      const now = performance.now();
+      const last = f.mutations[f.mutations.length - 1];
+      const newestClick = f.pending[f.pending.length - 1].t;
+      if (last === undefined || now - last >= 16 || last < newestClick) {
+        f.mutations.push(now);
+      }
+
+      return;
+    }
+  });
+
+  f.handler = event => {
+    try {
+      if (!state || !event.isTrusted || event.button !== 0) {
+        return;
+      }
+
+      const raw = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+      if (!raw || raw.closest('[data-blazor-profiler]')) {
+        return;
+      }
+
+      if (f.ignore) {
+        try {
+          if (raw.closest(f.ignore)) {
+            return;
+          }
+        } catch {
+          f.ignore = null;
+        }
+      }
+
+      const now = performance.now();
+      const interactive = raw.closest(INTERACTIVE_SELECTOR);
+      const el = interactive || raw;
+      const target = describeElement(el);
+
+      // Rage clicks: clicks on one spot, each within a window of the previous one, form a burst; the burst is a rage
+      // click when RAGE_CLICKS of them fall within one window (so steady clicking every 900 ms is not rage). Clicks
+      // activated from the keyboard (detail 0) have no position and are left out.
+      let burst = null;
+      if (event.detail !== 0) {
+        f.clicks = f.clicks.filter(c => now - c.t <= RAGE_WINDOW_MS);
+        for (let i = f.clicks.length - 1; i >= 0; i--) {
+          const c = f.clicks[i];
+          if (Math.abs(c.x - event.clientX) <= RAGE_RADIUS_PX && Math.abs(c.y - event.clientY) <= RAGE_RADIUS_PX) {
+            burst = c.burst;
+            break;
+          }
+        }
+
+        if (!burst) {
+          burst = { start: now, last: now, times: [], peak: 0, target, tag: el.tagName.toLowerCase(), scheduled: false, reported: false };
+        }
+
+        if (burst.times.length < 1000) {
+          burst.times.push(now);
+        }
+
+        burst.last = now;
+        burst.peak = Math.max(burst.peak, burst.times.filter(t => now - t <= RAGE_WINDOW_MS).length);
+        f.clicks.push({ t: now, x: event.clientX, y: event.clientY, burst });
+        if (burst.peak >= RAGE_CLICKS && !burst.scheduled) {
+          burst.scheduled = true;
+          scheduleBurstReport(f, burst);
+        }
+      }
+
+      // Dead clicks: interactive elements only, and not disabled ones (a disabled button is expected to do nothing).
+      if (interactive && !interactive.disabled && interactive.getAttribute('aria-disabled') !== 'true') {
+        f.pending.push({ t: now, target, tag: interactive.tagName.toLowerCase(), url: location.href, burst });
+        if (f.pending.length > 100) {
+          f.pending.shift();
+        }
+
+        if (!f.timer) {
+          f.timer = setTimeout(() => checkDeadClicks(f), DEAD_CLICK_MS + 50);
+        }
+      }
+    } catch {
+      // Never break the page.
+    }
+  };
+
+  f.observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+  document.addEventListener('click', f.handler, { capture: true, passive: true });
+  state.frustration = f;
+}
+
+function scheduleBurstReport(f, burst) {
+  const check = () => {
+    if (!state || state.frustration !== f || burst.reported) {
+      return;
+    }
+
+    // Wait until the burst has been quiet for one window, so its full click count is reported.
+    const quiet = performance.now() - burst.last;
+    if (quiet < RAGE_WINDOW_MS) {
+      setTimeout(check, RAGE_WINDOW_MS - quiet + 10);
+      return;
+    }
+
+    burst.reported = true;
+    push({ k: 'f', n: 'rage', t: epoch(burst.start), d: Math.max(0, burst.last - burst.start), c: burst.times.length, tag: cut(burst.tag, 32), tg: burst.target });
+  };
+
+  setTimeout(check, RAGE_WINDOW_MS + 10);
+}
+
+function checkDeadClicks(f) {
+  f.timer = 0;
+  if (!state || state.frustration !== f) {
+    return;
+  }
+
+  const now = performance.now();
+  const remaining = [];
+  for (const click of f.pending) {
+    // Wait for the click's window, and for its burst to end: a burst can still become a rage click.
+    if (now - click.t < DEAD_CLICK_MS || (click.burst && now - click.burst.last < RAGE_WINDOW_MS)) {
+      remaining.push(click);
+      continue;
+    }
+
+    // Only changes within the click's window count: a later, unrelated update must not hide a dead click.
+    const changed = f.mutations.some(m => m >= click.t && m <= click.t + DEAD_CLICK_MS) || location.href !== click.url;
+    // Clicks of a rage burst are reported as the burst, not again one by one.
+    if (!changed && !(click.burst && click.burst.peak >= RAGE_CLICKS)) {
+      push({ k: 'f', n: 'dead', t: epoch(click.t), d: 0, c: 1, tag: cut(click.tag, 32), tg: click.target });
+    }
+  }
+
+  f.pending = remaining;
+  const oldest = remaining.length > 0 ? remaining[0].t : Infinity;
+  f.mutations = f.mutations.filter(m => m >= oldest);
+  if (remaining.length > 0) {
+    f.timer = setTimeout(() => checkDeadClicks(f), DEAD_CLICK_MS + 50);
+  }
+}
+
+function stopFrustration() {
+  const f = state && state.frustration;
+  if (!f) {
+    return;
+  }
+
+  f.observer.disconnect();
+  document.removeEventListener('click', f.handler, { capture: true });
+  clearTimeout(f.timer);
+  state.frustration = null;
 }
 
 function observeResources() {
@@ -301,6 +598,17 @@ function flush(all) {
   queueVitals();
   if (!state || state.buffer.length === 0) {
     return;
+  }
+
+  // Interactions younger than INTERACTION_SETTLE_MS stay for the next flush, so a content paint that arrives later can
+  // still be added to them (the final flush sends everything).
+  let held = [];
+  if (!all) {
+    const now = performance.timeOrigin + performance.now();
+    held = state.buffer.filter(e => e.k === 'i' && now - e.t < INTERACTION_SETTLE_MS);
+    if (held.length > 0) {
+      state.buffer = state.buffer.filter(e => !held.includes(e));
+    }
   }
 
   const budget = state.options.maxBatchBytes || DEFAULT_MAX_BATCH_BYTES;
@@ -337,6 +645,8 @@ function flush(all) {
       state.ref.invokeMethodAsync('BlazorProfiler.Ingest', `[${parts.join(',')}]`).catch(() => { /* circuit gone */ });
     }
   }
+
+  state.buffer.push(...held);
 }
 
 function startBridge() {
@@ -563,6 +873,7 @@ function installToolbar() {
     bar.appendChild(open);
   }
 
+  installCaptureButtons(bar);
   root.append(style, bar);
   document.body.appendChild(host);
 
@@ -598,6 +909,95 @@ function installToolbar() {
 
   update();
   state.toolbar = { host, timer: setInterval(update, 1000), update };
+}
+
+// ------------------------------------------------------------------------------------------- Deep capture (WebAssembly)
+
+// The .NET WebAssembly runtime's diagnostics API (CPU samples, GC dump, runtime counters as .nettrace files). The functions
+// are null unless the app is built with <EnableDiagnostics>true</EnableDiagnostics> (CPU samples also need
+// <WasmPerformanceInstrumentation>), so the capture buttons only appear in such builds.
+const CAPTURES = {
+  cpu: { method: 'collectCpuSamples', label: 'CPU', title: 'Record .NET CPU samples for 10 seconds and download a .nettrace file (open it in PerfView or Visual Studio). Requires EnableDiagnostics and WasmPerformanceInstrumentation.', timed: true },
+  gc: { method: 'collectGcDump', label: 'GC dump', title: 'Download a .NET heap snapshot (.nettrace; convert with dotnet-gcdump or open in PerfView). Requires EnableDiagnostics.', timed: false },
+  counters: { method: 'collectMetrics', label: 'Counters', title: 'Record .NET runtime counters for 10 seconds and download a .nettrace file. Requires EnableDiagnostics.', timed: true },
+};
+
+function dotnetRuntime() {
+  try {
+    const get = globalThis.getDotnetRuntime;
+    return typeof get === 'function' ? get(0) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The deep captures available in this page: the keys of CAPTURES whose runtime function exists. */
+export function availableCaptures() {
+  const runtime = dotnetRuntime();
+  return runtime ? Object.keys(CAPTURES).filter(k => typeof runtime[CAPTURES[k].method] === 'function') : [];
+}
+
+/**
+ * Runs a deep capture with the .NET runtime's diagnostics API. The runtime downloads the .nettrace file itself; the capture
+ * is also recorded as a marker on the profiler timeline. Resolves to a short description of the outcome.
+ */
+export async function captureDiagnostics(kind, seconds = 10) {
+  const capture = CAPTURES[kind];
+  const runtime = dotnetRuntime();
+  if (!capture || !runtime || typeof runtime[capture.method] !== 'function') {
+    throw new Error('Not available: build the app with <EnableDiagnostics>true</EnableDiagnostics>.');
+  }
+
+  const started = performance.now();
+  try {
+    const result = await runtime[capture.method](capture.timed ? { durationSeconds: seconds } : {});
+    const bytes = Array.isArray(result) ? result.reduce((n, part) => n + ((part && part.length) || 0), 0) : 0;
+    const text = `${capture.label} capture${capture.timed ? ` (${seconds} s)` : ''}: .nettrace downloaded${bytes ? ` (${Math.round(bytes / 1024)} KB)` : ''}`;
+    push({ k: 'm', n: cut(text, 128), t: epoch(started), d: performance.now() - started });
+    return text;
+  } catch (error) {
+    const text = `${capture.label} capture failed: ${error && error.message ? error.message : error}`;
+    push({ k: 'm', n: cut(text, 128), t: epoch(started), d: performance.now() - started });
+    throw new Error(text);
+  }
+}
+
+function installCaptureButtons(bar) {
+  const kinds = availableCaptures();
+  if (kinds.length === 0) {
+    return;
+  }
+
+  const sep = document.createElement('span');
+  sep.className = 'sep';
+  bar.appendChild(sep);
+  const buttons = [];
+  for (const kind of kinds) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = CAPTURES[kind].label;
+    button.title = CAPTURES[kind].title;
+    button.addEventListener('click', async () => {
+      for (const b of buttons) {
+        b.disabled = true;
+      }
+
+      const label = button.textContent;
+      button.textContent = CAPTURES[kind].timed ? `${label}…` : 'Dumping…';
+      try {
+        button.title = await captureDiagnostics(kind);
+      } catch (error) {
+        button.title = error.message;
+      } finally {
+        button.textContent = label;
+        for (const b of buttons) {
+          b.disabled = false;
+        }
+      }
+    });
+    buttons.push(button);
+    bar.appendChild(button);
+  }
 }
 
 function removeToolbar() {

@@ -577,7 +577,7 @@ public sealed class ProfilerApi
         }
     }
 
-    private IProfilerSession GetSession(ProfilerApiAccess access, string sessionId)
+    internal IProfilerSession GetSession(ProfilerApiAccess access, string sessionId)
     {
         var session = _profiler.GetSession(sessionId);
         if (session is null || !access.CanView(session))

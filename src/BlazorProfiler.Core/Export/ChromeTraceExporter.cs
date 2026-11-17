@@ -170,6 +170,7 @@ public sealed class ChromeTraceExporter : IProfilerExporter
         BrowserResourceEvent r => (7, r.Url ?? "resource", "browser"),
         BrowserStartupEvent => (7, "Startup (navigation to interactive)", "browser"),
         BrowserVitalEvent v => (7, v.Name + " " + v.Value.ToString("0.###", CultureInfo.InvariantCulture), "browser"),
+        BrowserFrustrationEvent f => (7, (f.Signal == FrustrationSignal.RageClick ? $"Rage click ×{f.ClickCount} " : "Dead click ") + (f.Target ?? f.TargetTag), "browser"),
         OperationEvent o => (8, o.Name ?? "operation", "operation"),
         MarkerEvent m => (9, m.Name ?? m.MarkerType.ToString(), "marker"),
         _ => (9, e.Kind.ToString(), "other"),

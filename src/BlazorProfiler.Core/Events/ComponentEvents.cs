@@ -75,6 +75,25 @@ public sealed class ComponentRetainedEvent : ComponentEvent
 
     /// <summary>Whether the check that found the instance followed a collection forced by the profiler (an explicit leak check).</summary>
     public bool ForcedCollection { get; set; }
+
+    /// <summary>
+    /// Likely retainers found by inspecting the instance when it was reported: event handlers or delegates that target it on
+    /// services it had injected (the classic <c>Service.OnChange += StateHasChanged</c> leak) or on static fields, undisposed
+    /// <c>DotNetObjectReference</c> instances, and timers it owns. Each entry is a short human-readable path, for example
+    /// <c>AppState.OnChange → Counter.StateHasChanged</c>. Entries that start with <see cref="TentativePrefix"/> name a
+    /// reference that retains the instance only under a condition that could not be checked (for example a timer that may
+    /// already be disposed). Null when nothing was found, which does not prove the absence of a retainer (a heap dump does).
+    /// </summary>
+    public string[]? RetainedBy { get; set; }
+
+    /// <summary>The prefix of tentative entries in <see cref="RetainedBy"/>.</summary>
+    public const string TentativePrefix = "Possibly: ";
+
+    /// <summary>Whether a <see cref="RetainedBy"/> entry is tentative.</summary>
+    public static bool IsTentative(string? retainer) => retainer?.StartsWith(TentativePrefix, StringComparison.Ordinal) ?? true;
+
+    /// <inheritdoc />
+    public override int EstimateSize() => base.EstimateSize() + 24 + (RetainedBy?.Sum(StringSize) ?? 0);
 }
 
 /// <summary>Describes how a component's incoming parameters compared with the previous set.</summary>

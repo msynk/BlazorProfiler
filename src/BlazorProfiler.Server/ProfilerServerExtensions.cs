@@ -81,6 +81,22 @@ public sealed class ProfilerServerOptions
     /// runtime with the <c>simulate-latency</c> command. Ignored in the Production environment.
     /// </summary>
     public TimeSpan SimulatedLatency { get; set; }
+
+    /// <summary>
+    /// Maps a Model Context Protocol endpoint at <c>{RoutePrefix}/mcp</c> (Streamable HTTP) so coding agents can read
+    /// sessions, findings, interactions, and component details. It applies the same access rules as the dashboard API
+    /// (by default: local requests in Development only). Defaults to true.
+    /// </summary>
+    public bool EnableMcp { get; set; } = true;
+
+    /// <summary>
+    /// Whether the MCP endpoint also offers tools that change state: controlling sessions and running commands such as the
+    /// leak check. Defaults to false (read-only).
+    /// </summary>
+    public bool McpAllowControl { get; set; }
+
+    /// <summary>The maximum size of an MCP request body. Defaults to 1 MB.</summary>
+    public long MaxMcpRequestBytes { get; set; } = 1024 * 1024;
 }
 
 /// <summary>Registration of the Blazor Server / Blazor Web App integration.</summary>

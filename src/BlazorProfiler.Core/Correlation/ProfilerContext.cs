@@ -126,9 +126,26 @@ public interface IProfilerCorrelationProvider
 public sealed class AmbientCorrelationProvider : IProfilerCorrelationProvider
 {
     private readonly bool _captureTraceContext;
+    private readonly bool _captureForSpans;
 
     /// <summary>Creates the provider.</summary>
-    public AmbientCorrelationProvider(bool captureTraceContext) => _captureTraceContext = captureTraceContext;
+    public AmbientCorrelationProvider(bool captureTraceContext)
+        : this(captureTraceContext, captureForSpans: false)
+    {
+    }
+
+    /// <summary>Creates the provider.</summary>
+    /// <param name="captureTraceContext">Whether to capture the ambient W3C trace context.</param>
+    /// <param name="captureForSpans">
+    /// Whether to capture it also for component renders, lifecycle methods, and JavaScript interop calls, which
+    /// <c>ProfilerTelemetry</c> publishes as child spans (<see cref="TelemetryOptions.Traces"/>). Off by default because it
+    /// costs two string allocations per event.
+    /// </param>
+    public AmbientCorrelationProvider(bool captureTraceContext, bool captureForSpans)
+    {
+        _captureTraceContext = captureTraceContext;
+        _captureForSpans = captureForSpans;
+    }
 
     /// <inheritdoc />
     public void Enrich(ProfilerEvent profilerEvent)
@@ -156,12 +173,14 @@ public sealed class AmbientCorrelationProvider : IProfilerCorrelationProvider
             {
                 profilerEvent.TraceId = activity.TraceId.ToHexString();
                 profilerEvent.SpanId = activity.SpanId.ToHexString();
+                profilerEvent.TraceRecorded = activity.Recorded;
             }
         }
     }
 
-    private static bool WantsTraceContext(ProfilerEventKind kind) =>
-        kind is ProfilerEventKind.HttpRequest or ProfilerEventKind.DatabaseCommand or ProfilerEventKind.EventHandler or ProfilerEventKind.Operation or ProfilerEventKind.Navigation;
+    private bool WantsTraceContext(ProfilerEventKind kind) =>
+        kind is ProfilerEventKind.HttpRequest or ProfilerEventKind.DatabaseCommand or ProfilerEventKind.EventHandler or ProfilerEventKind.Operation or ProfilerEventKind.Navigation
+        || (_captureForSpans && kind is ProfilerEventKind.ComponentRender or ProfilerEventKind.LifecycleMethod or ProfilerEventKind.JSInterop);
 
     private static void ApplyOrigin(ProfilerEvent profilerEvent, OperationFrame frame)
     {

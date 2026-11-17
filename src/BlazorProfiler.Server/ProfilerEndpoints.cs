@@ -109,7 +109,126 @@ public static class ProfilerEndpoints
         api.MapPost("/commands/{name}", async (HttpContext c, ProfilerApi p, string name, string? argument) =>
             Json(await p.ExecuteCommandAsync(Access(c), name, argument, c.RequestAborted), ProfilerJsonContext.Default.ProfilerCommandResult));
 
+        if (options.EnableMcp)
+        {
+            MapMcp(endpoints, options);
+        }
+
         return group;
+    }
+
+    /// <summary>
+    /// Maps the Model Context Protocol endpoint (Streamable HTTP, JSON responses, no server-sent event stream). MCP clients
+    /// cannot send the CSRF header of the dashboard API, so the endpoint protects itself differently: it requires a JSON
+    /// content type (which a cross-site page cannot send without a CORS preflight, which is never answered) and rejects
+    /// browser requests whose <c>Origin</c> is not a local host (DNS rebinding).
+    /// </summary>
+    private static void MapMcp(IEndpointRouteBuilder endpoints, ProfilerServerOptions options)
+    {
+        var mcp = endpoints.MapGroup(options.RoutePrefix + "/mcp");
+        mcp.ExcludeFromDescription();
+        var server = new ProfilerMcpServer(endpoints.ServiceProvider.GetRequiredService<ProfilerApi>(), new ProfilerMcpOptions { AllowControl = options.McpAllowControl });
+        mcp.MapPost(string.Empty, async (HttpContext context) =>
+        {
+            var evaluator = context.RequestServices.GetRequiredService<ProfilerAccessEvaluator>();
+            var access = await evaluator.EvaluateAsync(context);
+            if (access is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (!IsAllowedMcpOrigin(context.Request))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (!context.Request.HasJsonContentType())
+            {
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            }
+
+            if (context.Request.ContentLength > options.MaxMcpRequestBytes)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+
+            var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (sizeFeature is { IsReadOnly: false })
+            {
+                sizeFeature.MaxRequestBodySize = options.MaxMcpRequestBytes;
+            }
+
+            // Read at most the limit, whatever the server's own body size enforcement (chunked bodies, test hosts, or
+            // buffering middleware can bypass it).
+            string? body;
+            try
+            {
+                body = await ReadBoundedAsync(context.Request.Body, options.MaxMcpRequestBytes, context.RequestAborted);
+            }
+            catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                body = null;
+            }
+
+            if (body is null)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            var response = await server.HandleAsync(body, access, context.RequestAborted);
+            return response is null
+                ? Results.StatusCode(StatusCodes.Status202Accepted)
+                : Results.Text(response, "application/json", System.Text.Encoding.UTF8);
+        });
+
+        // No server-initiated stream and no session state: GET (SSE) and DELETE (session end) are not supported. Callers
+        // without access get 404 like everywhere else, so the endpoint is not discoverable.
+        mcp.MapMethods(string.Empty, [HttpMethods.Get, HttpMethods.Delete], async (HttpContext context) =>
+        {
+            var evaluator = context.RequestServices.GetRequiredService<ProfilerAccessEvaluator>();
+            return await evaluator.EvaluateAsync(context) is null
+                ? Results.NotFound()
+                : Results.StatusCode(StatusCodes.Status405MethodNotAllowed);
+        });
+    }
+
+    /// <summary>Reads a UTF-8 body of at most <paramref name="maxBytes"/> bytes; returns null when it is longer.</summary>
+    private static async Task<string?> ReadBoundedAsync(Stream body, long maxBytes, CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        while (true)
+        {
+            var read = await body.ReadAsync(chunk, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (buffer.Length + read > maxBytes)
+            {
+                return null;
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+    }
+
+    private static bool IsAllowedMcpOrigin(HttpRequest request)
+    {
+        var origin = request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin))
+        {
+            // Not a browser request.
+            return true;
+        }
+
+        return Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+            && (uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase));
     }
 
     private static async ValueTask<object?> FilterAsync(EndpointFilterInvocationContext invocation, EndpointFilterDelegate next)
