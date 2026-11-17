@@ -34,6 +34,9 @@ public sealed class SessionAggregates
     private readonly DurationStats _batches = new();
     private readonly DurationStats _interactions = new();
     private readonly DurationStats _longTasks = new();
+    private const int MaxExceptionTypes = 64;
+    private readonly Dictionary<string, long> _runtimeExceptionTypes = new(StringComparer.Ordinal);
+    private long _runtimeExceptions;
     private readonly Dictionary<string, BrowserVitalEvent> _vitals = new(StringComparer.Ordinal);
     private BrowserStartupEvent? _startup;
 
@@ -440,6 +443,14 @@ public sealed class SessionAggregates
                     _runtimePauseTicks += runtime.GcPauseTicks ?? 0;
                     _runtimePauseSamples += runtime.GcPauseTicks is null ? 0 : 1;
                     _runtimeSampleTicks += runtime.Duration;
+                    _runtimeExceptions += runtime.Exceptions ?? 0;
+                    foreach (var (type, count) in runtime.ExceptionTypes ?? [])
+                    {
+                        if (_runtimeExceptionTypes.ContainsKey(type) || _runtimeExceptionTypes.Count < MaxExceptionTypes)
+                        {
+                            _runtimeExceptionTypes[type] = _runtimeExceptionTypes.GetValueOrDefault(type) + count;
+                        }
+                    }
                     if (bucket is not null)
                     {
                         bucket.AllocatedBytes += runtime.AllocatedBytes ?? 0;
@@ -482,7 +493,12 @@ public sealed class SessionAggregates
                 }
 
             case BrowserInteractionEvent interaction:
-                _interactions.Add(interaction.Duration, weight);
+                // Interactions recorded only for their late content paint are not part of the latency statistics.
+                if (!interaction.ContentPaintOnly)
+                {
+                    _interactions.Add(interaction.Duration, weight);
+                }
+
                 break;
 
             case BrowserStartupEvent startup:
@@ -681,6 +697,9 @@ public sealed class SessionAggregates
             ThreadPoolThreads = _lastRuntime?.ThreadPoolThreads,
             ThreadPoolQueueLength = _lastRuntime?.ThreadPoolQueueLength,
             ProcessorCount = _lastRuntime?.ProcessorCount,
+            Exceptions = _runtimeExceptions,
+            ExceptionTypes = _runtimeExceptionTypes.OrderByDescending(p => p.Value).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal),
+            ActiveTimers = _lastRuntime?.ActiveTimers,
         };
 
         var currentSecond = (_lastTimestamp == long.MinValue ? 0 : _lastTimestamp - _startTimestamp) / Math.Max(1, _clock.Frequency);

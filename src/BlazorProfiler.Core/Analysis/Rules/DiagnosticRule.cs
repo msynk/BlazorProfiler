@@ -212,6 +212,8 @@ public static class BuiltInRules
         new MemoryGrowthAcrossNavigationRule(),
         new RetainedComponentsRule(),
         new AllocationHeavyRenderingRule(),
+        new FrequentExceptionsRule(),
+        new TimerGrowthRule(),
         new SlowServerRenderRoundTripRule(),
         new CircuitInstabilityRule(),
         new SlowCircuitActivityRule(),

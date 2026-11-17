@@ -30,6 +30,7 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | JS → .NET calls | M as circuit activities | — | — | circuits |
 | Allocation rate, heap size, GC counts, GC pause time | M (process) | M (.NET runtime in the tab) | M (process) | runtime |
 | CPU time, working set, thread pool, lock contention | M (process) | — | M | runtime |
+| Exceptions thrown (first-chance) by type, active timers | M (process) | M (.NET runtime in the tab) | M (process) | runtime |
 | Per-component allocations (bytes allocated by each render) | M (instrumented) | M (instrumented) | M (instrumented) | component-instrumentation |
 | Circuit open/close, connection up/down | M | — | — | circuits |
 | Circuit inbound activity duration and hub method | M | — | — | circuits |

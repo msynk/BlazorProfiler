@@ -571,6 +571,12 @@ public sealed class DiagnosticOptions
     /// </summary>
     public int ComponentChurnThreshold { get; set; } = 10;
 
+    /// <summary>BP5006: exceptions per second (in one runtime sample) considered frequent.</summary>
+    public double ExceptionsPerSecond { get; set; } = 10;
+
+    /// <summary>BP5007: additional active timers per navigation (least-squares trend) considered a timer leak.</summary>
+    public double TimerGrowthPerNavigation { get; set; } = 0.9;
+
     /// <summary>BP5005: mean bytes allocated per render of one component type considered allocation-heavy.</summary>
     public long RenderAllocationBytes { get; set; } = 32 * 1024;
 

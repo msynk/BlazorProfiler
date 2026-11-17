@@ -43,7 +43,7 @@ public sealed class DuplicateRequestsRule : DiagnosticRule
                 var previous = requests[i - 1];
 
                 // A prerender request (no circuit) repeated by the interactive render is reported by BP3007.
-                if (PrerenderDoubleFetchRule.IsPrerenderPair(previous, requests[i]))
+                if (PrerenderDoubleFetchRule.IsPrerenderPair(previous, requests[i], context.Ticks(PrerenderDoubleFetchRule.WindowMs)))
                 {
                     continue;
                 }
@@ -440,7 +440,7 @@ public sealed class RequestsDuringInitializationRule : DiagnosticRule
 /// <summary>BP3007: a request made while prerendering and again when the component became interactive.</summary>
 public sealed class PrerenderDoubleFetchRule : DiagnosticRule
 {
-    private const double WindowMs = 30_000;
+    internal const double WindowMs = 30_000;
 
     /// <inheritdoc />
     public override DiagnosticRuleDescriptor Descriptor { get; } = new()
@@ -453,8 +453,9 @@ public sealed class PrerenderDoubleFetchRule : DiagnosticRule
     };
 
     /// <summary>Whether two requests are the same request made by prerendering and then by the interactive render.</summary>
-    internal static bool IsPrerenderPair(HttpRequestEvent first, HttpRequestEvent second) =>
+    internal static bool IsPrerenderPair(HttpRequestEvent first, HttpRequestEvent second, long windowTicks) =>
         first.CircuitId is null && second.CircuitId is not null && first.UrlHash == second.UrlHash && first.UrlHash != 0
+        && second.Timestamp > first.Timestamp && second.Timestamp - first.Timestamp <= windowTicks
         && first.OriginComponentType is not null && first.OriginComponentType == second.OriginComponentType
         && IsInitialization(first) && IsInitialization(second);
 
@@ -472,7 +473,7 @@ public sealed class PrerenderDoubleFetchRule : DiagnosticRule
             var used = new HashSet<long>();
             foreach (var prerender in list.Where(r => r.CircuitId is null))
             {
-                var interactive = list.FirstOrDefault(r => !used.Contains(r.Id) && IsPrerenderPair(prerender, r) && r.Timestamp > prerender.Timestamp && r.Timestamp - prerender.Timestamp <= window);
+                var interactive = list.FirstOrDefault(r => !used.Contains(r.Id) && IsPrerenderPair(prerender, r, window));
                 if (interactive is not null)
                 {
                     used.Add(interactive.Id);

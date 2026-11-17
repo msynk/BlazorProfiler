@@ -28,6 +28,9 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - **Per-render allocations** (`ComponentRenderEvent.AllocatedBytes`, `Instrumentation.TrackRenderAllocations`) and rule
   **BP5005** (allocation-heavy rendering); BP5002 lists the components whose renders allocated during a spike; the
   Components view, MCP, and `blazor-profiler compare` show allocations per render.
+- Runtime samples count **first-chance exceptions by type** and **active timers**; rules **BP5006** (frequent exceptions)
+  and **BP5007** (active timers keep growing, per navigation or per instance of the owning component type, which also
+  covers apps with enhanced navigation).
 - Rule **BP3007**: HTTP requests repeated after prerendering (BP8002 already covered database queries).
 - **Environment metadata**: application name, version, build configuration, OS, and processor count in traces;
   browser cores, memory, CPU tier, and connection type with startup. `compare` and the dashboard comparison warn when

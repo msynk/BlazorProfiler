@@ -495,10 +495,10 @@ export function timeline(ctx, params) {
           clear(compareHost).appendChild(h('p', { class: 'muted', role: 'status' }, `Baseline window set to ${label(window)}. Select another range and press "Compare with baseline".`));
         } }, 'Use as baseline'),
         baseline ? h('button', { type: 'button', class: 'btn', id: 'window-compare', onclick: () => {
-          const a = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, baseline));
-          const b = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, window));
+          const a = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, baseline), baseline);
+          const b = summarizeWindow(ctx, eventsInWindow(ctx, ctx.state.events, window), window);
           clear(compareHost).appendChild(panel(`Baseline ${label(baseline)} (${fmtMs(baseline.end - baseline.start)}) vs. selection ${label(window)} (${fmtMs(window.end - window.start)})`,
-            h('p', { class: 'muted' }, 'Totals depend on the window lengths; compare windows of similar length or the same action repeated. Percentiles are comparable directly.'),
+            h('p', { class: 'muted' }, 'Events count in the window where they start; runtime samples are prorated to the part inside the window. Totals depend on the window lengths, so compare windows of similar length or the same action repeated; percentiles are comparable directly.'),
             compareTable(a, b)));
         } }, `Compare with baseline (${label(baseline)})`) : null);
       rangeHost.appendChild(panel(`Selection: ${fmtMs(range.end - range.start)}, ${fmtNum(inside.length)} events`, actions, compareHost, eventList(ctx, inside, 300)));

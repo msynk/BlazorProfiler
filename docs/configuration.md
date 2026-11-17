@@ -107,7 +107,7 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `JSInterop` | on | `IJSRuntime` (WebAssembly) / `IProfiledJSRuntime` (server). |
 | `JSObjectReferences` | off | Wrap returned `IJSObjectReference`s (modules). A wrapped reference cannot be passed inside a nested argument object. |
 | `JSInteropPayloadEstimation` | off | Serialize arguments a second time to estimate size. |
-| `Runtime`, `RuntimeSampleInterval` | on, 1 s | Runtime sampling. |
+| `Runtime`, `RuntimeSampleInterval` | on, 1 s | Runtime sampling, first-chance exception counts by type (one counter increment per exception), and the active timer count. |
 | `Circuits` | on | Circuit handler and hub filter (server). |
 | `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries, startup, and Core Web Vitals (needs `BlazorProfilerClient`). Long animation frames carry script attribution (the 5 longest scripts per frame: invoker, sanitized source, function, forced layout). |
 | `FrustrationSignals` | on | Rage clicks and dead clicks (BP7007): a passive click listener and a mutation observer in the browser. Only the element's tag, id, and classes are recorded. |
@@ -135,7 +135,8 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 `MaxFindingsPerRule` limits output (default 10). Newer thresholds: `NPlusOneQueryThreshold` (5), `SlowQueryMs` (100),
 `LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000), `ComponentChurnThreshold`
 (10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007),
-`RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005).
+`RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005), `ExceptionsPerSecond` (10, BP5006),
+`TimerGrowthPerNavigation` (0.9, BP5007).
 
 ### `Telemetry` (OpenTelemetry)
 

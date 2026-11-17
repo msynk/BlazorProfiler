@@ -355,6 +355,16 @@ public static class TraceImporter
                     }
 
                     break;
+                case RuntimeSampleEvent runtime:
+                    runtime.Exceptions = runtime.Exceptions is < 0 ? null : runtime.Exceptions;
+                    runtime.ActiveTimers = runtime.ActiveTimers is < 0 ? null : runtime.ActiveTimers;
+                    runtime.ExceptionTypes = runtime.ExceptionTypes?
+                        .Where(p => p.Key is not null && p.Value >= 0)
+                        .OrderByDescending(p => p.Value)
+                        .Take(RuntimeSampleEvent.MaxExceptionTypes)
+                        .GroupBy(p => Truncate(p.Key, 256)!, StringComparer.Ordinal)
+                        .ToDictionary(g => g.Key, g => (int)Math.Min(int.MaxValue, g.Sum(p => (long)p.Value)), StringComparer.Ordinal);
+                    break;
                 case BrowserFrustrationEvent frustration:
                     frustration.TargetTag = Truncate(frustration.TargetTag, 64);
                     frustration.Target = Truncate(frustration.Target, 256);

@@ -282,8 +282,12 @@ internal static class TraceCli
                 rows.Add((new ComparisonRow($"{name} {(instrumented ? "renders" : "parameter updates")}", a, b, Count, b > a, b < a), Math.Abs(b - a) / a));
             }
 
-            // Allocations per render are deterministic for the same data, so they are compared without --include-timings.
-            if (was.MeanRenderAllocatedBytes is { } allocatedBefore && after.MeanRenderAllocatedBytes is { } allocatedAfter && was.RendersWithAllocations >= 5 && after.RendersWithAllocations >= 5)
+            // Allocations per render repeat for the same data and the same renders, so they are compared without
+            // --include-timings, but only when the render counts are comparable: the mean includes one-time costs (the
+            // render tree buffer growing) that weigh more when there are fewer renders.
+            var comparableRenders = was.RendersWithAllocations >= 5 && after.RendersWithAllocations >= 5
+                && Math.Max(was.RendersWithAllocations, after.RendersWithAllocations) <= 1.25 * Math.Min(was.RendersWithAllocations, after.RendersWithAllocations);
+            if (comparableRenders && was.MeanRenderAllocatedBytes is { } allocatedBefore && after.MeanRenderAllocatedBytes is { } allocatedAfter)
             {
                 var delta = allocatedAfter - allocatedBefore;
                 if (Math.Abs(delta) >= 1024 && Math.Abs(delta) / Math.Max(1, allocatedBefore) > threshold)

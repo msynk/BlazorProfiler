@@ -337,7 +337,16 @@ public sealed class LateInteractionResultRule : DiagnosticRule
         var late = context.OfType<BrowserInteractionEvent>()
             .Where(i => i.ContentPaintMs is { } cp && cp >= threshold && cp >= 2 * context.Ms(i.Duration))
             .ToList();
-        foreach (var group in late.GroupBy(i => (i.EventType ?? "interaction") + (i.TargetTag is null ? string.Empty : " on <" + i.TargetTag + ">")).OrderByDescending(g => g.Max(i => i.ContentPaintMs)))
+        // One click reports pointerdown, pointerup, and click entries; they are grouped as one kind of interaction.
+        static string KindOf(string? type) => type switch
+        {
+            "pointerdown" or "pointerup" or "mousedown" or "mouseup" or "click" or "dblclick" or "contextmenu" or "auxclick" => "click",
+            "keydown" or "keyup" or "keypress" => "key press",
+            null => "interaction",
+            _ => type,
+        };
+
+        foreach (var group in late.GroupBy(i => KindOf(i.EventType) + (i.TargetTag is null ? string.Empty : " on <" + i.TargetTag + ">")).OrderByDescending(g => g.Max(i => i.ContentPaintMs)))
         {
             var interactions = group.ToList();
             var worst = interactions.Max(i => i.ContentPaintMs!.Value);
@@ -353,9 +362,9 @@ public sealed class LateInteractionResultRule : DiagnosticRule
             var requestMs = requests.Count > 0 ? requests.Max(r => context.Ms(r.Duration)) : 0;
 
             var cause = requests.Count > 0
-                ? $"{requests.Count} HTTP request(s) ran meanwhile (longest {FormatMs(requestMs)}), so the content most likely waited for data."
+                ? $"{requests.Count} HTTP request(s) ran meanwhile (longest {FormatMs(requestMs)}, matched by time), so the content probably waited for data."
                 : handlers.Count > 0
-                    ? $"The handler {handlerNames[0]} was still running; its awaited work delayed the render that showed the result."
+                    ? $"A .NET handler ran during the wait ({handlerNames[0]}, matched by time); awaited work in it probably delayed the render that showed the result."
                     : "No .NET work was matched by time; the delay may come from JavaScript or timers.";
 
             yield return Create(

@@ -38,6 +38,9 @@ public sealed class BrowserEntry
     /// <summary>Interaction contentful paint: input to content painted (ms), when reported.</summary>
     public double? Cp { get; set; }
 
+    /// <summary>Interaction recorded only because of its late content paint (1), otherwise 0.</summary>
+    public int Co { get; set; }
+
     /// <summary>Blocking duration in milliseconds (long tasks).</summary>
     public double B { get; set; }
 
@@ -306,6 +309,7 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     ProcessingMs = Sanitize(entry.Pr),
                     PresentationDelayMs = Sanitize(entry.Pd),
                     ContentPaintMs = entry.Cp is { } cp && double.IsFinite(cp) && cp > 0 && cp <= 3_600_000 ? Sanitize(cp) : null,
+                    ContentPaintOnly = entry.Co == 1,
                 },
                 "l" => new BrowserLongTaskEvent
                 {

@@ -191,13 +191,18 @@ public class BrowserIngestionTests
               {"k":"m","n":"GC dump capture: .nettrace downloaded (512 KB)","t":{{now}},"d":900},
               {"k":"m","n":"","t":{{now}},"d":0},
               {"k":"i","n":"click","t":{{now}},"d":24,"id":2,"pr":10,"pd":12,"tag":"button","cp":1180.5},
-              {"k":"i","n":"click","t":{{now}},"d":24,"id":2,"pr":10,"pd":12,"tag":"button","cp":-4}
+              {"k":"i","n":"click","t":{{now}},"d":24,"id":2,"pr":10,"pd":12,"tag":"button","cp":-4},
+              {"k":"i","n":"click","t":{{now}},"d":16,"id":1,"pr":5,"pd":10,"tag":"button","cp":900,"co":1}
             ]
             """;
-        Assert.Equal(6, collector.Ingest(json, 0));
+        Assert.Equal(7, collector.Ingest(json, 0));
         var interactions = f.All<BrowserInteractionEvent>();
         Assert.Contains(interactions, i => i.ContentPaintMs == 1180.5);
         Assert.Contains(interactions, i => i.ContentPaintMs is null);
+
+        // An interaction recorded only for its late content paint is kept out of the latency statistics.
+        Assert.Contains(interactions, i => i.ContentPaintOnly && i.ContentPaintMs == 900);
+        Assert.Equal(2, f.Session.GetSummary().BrowserInteractions.Count);
         var marker = Assert.Single(f.All<MarkerEvent>(), m => m.MarkerType == MarkerType.Custom);
         Assert.StartsWith("GC dump capture", marker.Name, StringComparison.Ordinal);
 
@@ -445,6 +450,40 @@ public class RuntimeCollectorTests
         Assert.NotNull(sample.WorkingSetBytes);
         Assert.NotNull(sample.CpuTicks);
         GC.KeepAlive(garbage);
+    }
+
+    private sealed class ProbeException : Exception;
+
+    [Fact]
+    public async Task CountsExceptionsByTypeAndActiveTimers()
+    {
+        await using var f = ProfilerFixture.Create(o => o.Collectors.Runtime = true);
+        var collector = f.Root.GetRequiredService<RuntimeCollector>();
+        collector.Sample();
+        for (var i = 0; i < 25; i++)
+        {
+            try
+            {
+                throw new ProbeException();
+            }
+            catch (ProbeException)
+            {
+                // Caught exceptions count too (first-chance).
+            }
+        }
+
+        using var timer = new Timer(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
+        collector.Sample();
+
+        // Exceptions are counted process-wide (other tests may throw too), so assert on at least ours.
+        var samples = f.All<RuntimeSampleEvent>();
+        Assert.True(samples.Sum(s => s.Exceptions ?? 0) >= 25);
+        var probe = typeof(ProbeException).FullName!;
+        Assert.Contains(samples, s => s.ExceptionTypes is not null && s.ExceptionTypes.TryGetValue(probe, out var n) && n >= 25);
+        Assert.True(samples.Last().ActiveTimers >= 1);
+        var summary = f.Session.GetSummary().Runtime;
+        Assert.True(summary.Exceptions >= 25);
+        Assert.True(summary.ExceptionTypes.ContainsKey(probe));
     }
 }
 

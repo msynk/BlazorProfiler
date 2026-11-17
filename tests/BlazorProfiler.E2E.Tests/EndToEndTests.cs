@@ -656,6 +656,38 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
     }
 
     [Fact]
+    public async Task WebAssemblyTimerLeakIsReportedFromActiveTimerGrowth()
+    {
+        // Each visit to the leaky demo starts a timer that is never disposed; navigating back and forth accumulates them.
+        var page = await OpenAsync("wasm/leaky");
+        await page.WaitForSelectorAsync("#leaky-status", new() { Timeout = 30_000 });
+        await Task.Delay(1500);
+        for (var i = 0; i < 7; i++)
+        {
+            await page.ClickAsync("a[href='wasm/large-list']");
+            await page.WaitForSelectorAsync("#sort", new() { Timeout = 10_000 });
+            await page.ClickAsync("a[href='wasm/leaky']");
+            await page.WaitForSelectorAsync("#leaky-status", new() { Timeout = 10_000 });
+            await Task.Delay(1200);
+        }
+
+        // This app uses per-page interactivity with enhanced navigation, which reports no navigation events: the rule finds
+        // the growth through the instances of the component that owns the timers.
+        string? evidence = null;
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var report = await BridgeAsync(page, new { op = "findings", sessionId });
+            var finding = report.GetProperty("report").GetProperty("findings").EnumerateArray().FirstOrDefault(f => f.Str("ruleId") == "BP5007");
+            evidence = finding.ValueKind == System.Text.Json.JsonValueKind.Undefined ? null : finding.GetProperty("evidence").GetRawText();
+            return evidence is not null;
+        }, 20_000, "BP5007 was not reported.");
+        Assert.Contains("LeakyComponent", evidence, StringComparison.Ordinal);
+        await page.CloseAsync();
+    }
+
+    [Fact]
     public async Task McpEndpointServesFindingsToAgents()
     {
         var session = await app.StartSessionAsync("mcp");

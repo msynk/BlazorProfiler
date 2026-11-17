@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using BlazorProfiler.Events;
 
 namespace BlazorProfiler.Collectors;
@@ -10,16 +11,27 @@ namespace BlazorProfiler.Collectors;
 /// </remarks>
 public sealed class RuntimeCollector : ProfilerCollectorBase
 {
+    private const int MaxTrackedExceptionTypes = 64;
+
+    [ThreadStatic]
+    private static bool t_inExceptionHandler;
+
     private readonly object _lock = new();
     private Timer? _timer;
     private Snapshot _last;
+    private long _exceptions;
+
+    // Lock-free: the handler runs on every throwing thread, so it must not serialize them. The sampler swaps the dictionary;
+    // a count that races with the swap lands in the next sample or is lost, which keeps the bound approximate only.
+    private System.Collections.Concurrent.ConcurrentDictionary<string, StrongBox<int>> _exceptionTypes = new(StringComparer.Ordinal);
+    private EventHandler<System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs>? _firstChance;
 
     /// <inheritdoc />
     public override CollectorDescriptor Descriptor { get; } = new()
     {
         Name = "runtime",
         Description = "Allocation rate, heap size, GC collection counts and pause time, and (server) CPU time, working set, thread-pool and lock-contention indicators.",
-        Mechanism = "Periodic sampling of GC.GetTotalAllocatedBytes(precise: true), GC.GetGCMemoryInfo, GC.CollectionCount, GC.GetTotalPauseDuration, Environment.CpuUsage, Environment.WorkingSet, ThreadPool, and Monitor.LockContentionCount.",
+        Mechanism = "Periodic sampling of GC.GetTotalAllocatedBytes(precise: true), GC.GetGCMemoryInfo, GC.CollectionCount, GC.GetTotalPauseDuration, Environment.CpuUsage, Environment.WorkingSet, ThreadPool, Monitor.LockContentionCount, and Timer.ActiveCount; first-chance exceptions are counted by type (AppDomain.FirstChanceException).",
         Capability = OperatingSystem.IsBrowser() ? CapabilityLevel.Partial : CapabilityLevel.Full,
         Overhead = OverheadLevel.Negligible,
         Compatibility = "All hosting models. In WebAssembly values describe the .NET runtime in the browser tab; on the server they describe the whole process.",
@@ -35,8 +47,14 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
         lock (_lock)
         {
             _last = Capture(context.Profiler.Clock.GetTimestamp());
+            _last.Exceptions = Interlocked.Read(ref _exceptions);
+
+            // Types counted before this start (a previous recording) belong to no sample.
+            Interlocked.Exchange(ref _exceptionTypes, new(StringComparer.Ordinal));
             var interval = context.Options.Collectors.RuntimeSampleInterval;
             _timer = new Timer(static s => ((RuntimeCollector)s!).Sample(), this, interval, interval);
+            _firstChance ??= OnFirstChanceException;
+            AppDomain.CurrentDomain.FirstChanceException += _firstChance;
         }
     }
 
@@ -47,7 +65,55 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
         {
             _timer?.Dispose();
             _timer = null;
+            if (_firstChance is not null)
+            {
+                AppDomain.CurrentDomain.FirstChanceException -= _firstChance;
+            }
         }
+    }
+
+    /// <summary>
+    /// Counts every exception thrown in the process (including caught ones) and its type. Runs on the throwing thread for
+    /// every exception, so it only increments counters; an exception thrown inside it is ignored, never re-entered.
+    /// </summary>
+    private void OnFirstChanceException(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
+    {
+        if (t_inExceptionHandler)
+        {
+            return;
+        }
+
+        t_inExceptionHandler = true;
+        try
+        {
+            Interlocked.Increment(ref _exceptions);
+            var types = Volatile.Read(ref _exceptionTypes);
+            var type = e.Exception.GetType().FullName ?? "Exception";
+            if (!types.TryGetValue(type, out var counter))
+            {
+                counter = types.Count < MaxTrackedExceptionTypes
+                    ? types.GetOrAdd(type, static _ => new StrongBox<int>())
+                    : types.GetOrAdd("(other types)", static _ => new StrongBox<int>());
+            }
+
+            Interlocked.Increment(ref counter.Value);
+        }
+        catch
+        {
+            // Counting must never affect the application.
+        }
+        finally
+        {
+            t_inExceptionHandler = false;
+        }
+    }
+
+    private Dictionary<string, int>? TakeExceptionTypes()
+    {
+        var taken = Interlocked.Exchange(ref _exceptionTypes, new(StringComparer.Ordinal));
+        return taken.IsEmpty
+            ? null
+            : taken.OrderByDescending(p => p.Value.Value).Take(RuntimeSampleEvent.MaxExceptionTypes).ToDictionary(p => p.Key, p => p.Value.Value, StringComparer.Ordinal);
     }
 
     /// <summary>Takes a sample immediately (used by tests and when flushing).</summary>
@@ -63,10 +129,15 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
         {
             Snapshot previous;
             Snapshot current;
+            Dictionary<string, int>? types;
             lock (_lock)
             {
                 previous = _last;
                 current = Capture(profiler.Clock.GetTimestamp());
+
+                // The count and the per-type counts are taken together, so the types describe the same interval.
+                current.Exceptions = Interlocked.Read(ref _exceptions);
+                types = TakeExceptionTypes();
                 _last = current;
             }
 
@@ -90,6 +161,9 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
                 ThreadPoolThreads = browser ? null : current.ThreadPoolThreads,
                 ThreadPoolQueueLength = browser ? null : current.ThreadPoolQueue,
                 LockContentions = browser ? null : current.LockContentions - previous.LockContentions,
+                Exceptions = Math.Max(0, current.Exceptions - previous.Exceptions),
+                ExceptionTypes = types,
+                ActiveTimers = current.ActiveTimers,
             });
         }
         catch (Exception ex)
@@ -117,6 +191,7 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
             ThreadPoolThreads = browser ? 0 : ThreadPool.ThreadCount,
             ThreadPoolQueue = browser ? 0 : ThreadPool.PendingWorkItemCount,
             LockContentions = browser ? 0 : Monitor.LockContentionCount,
+            ActiveTimers = Timer.ActiveCount,
         };
     }
 
@@ -135,6 +210,8 @@ public sealed class RuntimeCollector : ProfilerCollectorBase
         public int ThreadPoolThreads;
         public long ThreadPoolQueue;
         public long LockContentions;
+        public long Exceptions;
+        public long ActiveTimers;
     }
 }
 

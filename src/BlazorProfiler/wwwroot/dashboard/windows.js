@@ -2,25 +2,35 @@
 // Builds summaries with the same shape as the server's SessionSummary from the events inside each window, so the session
 // comparison table can show them side by side.
 
-function percentile(sorted, p) {
+// Weighted percentile: each value stands for its sample weight, consistent with the weighted counts and means.
+function percentile(sorted, total, p) {
   if (!sorted.length) {
     return 0;
   }
 
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
+  const target = (p / 100) * total;
+  let cumulative = 0;
+  for (const x of sorted) {
+    cumulative += x.w;
+    if (cumulative >= target - 1e-9) {
+      return x.ms;
+    }
+  }
+
+  return sorted[sorted.length - 1].ms;
 }
 
 function durations(list) {
-  const values = list.map(x => x.ms).sort((a, b) => a - b);
+  const sorted = [...list].sort((a, b) => a.ms - b.ms);
   const count = list.reduce((n, x) => n + x.w, 0);
   const totalMs = list.reduce((n, x) => n + x.ms * x.w, 0);
   return {
     count,
     totalMs,
     meanMs: count ? totalMs / count : 0,
-    p50Ms: percentile(values, 50),
-    p95Ms: percentile(values, 95),
-    maxMs: values.length ? values[values.length - 1] : 0,
+    p50Ms: percentile(sorted, count, 50),
+    p95Ms: percentile(sorted, count, 95),
+    maxMs: sorted.length ? sorted[sorted.length - 1].ms : 0,
   };
 }
 
@@ -34,8 +44,11 @@ function group(map, key, create) {
   return value;
 }
 
-/** Summarizes the events of one window (they must already be filtered to the window). */
-export function summarizeWindow(ctx, events) {
+/**
+ * Summarizes the events of one window (they must already be filtered to the window with eventsInWindow). Interval data
+ * (runtime samples) is prorated to the part of the interval inside the window; other events count where they start.
+ */
+export function summarizeWindow(ctx, events, window) {
   const weight = e => (e.sampleWeight > 0 ? e.sampleWeight : 1);
   const item = e => ({ ms: ctx.ticksToMs(e.duration || 0), w: weight(e) });
   const batches = [];
@@ -82,14 +95,16 @@ export function summarizeWindow(ctx, events) {
       case 'browserInteraction':
         interactions.push(item(e));
         break;
-      case 'runtime':
-        runtime.allocatedBytes += e.allocatedBytes || 0;
+      case 'runtime': {
+        const share = overlapShare(ctx, e, window);
+        runtime.allocatedBytes += (e.allocatedBytes || 0) * share;
         if (e.gcPauseTicks != null) {
           runtime.gcPauseUnavailable = false;
-          runtime.gcPauseMs += ctx.ticksToMs(e.gcPauseTicks);
+          runtime.gcPauseMs += ctx.ticksToMs(e.gcPauseTicks) * share;
         }
 
         break;
+      }
       default:
         break;
     }
@@ -114,11 +129,30 @@ export function summarizeWindow(ctx, events) {
   };
 }
 
-/** Returns the events that overlap a window given in session milliseconds. */
+// The fraction of an interval event inside the window (1 without a window or for instantaneous events).
+function overlapShare(ctx, e, window) {
+  if (!window || !e.duration) {
+    return 1;
+  }
+
+  const start = ctx.toMs(e.timestamp);
+  const end = ctx.toMs(e.timestamp + e.duration);
+  const inside = Math.min(end, window.end) - Math.max(start, window.start);
+  return end > start ? Math.max(0, Math.min(1, inside / (end - start))) : 1;
+}
+
+/**
+ * Returns the events of a window given in session milliseconds: events that start inside it (half-open, so adjacent
+ * windows never count an event twice), plus runtime samples that overlap it (prorated by summarizeWindow).
+ */
 export function eventsInWindow(ctx, events, window) {
   return events.filter(e => {
     const start = ctx.toMs(e.timestamp);
-    const end = ctx.toMs(e.timestamp + (e.duration || 0));
-    return end >= window.start && start <= window.end;
+    if (e.type === 'runtime') {
+      const end = ctx.toMs(e.timestamp + (e.duration || 0));
+      return end > window.start && start < window.end;
+    }
+
+    return start >= window.start && start < window.end;
   });
 }

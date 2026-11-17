@@ -11,8 +11,9 @@ const MAX_BATCHES_PER_FLUSH = 8;
 // of their escaped form (they travel as a string argument); the JSON hub protocol escapes them once more, which at most
 // doubles the size, so the default budget leaves room for that and the invocation envelope.
 const DEFAULT_MAX_BATCH_BYTES = 16000;
-// How long after an interaction its record stays buffered, so its interaction contentful paint can still be added.
-const INTERACTION_SETTLE_MS = 1500;
+// How long after its input an interaction's record stays buffered, so a late interaction contentful paint can still be
+// added to it. Content painted later than this is not attached.
+const INTERACTION_SETTLE_MS = 5000;
 // Scripts kept per long animation frame (BrowserLongTaskEvent.MaxScripts in .NET).
 const MAX_FRAME_SCRIPTS = 5;
 // Frustration signals: rage clicks are RAGE_CLICKS or more clicks within RAGE_WINDOW_MS and RAGE_RADIUS_PX of each other;
@@ -299,6 +300,9 @@ function observeInteractions(threshold, live) {
 
         record.cp = Math.max(record.cp || 0, e.duration);
         if (state.interactions.get(e.interactionId) !== record && record.cp >= threshold) {
+          // Reported only because its content painted late: kept out of the interaction latency statistics, so they do
+          // not depend on whether the browser supports content paint.
+          record.co = record.d < threshold ? 1 : undefined;
           report(record, e.interactionId);
         }
       }

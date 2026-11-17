@@ -60,11 +60,23 @@ public sealed class RuntimeSampleEvent : ProfilerEvent
     /// <summary>Monitor lock contentions during the interval (server only).</summary>
     public long? LockContentions { get; set; }
 
-    /// <summary>Exceptions thrown during the interval.</summary>
+    /// <summary>Exceptions thrown during the interval (first-chance: including those that were caught).</summary>
     public long? Exceptions { get; set; }
 
+    /// <summary>
+    /// The most frequent exception types thrown during the interval and how often (at most
+    /// <see cref="MaxExceptionTypes"/>). Type names only; messages are never captured.
+    /// </summary>
+    public Dictionary<string, int>? ExceptionTypes { get; set; }
+
+    /// <summary>The number of active timers in the process at the end of the interval (<c>Timer.ActiveCount</c>).</summary>
+    public long? ActiveTimers { get; set; }
+
+    /// <summary>The maximum number of exception types kept per sample.</summary>
+    public const int MaxExceptionTypes = 5;
+
     /// <inheritdoc />
-    public override int EstimateSize() => base.EstimateSize() + 160;
+    public override int EstimateSize() => base.EstimateSize() + 176 + (ExceptionTypes?.Sum(p => StringSize(p.Key) + 32) ?? 0);
 }
 
 /// <summary>A circuit lifecycle change.</summary>
@@ -145,6 +157,13 @@ public sealed class BrowserInteractionEvent : ProfilerEvent
     /// painted no new content, and Blazor Server, whose updates arrive over the circuit outside the interaction's task chain.
     /// </summary>
     public double? ContentPaintMs { get; set; }
+
+    /// <summary>
+    /// Whether the interaction was faster than the reporting threshold and was recorded only because its content painted
+    /// late. Such interactions are left out of the interaction latency statistics, which would otherwise depend on the
+    /// browser's support for content paint.
+    /// </summary>
+    public bool ContentPaintOnly { get; set; }
 
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + StringSize(EventType) + StringSize(TargetTag) + 32;

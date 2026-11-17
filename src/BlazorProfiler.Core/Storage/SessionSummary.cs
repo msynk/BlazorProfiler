@@ -471,6 +471,15 @@ public sealed class RuntimeSummary
 
     /// <summary>The processor count.</summary>
     public int? ProcessorCount { get; set; }
+
+    /// <summary>Exceptions thrown while sampled (first-chance, including caught ones).</summary>
+    public long Exceptions { get; set; }
+
+    /// <summary>Exceptions by type while sampled (bounded; most frequent first).</summary>
+    public Dictionary<string, long> ExceptionTypes { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>The number of active timers at the latest sample.</summary>
+    public long? ActiveTimers { get; set; }
 }
 
 /// <summary>One second of aggregated activity.</summary>

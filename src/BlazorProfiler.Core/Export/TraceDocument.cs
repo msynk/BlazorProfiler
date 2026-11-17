@@ -187,7 +187,7 @@ public static class TraceDocumentBuilder
                 ExportedAt = DateTimeOffset.UtcNow,
                 DurationMs = snapshot.Statistics.DurationMs,
                 Source = source,
-                Runtime = importedMetadata?.Runtime ?? RuntimeInformation.FrameworkDescription,
+                Runtime = importedMetadata is { } importedRuntime ? importedRuntime.Runtime : RuntimeInformation.FrameworkDescription,
                 ProfilerVersion = ProfilerVersion,
                 AppName = importedMetadata is { } imported ? imported.AppName : AppInfo.Name,
                 AppVersion = importedMetadata is { } importedVersion ? importedVersion.AppVersion : AppInfo.Version,

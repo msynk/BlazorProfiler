@@ -209,6 +209,9 @@ allocations are process-wide. Demo: *Allocation spike*.
 <a id="bp5003"></a>
 ### BP5003 — Memory growth across navigation
 
+Requires navigation events, which only the interactive router reports (not the enhanced navigation of apps with
+per-page interactivity).
+
 A least-squares trend of heap size sampled after each navigation (≥ `MemoryGrowthMinimumNavigations`, 5) with slope at least
 `MemoryGrowthBytesPerNavigation` (512 KB) and R² ≥ 0.6. Confidence is Low without generation 2 collections in the window,
 Medium with them. Demo: *Leaky component* (navigate back and forth).
@@ -255,6 +258,33 @@ Instrumented component types whose renders allocate at least `RenderAllocationBy
 rendering thread (`GC.GetAllocatedBytesForCurrentThread` before and after `BuildRenderTree`; verified in WebAssembly as
 well), so they are attributed exactly, unlike process-wide samples. The evidence includes the share of all process
 allocations. BP5002 (allocation spikes) also lists the components whose renders allocated during each spike.
+
+<a id="bp5006"></a>
+### BP5006 — Frequent exceptions
+
+Two or more runtime samples in which exceptions were thrown at `ExceptionsPerSecond` (10) or more, or one sample at five
+times that rate (a single burst at startup is common and not reported). Exceptions are counted first-chance
+(`AppDomain.FirstChanceException`), so exceptions that are caught and ignored count too, with their type names (never
+messages). The summary adds advice for the most frequent type (cancellations from fast input or disposal,
+`JSDisconnectedException` after the circuit dropped, `NavigationException` during static rendering, `HttpRequestException`,
+parsing), taken from the busy samples rather than the whole session, and lists the operations running at the time
+(temporal).
+
+<a id="bp5007"></a>
+### BP5007 — Active timers keep growing
+
+Timers that components start and never dispose keep running and keep their targets alive. The rule fits
+`Timer.ActiveCount` two ways and reports growth of `TimerGrowthPerNavigation` (0.9) or more per step:
+
+- per navigation of the interactive router (at least `MemoryGrowthMinimumNavigations`, 5; R² ≥ 0.6);
+- per new instance of each component type (5 to 2,000 instances; R² ≥ 0.8), which also names the likely owner. This is
+  what works in Blazor Web Apps with per-page interactivity, whose enhanced navigation reports no navigation events
+  (verified end to end with the sample app, where it names `LeakyComponent`).
+
+Navigations and instances that happened while their circuit was starting (a page load) are left out, because every new
+circuit adds timers of its own. Component types created together correlate equally; up to three are listed as
+candidates (inferred), and confidence is Medium on Blazor Server or when several types match. Demo: *Leaky component*
+(navigate away and back).
 
 ## Blazor Server
 

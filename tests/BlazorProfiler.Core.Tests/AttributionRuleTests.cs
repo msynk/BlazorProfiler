@@ -62,6 +62,8 @@ public class AttributionRuleTests
         Assert.Contains("BP7008", ids);
         Assert.Contains("BP3007", ids);
         Assert.Contains("BP5005", ids);
+        Assert.Contains("BP5006", ids);
+        Assert.Contains("BP5007", ids);
     }
 
     [Fact]
@@ -302,6 +304,105 @@ public class AttributionRuleTests
         var finding = Assert.Single(Findings(Analyze(events), "BP5005"));
         Assert.Equal("App.Grid", finding.ComponentType);
         Assert.Contains("117.2 KB", finding.Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP5006_ReportsFrequentExceptionsWithTheirTypes()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            Ev.Handler("App.Pages.Search", "OnInput", 100, 300, operation: 3),
+            new RuntimeSampleEvent { Timestamp = Ev.T(0), Duration = Ev.D(1_000), Exceptions = 3 },
+            new RuntimeSampleEvent { Timestamp = Ev.T(1_000), Duration = Ev.D(1_000), Exceptions = 2 },
+        };
+        events[1] = new RuntimeSampleEvent
+        {
+            Timestamp = Ev.T(0),
+            Duration = Ev.D(1_000),
+            Exceptions = 60,
+            ExceptionTypes = new() { ["System.Threading.Tasks.TaskCanceledException"] = 55, ["System.FormatException"] = 5 },
+        };
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP5006"));
+        Assert.StartsWith("TaskCanceledException thrown up to 60 times per second", finding.Title, StringComparison.Ordinal);
+        Assert.Contains("Most are cancellations", finding.Summary, StringComparison.Ordinal);
+        Assert.Contains(finding.Evidence, e => e.Label == "Operations running at the time" && e.Value.Contains("Search.OnInput", StringComparison.Ordinal));
+
+        // A few exceptions per second are not reported.
+        Assert.Empty(Findings(Analyze([new RuntimeSampleEvent { Timestamp = Ev.T(0), Duration = Ev.D(1_000), Exceptions = 4 }]), "BP5006"));
+    }
+
+    [Fact]
+    public void BP5007_ReportsActiveTimersGrowingWithNavigation()
+    {
+        var events = new List<ProfilerEvent>();
+        for (var i = 0; i < 8; i++)
+        {
+            events.Add(new NavigationEvent { Route = "/leaky", Timestamp = Ev.T(i * 1_000) });
+            events.Add(new RuntimeSampleEvent { Timestamp = Ev.T((i * 1_000) + 10), Duration = Ev.D(100), ActiveTimers = 12 + (i * 2) });
+        }
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP5007"));
+        Assert.Contains("about 2 per navigation", finding.Title, StringComparison.Ordinal);
+
+        // A stable number of timers is not reported.
+        var stable = new List<ProfilerEvent>();
+        for (var i = 0; i < 8; i++)
+        {
+            stable.Add(new NavigationEvent { Route = "/ok", Timestamp = Ev.T(i * 1_000) });
+            stable.Add(new RuntimeSampleEvent { Timestamp = Ev.T((i * 1_000) + 10), Duration = Ev.D(100), ActiveTimers = 12 + (i % 2) });
+        }
+
+        Assert.Empty(Findings(Analyze(stable), "BP5007"));
+    }
+
+    [Fact]
+    public void BP5006_IgnoresASingleModestBurst()
+    {
+        // One sample at 15 per second (a startup burst) is not reported; two such samples are.
+        Assert.Empty(Findings(Analyze([new RuntimeSampleEvent { Timestamp = Ev.T(0), Duration = Ev.D(1_000), Exceptions = 15 }]), "BP5006"));
+        var repeated = Findings(Analyze(
+        [
+            new RuntimeSampleEvent { Timestamp = Ev.T(0), Duration = Ev.D(1_000), Exceptions = 15, ExceptionTypes = new() { ["(other types)"] = 10, ["System.FormatException"] = 5 } },
+            new RuntimeSampleEvent { Timestamp = Ev.T(1_000), Duration = Ev.D(1_000), Exceptions = 15, ExceptionTypes = new() { ["(other types)"] = 10, ["System.FormatException"] = 5 } },
+        ]), "BP5006");
+
+        // "(other types)" is never named as the culprit.
+        Assert.StartsWith("FormatException thrown", Assert.Single(repeated).Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP5007_FindsTheComponentWhoseInstancesAddTimersWithoutNavigationEvents()
+    {
+        // Enhanced navigation in a Blazor Web App reports no navigation events: each new LeakyWidget adds a timer.
+        var events = new List<ProfilerEvent>();
+        for (var i = 0; i < 7; i++)
+        {
+            events.Add(new ComponentCreatedEvent { ComponentType = "App.LeakyWidget", ComponentInstanceId = i + 1, Timestamp = Ev.T(i * 2_000), Source = InstrumentationSource.ComponentActivator });
+            events.Add(new ComponentCreatedEvent { ComponentType = "App.Row", ComponentInstanceId = 100 + i, Timestamp = Ev.T((i * 2_000) + 1_000), Source = InstrumentationSource.ComponentActivator });
+            events.Add(new RuntimeSampleEvent { Timestamp = Ev.T((i * 2_000) + 100), Duration = Ev.D(500), ActiveTimers = 10 + i });
+            events.Add(new RuntimeSampleEvent { Timestamp = Ev.T((i * 2_000) + 1_100), Duration = Ev.D(500), ActiveTimers = 10 + i });
+        }
+
+        // Rows are created once per widget here too, so both types match the growth: they are listed as candidates and the
+        // finding says the attribution is by time (Medium confidence).
+        var finding = Assert.Single(Findings(Analyze(events), "BP5007"));
+        var candidates = finding.Evidence.Single(e => e.Label == "Component types whose instances match the growth");
+        Assert.Contains("LeakyWidget", candidates.Value, StringComparison.Ordinal);
+        Assert.Equal(ValueQuality.Inferred, candidates.Quality);
+        Assert.Equal(DiagnosticConfidence.Medium, finding.Confidence);
+
+        // Components created while their circuit was starting (a page load) are not blamed for the circuit's own timers.
+        var circuits = new List<ProfilerEvent>();
+        for (var i = 0; i < 7; i++)
+        {
+            var circuit = "c" + i;
+            circuits.Add(new CircuitEvent { Change = CircuitChange.Opened, CircuitId = circuit, Timestamp = Ev.T(i * 2_000) });
+            circuits.Add(new ComponentCreatedEvent { ComponentType = "App.Routes", ComponentInstanceId = i + 1, CircuitId = circuit, Timestamp = Ev.T((i * 2_000) + 50), Source = InstrumentationSource.ComponentActivator });
+            circuits.Add(new RuntimeSampleEvent { Timestamp = Ev.T((i * 2_000) + 100), Duration = Ev.D(500), ActiveTimers = 10 + (3 * i) });
+        }
+
+        Assert.Empty(Findings(Analyze(circuits), "BP5007"));
     }
 
     [Fact]

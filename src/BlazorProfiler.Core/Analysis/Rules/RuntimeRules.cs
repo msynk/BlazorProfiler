@@ -733,14 +733,15 @@ public sealed class AllocationHeavyRenderingRule : DiagnosticRule
             .OrderByDescending(c => c.RenderAllocatedBytes))
         {
             var mean = c.MeanRenderAllocatedBytes!.Value;
-            var share = processAllocated > 0 ? c.RenderAllocatedBytes / processAllocated : (double?)null;
+            // Renders outside the sampled intervals are counted in the numerator only, so the share is capped.
+            var share = processAllocated > 0 ? Math.Min(1, c.RenderAllocatedBytes / processAllocated) : (double?)null;
             var server = context.Events.Any(e => e.CircuitId is not null);
             var renders = context.OfType<ComponentRenderEvent>().Where(r => r.ComponentType == c.ComponentType && r.AllocatedBytes is not null).OrderByDescending(r => r.AllocatedBytes).Take(20).ToList();
             yield return Create(
                 $"{ShortType(c.ComponentType)} allocates {FormatBytes(mean)} per render",
                 Scale(Math.Max(mean / perRender, c.RenderAllocatedBytes / total), 1),
                 DiagnosticConfidence.High,
-                $"{FormatNumber(c.RendersWithAllocations)} render(s) of {ShortType(c.ComponentType)} allocated {FormatBytes(c.RenderAllocatedBytes)} in total ({FormatBytes(mean)} on average, at most {FormatBytes(c.MaxRenderAllocatedBytes)} in one render){(share is { } s ? $", {FormatPercent(s)} of everything the process allocated while sampled" : string.Empty)}.",
+                $"{FormatNumber(c.RendersWithAllocations)} render(s) of {ShortType(c.ComponentType)} allocated {FormatBytes(c.RenderAllocatedBytes)} in total ({FormatBytes(mean)} on average, at most {FormatBytes(c.MaxRenderAllocatedBytes)} in one render){(share is { } s ? $", about {FormatPercent(s)} of everything the process allocated while sampled" : string.Empty)}.",
                 server
                     ? "Every byte allocated while rendering is garbage soon after, so frequent heavy renders drive garbage collections that pause every circuit on the server."
                     : "In WebAssembly, allocations made while rendering are collected on the browser's main thread: garbage collections pause the UI.",
@@ -765,5 +766,261 @@ public sealed class AllocationHeavyRenderingRule : DiagnosticRule
                 related: renders,
                 codeHint: $"{ShortType(c.ComponentType)}.razor: LINQ, string building, and lambdas in markup");
         }
+    }
+}
+
+/// <summary>BP5006: exceptions thrown frequently (first-chance, including caught ones).</summary>
+public sealed class FrequentExceptionsRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP5006",
+        Title = "Frequent exceptions",
+        Category = DiagnosticCategory.Memory,
+        Description = "Detects runtime samples in which exceptions (first-chance, including caught ones) were thrown at a high rate, and lists the exception types and the operations running at the time.",
+        RequiredSignals = [ProfilerEventKind.RuntimeSample],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var threshold = context.Options.ExceptionsPerSecond;
+        double Rate(RuntimeSampleEvent s) => (s.Exceptions ?? 0) / Math.Max(0.001, context.Ms(s.Duration) / 1000);
+        var samples = context.OfType<RuntimeSampleEvent>().Where(s => s.Exceptions is > 0).ToList();
+        var busy = samples.Where(s => Rate(s) >= threshold).ToList();
+        if (busy.Count == 0)
+        {
+            yield break;
+        }
+
+        // One busy sample is reported only when it is far above the threshold (a single burst at startup is common).
+        var peak = busy.Max(Rate);
+        if (busy.Count < 2 && peak < threshold * 5)
+        {
+            yield break;
+        }
+
+        var total = context.Summary.Runtime.Exceptions;
+
+        // The types thrown in the busy samples, not the whole session's, name the cause of the bursts.
+        var busyTypes = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var sample in busy)
+        {
+            foreach (var (type, count) in sample.ExceptionTypes ?? [])
+            {
+                busyTypes[type] = busyTypes.GetValueOrDefault(type) + count;
+            }
+        }
+
+        var types = (busyTypes.Count > 0 ? busyTypes : context.Summary.Runtime.ExceptionTypes).OrderByDescending(p => p.Value).Take(5).ToList();
+        var operations = context.Events
+            .Where(e => e is EventHandlerEvent or NavigationEvent or OperationEvent && busy.Any(s => e.Timestamp <= s.EndTimestamp && e.EndTimestamp >= s.Timestamp))
+            .Take(20)
+            .ToList();
+        var names = operations.Select(e => e switch
+        {
+            EventHandlerEvent h => HandlerName(h),
+            NavigationEvent n => "navigate " + n.Route,
+            OperationEvent o => o.Name ?? "operation",
+            _ => e.Kind.ToString(),
+        }).Distinct().Take(3).ToList();
+        var top = types.Select(p => p.Key).FirstOrDefault(t => !t.StartsWith('(')); // "(other types)" names no culprit
+        var hint = top switch
+        {
+            null => string.Empty,
+            _ when top.EndsWith("TaskCanceledException", StringComparison.Ordinal) || top.EndsWith("OperationCanceledException", StringComparison.Ordinal)
+                => " Most are cancellations: requests or delays canceled when input changes quickly or components are disposed; debounce input, and check the token before starting work instead of letting it throw.",
+            _ when top.EndsWith("JSDisconnectedException", StringComparison.Ordinal)
+                => " Most are JSDisconnectedException: JavaScript interop after the circuit disconnected, typically in DisposeAsync or timers that outlive the component.",
+            _ when top.EndsWith("NavigationException", StringComparison.Ordinal)
+                => " Most are NavigationException: NavigateTo during static server rendering, which Blazor implements with an exception (expected, but costly in loops).",
+            _ when top.EndsWith("HttpRequestException", StringComparison.Ordinal)
+                => " Most are HttpRequestException: failing requests, possibly retried (see BP3005).",
+            _ when top.EndsWith("FormatException", StringComparison.Ordinal) || top.EndsWith("InvalidCastException", StringComparison.Ordinal)
+                => " Most come from parsing or conversion: use TryParse and pattern matching instead of catching exceptions.",
+            _ => string.Empty,
+        };
+
+        var server = context.Events.Any(e => e.CircuitId is not null);
+        yield return Create(
+            top is null ? $"Exceptions thrown up to {FormatNumber(peak)} times per second" : $"{ShortType(top)} thrown up to {FormatNumber(peak)} times per second",
+            Scale(peak, threshold),
+            types.Count > 0 && busy.Count >= 2 ? DiagnosticConfidence.High : DiagnosticConfidence.Medium,
+            $"{FormatNumber(total)} exception(s) were thrown while sampled, at up to {FormatNumber(peak)} per second in {busy.Count} sample(s).{hint}",
+            (server ? "On the server, every thrown exception captures a stack trace and unwinds frames, which costs CPU shared by all circuits; " : "In WebAssembly, exceptions are particularly expensive (the runtime interprets or unwinds through JavaScript frames) and run on the UI thread; ") +
+            "this counts first-chance exceptions, so exceptions that are caught and ignored count too. They also make debugging noisy.",
+            "Avoid exceptions for control flow: use TryParse and TryGetValue, check cancellation tokens and the circuit or component state before calling, and handle expected failures without throwing. The exception types and the operations running at the time point to the code.",
+            [
+                Evidence("Exceptions (sampled)", FormatNumber(total)),
+                Evidence("Peak rate", FormatNumber(peak) + " per second"),
+                Evidence(busyTypes.Count > 0 ? "Most frequent types during the bursts" : "Most frequent types (session)", types.Count > 0 ? string.Join("; ", types.Select(p => $"{ShortType(p.Key)} ×{FormatNumber(p.Value)}")) : "unavailable", types.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
+                Evidence("Operations running at the time", names.Count > 0 ? string.Join("; ", names) : "none", names.Count > 0 ? ValueQuality.Inferred : ValueQuality.Measured),
+            ],
+            new ImpactEstimate { Occurrences = total, Method = "First-chance exceptions counted by the runtime collector while sampled.", Quality = ValueQuality.Measured },
+            subject: top ?? "exceptions",
+            caveats:
+            [
+                "The count is process-wide, including exceptions thrown by libraries and the framework and caught internally.",
+                "Operations are matched to the busy samples by time.",
+            ],
+            related: busy.Cast<ProfilerEvent>().Concat(operations.Take(10)),
+            codeHint: top is null ? null : $"Where {ShortType(top)} is thrown or caught");
+    }
+}
+
+/// <summary>
+/// BP5007: the number of active timers grows with every navigation, or with every instance of one component type (timers
+/// that are never disposed).
+/// </summary>
+/// <remarks>
+/// Blazor Web Apps with per-page interactivity navigate with enhanced navigation, which produces no navigation events, so
+/// the rule also fits the timer count against the creations of each component type: a type whose every new instance adds
+/// a timer is the likely owner.
+/// </remarks>
+public sealed class TimerGrowthRule : DiagnosticRule
+{
+    private const int MinimumInstances = 5;
+    private const int MaximumInstances = 2_000;
+
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP5007",
+        Title = "Active timers keep growing",
+        Category = DiagnosticCategory.Memory,
+        Description = "Fits the number of active timers sampled after each navigation, and after each new instance of every component type, and reports steady growth: timers created by components (or by services they start) that are never disposed keep running, keep their callbacks' targets alive, and keep doing work.",
+        RequiredSignals = [ProfilerEventKind.RuntimeSample],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var samples = context.OfType<RuntimeSampleEvent>().Where(s => s.ActiveTimers is not null).OrderBy(s => s.EndTimestamp).ToList();
+        if (samples.Count < 2)
+        {
+            yield break;
+        }
+
+        var ends = samples.Select(s => s.EndTimestamp).ToArray();
+        var minimum = context.Options.TimerGrowthPerNavigation;
+
+        // The timer count after a moment: the first sample that ended after it.
+        long? After(long timestamp)
+        {
+            var index = Array.BinarySearch(ends, timestamp);
+            index = index < 0 ? ~index : index;
+            return index < samples.Count ? samples[index].ActiveTimers : null;
+        }
+
+        static (double Slope, double R2)? Fit(IReadOnlyList<double> values)
+        {
+            var n = values.Count;
+            var meanX = (n - 1) / 2.0;
+            var meanY = values.Average();
+            double sxx = 0, sxy = 0, syy = 0;
+            for (var i = 0; i < n; i++)
+            {
+                sxx += (i - meanX) * (i - meanX);
+                sxy += (i - meanX) * (values[i] - meanY);
+                syy += (values[i] - meanY) * (values[i] - meanY);
+            }
+
+            return sxx <= 0 || syy <= 0 ? null : (sxy / sxx, (sxy * sxy) / (sxx * syy));
+        }
+
+        // Every new circuit brings timers of its own (SignalR keep-alives), which are not a leak: navigations and instances
+        // that happened while their circuit was starting (a page load) are left out.
+        var circuitStarts = context.OfType<CircuitEvent>().Where(c => c.Change == CircuitChange.Opened && c.CircuitId is not null)
+            .GroupBy(c => c.CircuitId!).ToDictionary(g => g.Key, g => g.Min(c => c.Timestamp), StringComparer.Ordinal);
+        var settle = context.Ticks(2_000);
+        bool Starting(ProfilerEvent e) => e.CircuitId is not null && circuitStarts.TryGetValue(e.CircuitId, out var opened) && e.Timestamp - opened <= settle;
+
+        // 1. Per navigation (interactive router).
+        var navigations = context.OfType<NavigationEvent>().Where(n => !Starting(n)).OrderBy(n => n.Timestamp).ToList();
+        var byNavigation = navigations.Select(n => After(n.EndTimestamp)).TakeWhile(v => v is not null).Select(v => (double)v!.Value).ToList();
+        var navigationFit = byNavigation.Count >= context.Options.MemoryGrowthMinimumNavigations ? Fit(byNavigation) : null;
+
+        // 2. Per instance of each component type.
+        var candidates = new List<(string Type, int Instances, double Slope, double R2, double First, double Last)>();
+        foreach (var group in context.OfType<ComponentCreatedEvent>().Where(c => c.ComponentType is not null).GroupBy(c => c.ComponentType!))
+        {
+            var creations = group.Where(c => !Starting(c)).OrderBy(c => c.Timestamp).ToList();
+            if (creations.Count is < MinimumInstances or > MaximumInstances)
+            {
+                continue;
+            }
+
+            var values = creations.Select(c => After(c.EndTimestamp)).TakeWhile(v => v is not null).Select(v => (double)v!.Value).ToList();
+            if (values.Count < MinimumInstances || Fit(values) is not { } fit || fit.Slope < minimum || fit.R2 < 0.8)
+            {
+                continue;
+            }
+
+            candidates.Add((group.Key, values.Count, fit.Slope, fit.R2, values[0], values[^1]));
+        }
+
+        var navigationGrowth = navigationFit is { } nf && nf.Slope >= minimum && nf.R2 >= 0.6;
+        if (!navigationGrowth && candidates.Count == 0)
+        {
+            yield break;
+        }
+
+        // Several types created together (a page and its children) correlate equally; the best fits are listed, and the
+        // types whose instances match the growth one to one come first.
+        var ranked = candidates.OrderByDescending(c => c.R2).ThenBy(c => Math.Abs(c.Slope - 1)).Take(3).ToList();
+        var culprit = ranked.FirstOrDefault();
+        var server = context.Events.Any(e => e.CircuitId is not null);
+        var retained = context.Summary.Components.Where(c => c.Retained > 0).OrderByDescending(c => c.Retained).Select(c => ShortType(c.ComponentType)).Take(3).ToList();
+        string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        var evidence = new List<FindingEvidence>();
+        string summary;
+        string title;
+        double first;
+        double last;
+        if (navigationGrowth)
+        {
+            var (slope, r2) = navigationFit!.Value;
+            first = byNavigation[0];
+            last = byNavigation[^1];
+            title = $"Active timers grow by about {F(slope)} per navigation";
+            summary = $"Across {byNavigation.Count} navigations the number of active timers went from {FormatNumber(first)} to {FormatNumber(last)} (about {F(slope)} more per navigation, R² {r2.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}).";
+            evidence.Add(Evidence("Navigations analyzed", FormatNumber(byNavigation.Count)));
+            evidence.Add(Evidence("Growth per navigation", F(slope), ValueQuality.Estimated));
+        }
+        else
+        {
+            first = culprit.First;
+            last = culprit.Last;
+            title = $"Active timers grow by about {F(culprit.Slope)} per {ShortType(culprit.Type)} instance";
+            summary = $"Each time a {ShortType(culprit.Type)} was created ({culprit.Instances} instances), the number of active timers grew by about {F(culprit.Slope)} (from {FormatNumber(first)} to {FormatNumber(last)}, R² {culprit.R2.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}), and the timers were not released when the instances went away.";
+        }
+
+        evidence.Add(Evidence("Active timers (first → last)", $"{FormatNumber(first)} → {FormatNumber(last)}"));
+        evidence.Add(ranked.Count > 0
+            ? Evidence("Component types whose instances match the growth", string.Join("; ", ranked.Select(c => $"{ShortType(c.Type)}: {F(c.Slope)} per instance, R² {c.R2.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}")), ValueQuality.Inferred)
+            : Evidence("Component types whose instances match the growth", "none", ValueQuality.Unavailable));
+        evidence.Add(retained.Count > 0
+            ? Evidence("Retained components (possible timer owners)", string.Join(", ", retained), ValueQuality.Inferred)
+            : Evidence("Retained components (possible timer owners)", "none reported yet; run the leak check", ValueQuality.Unavailable));
+
+        yield return Create(
+            title,
+            Scale(navigationGrowth ? navigationFit!.Value.Slope : culprit.Slope, minimum),
+            server || (!navigationGrowth && ranked.Count > 1) ? DiagnosticConfidence.Medium : DiagnosticConfidence.High,
+            summary,
+            "A System.Threading.Timer, System.Timers.Timer, PeriodicTimer, or Task.Delay loop started by a component keeps running after the component is disposed unless it is stopped. Each one keeps its callback's target (often the component) alive, keeps calling StateHasChanged or JavaScript, and adds work on every tick.",
+            "Dispose timers in the component's Dispose/DisposeAsync (implement IDisposable with @implements IDisposable), cancel Task.Delay loops with a CancellationTokenSource canceled in Dispose, and prefer one shared timer in a service over one per component instance. Run the leak check: retained components (BP5004) show which components the timers keep alive.",
+            evidence,
+            new ImpactEstimate { Occurrences = Math.Max(0, last - first), Method = "Increase in Timer.ActiveCount over the analyzed navigations or instances.", Quality = ValueQuality.Measured },
+            componentType: navigationGrowth ? null : culprit.Type,
+            subject: navigationGrowth ? "active-timers" : "active-timers:" + culprit.Type,
+            caveats:
+            [
+                "Timer.ActiveCount counts every timer in the process, including the framework's; on a server shared by several users, new circuits add timers legitimately (instances created while a circuit starts are excluded).",
+                "Component types created together correlate equally with the growth; the listed types are candidates, matched by time.",
+            ],
+            related: navigationGrowth ? navigations.Take(20) : context.OfType<ComponentCreatedEvent>().Where(c => c.ComponentType == culprit.Type).Take(20),
+            codeHint: navigationGrowth ? null : $"{ShortType(culprit.Type)}: timers created in OnInitialized and not disposed");
     }
 }

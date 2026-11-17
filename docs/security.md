@@ -63,7 +63,8 @@ built-in rule reference.
 - Parameter values (only names, and whether values changed).
 - Element content, input values, or text typed by users. Browser interaction entries record the event type and the target's
   tag name only.
-- Exception messages or stack traces (only exception type names).
+- Exception messages or stack traces (only exception type names, including the counts of first-chance exceptions by
+  type).
 - Render output (identical-output detection hashes it in memory; the hash is process-local and not exported as content).
 - Database parameter values and literals. SQL text is normalized before it leaves the collector (string and numeric
   literals become `?`); argument values are reduced to a 64-bit hash used only to recognize identical queries.

@@ -98,10 +98,21 @@ export function latencyHeatmap(ops) {
     return host;
   }
 
-  const t0 = Math.min(...timed.map(o => o.start));
-  const t1 = Math.max(...timed.map(o => o.start)) + 1;
-  const minLog = Math.log10(Math.max(0.1, Math.min(...timed.map(o => o.duration))));
-  const maxLog = Math.log10(Math.max(...timed.map(o => o.duration))) + 0.0001;
+  // Loops instead of Math.min(...list): spreading a very large list exceeds the call stack.
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  let shortest = Infinity;
+  let longest = 0;
+  for (const o of timed) {
+    t0 = Math.min(t0, o.start);
+    t1 = Math.max(t1, o.start);
+    shortest = Math.min(shortest, o.duration);
+    longest = Math.max(longest, o.duration);
+  }
+
+  t1 += 1;
+  const minLog = Math.log10(Math.max(0.1, shortest));
+  const maxLog = Math.log10(longest) + 0.0001;
   const col = op => Math.min(COLUMNS - 1, Math.floor(((op.start - t0) / (t1 - t0)) * COLUMNS));
   const row = op => Math.min(ROWS - 1, Math.floor(((Math.log10(Math.max(0.1, op.duration)) - minLog) / Math.max(0.0001, maxLog - minLog)) * ROWS));
   const cells = new Map();
@@ -110,7 +121,10 @@ export function latencyHeatmap(ops) {
     cells.set(key, (cells.get(key) || 0) + 1);
   }
 
-  const max = Math.max(...cells.values());
+  let max = 1;
+  for (const n of cells.values()) {
+    max = Math.max(max, n);
+  }
   const cw = (WIDTH - LEFT) / COLUMNS;
   const ch = (HEIGHT - BOTTOM) / ROWS;
   const ns = 'http://www.w3.org/2000/svg';
@@ -150,8 +164,10 @@ export function latencyHeatmap(ops) {
 
   const result = h('div', { class: 'heat-result', role: 'region', 'aria-live': 'polite' });
   const select = (predicate, label) => {
-    const selected = timed.filter(predicate);
-    const rest = ops.filter(op => !selected.includes(op));
+    // Only plotted operations (with a duration) take part, on both sides.
+    const chosen = new Set(timed.filter(predicate));
+    const selected = [...chosen];
+    const rest = timed.filter(op => !chosen.has(op));
     clear(result);
     if (!selected.length) {
       result.appendChild(h('p', { class: 'muted' }, 'No operations in the selection.'));
@@ -159,7 +175,7 @@ export function latencyHeatmap(ops) {
     }
 
     const rows = compareAttributes(selected, rest).slice(0, 12);
-    result.appendChild(h('p', null, `${label}: ${selected.length} of ${ops.length} operations. What they have in common more often than the others:`));
+    result.appendChild(h('p', null, `${label}: ${selected.length} of ${timed.length} operations. What they have in common more often than the others:`));
     result.appendChild(rows.length ? h('table', { 'aria-label': 'Attributes over-represented in the selection' },
       h('thead', null, h('tr', null, h('th', null, 'Attribute'), h('th', { class: 'num' }, 'Selected'), h('th', { class: 'num' }, 'Others'), h('th', null, ''))),
       h('tbody', null, rows.map(r => h('tr', null,
@@ -211,10 +227,14 @@ export function latencyHeatmap(ops) {
     }
   });
 
-  const sorted = timed.map(o => o.duration).sort((a, b) => a - b);
-  const p90 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))];
+  // The slowest tenth by rank (at least one operation), so ties at the boundary cannot select far more than 10%.
+  const slowest = new Set([...timed].sort((a, b) => b.duration - a.duration).slice(0, Math.max(1, Math.ceil(timed.length * 0.1))));
+  let cutoff = Infinity;
+  for (const o of slowest) {
+    cutoff = Math.min(cutoff, o.duration);
+  }
   host.appendChild(h('div', { class: 'toolbar' },
-    h('button', { type: 'button', class: 'btn', id: 'heat-slowest', onclick: () => select(op => op.duration >= p90, `Slowest 10% (${fmtMs(p90)} or more)`) }, 'Explain the slowest 10%'),
+    h('button', { type: 'button', class: 'btn', id: 'heat-slowest', onclick: () => select(op => slowest.has(op), `Slowest ${slowest.size} operation(s) (${fmtMs(cutoff)} or more)`) }, 'Explain the slowest 10%'),
     h('span', { class: 'muted' }, 'Drag over the heatmap to select operations by start time and duration.')));
   host.appendChild(svg);
   host.appendChild(result);
