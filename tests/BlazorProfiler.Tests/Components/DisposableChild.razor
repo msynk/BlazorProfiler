@@ -1,0 +1,8 @@
+@inherits ProfiledComponentBase
+@implements IDisposable
+<span>disposable</span>
+@code {
+    public static int Disposals;
+
+    public void Dispose() => Disposals++;
+}

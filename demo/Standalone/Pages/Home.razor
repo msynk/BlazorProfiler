@@ -1,0 +1,9 @@
+@page "/"
+<PageTitle>Standalone sample — Blazor Profiler</PageTitle>
+<h1>Standalone WebAssembly</h1>
+<p>A Blazor WebAssembly app without a server project: the interactive router reports every navigation, so the profiler
+   can relate memory and timers to page visits. Open the dashboard with Alt+Shift+P.</p>
+<button id="count" @onclick="() => count++">Clicked @count time(s)</button>
+@code {
+    private int count;
+}

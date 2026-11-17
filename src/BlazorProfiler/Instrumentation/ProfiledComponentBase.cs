@@ -25,11 +25,13 @@ namespace BlazorProfiler.Instrumentation;
 /// referenced as <see cref="ComponentBase"/>-like types, but not cast to <see cref="ComponentBase"/>.
 /// </para>
 /// <para>
-/// Disposal is recorded when the component does not implement <see cref="IDisposable"/> or <see cref="IAsyncDisposable"/>
-/// itself; components that implement them keep their own disposal behavior unchanged.
+/// Disposal is recorded for every component except those that implement <see cref="IAsyncDisposable"/> themselves. The
+/// base class implements <see cref="IAsyncDisposable"/>, which the renderer prefers; a component that implements
+/// <see cref="IDisposable"/> itself has its own <c>Dispose</c> called from there, synchronously and exactly once, so its
+/// disposal behaves as with <c>ComponentBase</c>.
 /// </para>
 /// </remarks>
-public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleAfterRender, IDisposable
+public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleAfterRender, IDisposable, IAsyncDisposable
 {
     private const int MaxTrackedParameters = 64;
 
@@ -306,7 +308,29 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
         return task;
     }
 
-    void IDisposable.Dispose()
+    void IDisposable.Dispose() => RecordDisposal();
+
+    /// <summary>
+    /// Called by the renderer, which prefers <see cref="IAsyncDisposable"/>. A component that implements
+    /// <see cref="IDisposable"/> itself re-implements that interface, so the call below runs its own <c>Dispose</c> (and
+    /// <see cref="RecordDisposal"/> otherwise); the disposal is recorded either way. Completes synchronously, like a
+    /// synchronous <c>Dispose</c>.
+    /// </summary>
+    ValueTask IAsyncDisposable.DisposeAsync()
+    {
+        try
+        {
+            ((IDisposable)this).Dispose();
+        }
+        finally
+        {
+            RecordDisposal();
+        }
+
+        return default;
+    }
+
+    private void RecordDisposal()
     {
         if (_disposed)
         {

@@ -127,6 +127,7 @@ layout thrashing, rage and dead clicks).
 
 ```bash
 dotnet run --project demo/Server
+dotnet run --project demo/Standalone   # standalone Blazor WebAssembly (interactive router)
 ```
 
 ## Building and testing

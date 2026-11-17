@@ -1,0 +1,25 @@
+@page "/products"
+@inject HttpClient Http
+<PageTitle>Products — Blazor Profiler</PageTitle>
+<h1>Products</h1>
+<p>Loads the product list, then each row loads its own details: an N+1 request pattern (rules BP3002 and BP3006).</p>
+@if (products is null)
+{
+    <p id="products-status">Loading…</p>
+}
+else
+{
+    <p id="products-status">Loaded @products.Count products</p>
+    <ul>
+        @foreach (var product in products)
+        {
+            <ProductDetails @key="product.Id" Id="product.Id" Name="@product.Name" />
+        }
+    </ul>
+}
+@code {
+    private List<Product>? products;
+
+    protected override async Task OnInitializedAsync() =>
+        products = await Http.GetFromJsonAsync<List<Product>>("data/products.json") ?? [];
+}

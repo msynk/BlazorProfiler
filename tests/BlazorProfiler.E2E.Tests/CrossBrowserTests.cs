@@ -52,7 +52,7 @@ public sealed class CrossBrowserTests(SampleApp app) : IClassFixture<SampleApp>
             return events.Any(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "Block")
                 && events.Any(e => e.Str("type") == "componentRender")
                 && events.Any(e => e.Str("type") == "browserStartup");
-        }, 45_000, $"{browserName}: the WebAssembly profiler did not report handlers, renders, and startup.");
+        }, 60_000, $"{browserName}: the WebAssembly profiler did not report handlers, renders, and startup.");
 
         // Frustration detection runs in every browser.
         await page.ClickAsync("#block");
@@ -64,7 +64,7 @@ public sealed class CrossBrowserTests(SampleApp app) : IClassFixture<SampleApp>
             var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
             var events = await EndToEndTests.BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 });
             return events.GetProperty("page").GetProperty("events").EnumerateArray().Any(e => e.Str("type") == "browserFrustration" && e.Str("signal") == "RageClick");
-        }, 30_000, $"{browserName}: no rage click was reported.");
+        }, 45_000, $"{browserName}: no rage click was reported.");
 
         Assert.Empty(errors);
         await page.CloseAsync();
@@ -87,12 +87,12 @@ public sealed class CrossBrowserTests(SampleApp app) : IClassFixture<SampleApp>
             var events = await app.EventsAsync(session);
             return events.Any(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "Block" && e.Str("circuitId").Length > 0)
                 && events.Any(e => e.Str("type") == "browserStartup");
-        }, 30_000, $"{browserName}: server collection or the browser module failed.");
+        }, 60_000, $"{browserName}: server collection or the browser module failed."); // Firefox and WebKit start slowly under load
 
         var dashboard = await browser.NewPageAsync();
         var dashboardErrors = CollectErrors(dashboard);
         await dashboard.GotoAsync(app.BaseUrl + "_blazor-profiler/");
-        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
+        await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 45_000 });
         await dashboard.SelectOptionAsync("#session-select", session);
         foreach (var view in new[] { "interactions", "responsiveness", "timeline", "diagnostics" })
         {

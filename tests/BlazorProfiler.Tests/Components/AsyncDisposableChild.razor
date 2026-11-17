@@ -1,0 +1,12 @@
+@inherits ProfiledComponentBase
+@implements IAsyncDisposable
+<span>async disposable</span>
+@code {
+    public static int Disposals;
+
+    public ValueTask DisposeAsync()
+    {
+        Disposals++;
+        return ValueTask.CompletedTask;
+    }
+}

@@ -11,6 +11,9 @@
   Set `ProfilerServerOptions.EnableMcp = false` to remove it.
 - Frustration signals are collected by default (`Collectors.FrustrationSignals`); the browser module adds one passive
   click listener and a mutation observer.
+- `ProfiledComponentBase` now also implements `IAsyncDisposable` (the renderer prefers it). Components that implement
+  `IDisposable` themselves still have their `Dispose` called exactly once, synchronously, and their disposal is now
+  recorded; code that checks `component is IAsyncDisposable` sees `true` for every instrumented component.
 - `TraceCli.RunAsync` has an overload that takes the standard input reader (used by `blazor-profiler mcp`).
 
 - **Event schema version 2.** New event types: `componentRetained`, `dbCommand`, `browserStartup`, `browserVital`. Traces

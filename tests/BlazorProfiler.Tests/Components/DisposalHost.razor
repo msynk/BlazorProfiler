@@ -1,0 +1,10 @@
+@inherits ProfiledComponentBase
+@if (Show)
+{
+    <DisposableChild />
+    <AsyncDisposableChild />
+    <PlainChild />
+}
+@code {
+    [Parameter] public bool Show { get; set; } = true;
+}

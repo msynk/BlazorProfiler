@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+  <!-- A standalone Blazor WebAssembly app (no server project): the interactive router, WebAssemblyHostBuilder, and the
+       dashboard bridge, served by the development server. -->
+  <PropertyGroup>
+    <NoDefaultLaunchSettingsFile>true</NoDefaultLaunchSettingsFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BlazorProfiler.WebAssembly\BlazorProfiler.WebAssembly.csproj" />
+  </ItemGroup>
+  <!-- Referencing the project (not the package) needs the package's buildTransitive default explicitly. -->
+  <Import Project="..\..\src\BlazorProfiler.WebAssembly\buildTransitive\BlazorProfiler.WebAssembly.props" />
+</Project>

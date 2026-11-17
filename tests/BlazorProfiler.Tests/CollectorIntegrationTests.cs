@@ -280,6 +280,24 @@ public class InstrumentationTests
     }
 
     [Fact]
+    public async Task RecordsDisposalOfComponentsThatImplementIDisposableThemselves()
+    {
+        DisposableChild.Disposals = 0;
+        AsyncDisposableChild.Disposals = 0;
+        await using var f = ProfilerFixture.Create();
+        var (_, id) = await f.Renderer.RenderAsync<DisposalHost>();
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = false });
+
+        // The component's own Dispose runs exactly once, as with ComponentBase, and the disposal is recorded.
+        Assert.Equal(1, DisposableChild.Disposals);
+        Assert.Single(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(DisposableChild).FullName);
+
+        // A component with its own DisposeAsync keeps it (called once); its disposal is not recorded.
+        Assert.Equal(1, AsyncDisposableChild.Disposals);
+        Assert.DoesNotContain(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(AsyncDisposableChild).FullName);
+    }
+
+    [Fact]
     public async Task RecordsComponentTreeAndDisposal()
     {
         await using var f = ProfilerFixture.Create();

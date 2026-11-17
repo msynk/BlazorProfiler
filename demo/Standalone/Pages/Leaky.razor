@@ -1,0 +1,26 @@
+@page "/leaky"
+@implements IDisposable
+@inject AppState State
+<PageTitle>Leaky page — Blazor Profiler</PageTitle>
+<h1>Leaky page</h1>
+<p>Subscribes to a singleton's event and starts a timer, but never unsubscribes or stops it. Navigate away and back a few
+   times: the active timers grow with every visit (rule BP5007), and after a leak check every visited instance is reported
+   as retained, with the event subscription that holds it (rule BP5004).</p>
+<p id="leaky-status">Ticks: @ticks</p>
+@code {
+    private readonly byte[] buffer = new byte[256 * 1024];
+    private Timer? timer;
+    private int ticks;
+
+    protected override void OnInitialized()
+    {
+        buffer[0] = 1;
+        State.Changed += OnChanged;
+        timer = new Timer(_ => InvokeAsync(() => ticks++), null, 500, 500);
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    // The bug: Dispose neither unsubscribes from State.Changed nor stops the timer.
+    public void Dispose() => GC.KeepAlive(timer);
+}

@@ -1,0 +1,16 @@
+@inject HttpClient Http
+<li>@Name — @(stock is null ? "…" : $"{stock} in stock")</li>
+@code {
+    private int? stock;
+
+    [Parameter] public int Id { get; set; }
+
+    [Parameter] public string Name { get; set; } = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // The bug: every row requests its own details instead of the parent loading them once.
+        var details = await Http.GetFromJsonAsync<Product>($"data/products.json?id={Id}");
+        stock = details is null ? 0 : Id * 3;
+    }
+}

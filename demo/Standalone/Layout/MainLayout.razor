@@ -1,0 +1,12 @@
+@inherits LayoutComponentBase
+<BlazorProfilerClient ShowToolbar="true" />
+<header>
+  <strong>Blazor Profiler · standalone WebAssembly sample</strong>
+  <nav aria-label="Pages">
+    <NavLink href="" Match="NavLinkMatch.All" id="nav-home">Home</NavLink>
+    <NavLink href="products" id="nav-products">Products</NavLink>
+    <NavLink href="leaky" id="nav-leaky">Leaky page</NavLink>
+  </nav>
+  <span class="hint">Alt+Shift+P opens the dashboard; Alt+Shift+H highlights DOM updates.</span>
+</header>
+<main>@Body</main>

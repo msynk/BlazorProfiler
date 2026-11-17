@@ -39,6 +39,11 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - Timeline: **compare two windows** of one session (select a range, use it as baseline, compare another).
 - Toolbar: **deep capture** (CPU samples, GC dump, runtime counters as `.nettrace`) in WebAssembly builds with
   `EnableDiagnostics`, recorded as timeline markers.
+- **Disposal of components that implement `IDisposable` themselves is now recorded** (`ProfiledComponentBase` implements
+  `IAsyncDisposable` and calls the component's own `Dispose` from it), so BP5004 and BP1008 cover the components most
+  likely to leak; previously their disposal was invisible.
+- **Standalone WebAssembly sample** (`demo/Standalone`) with end-to-end tests: interactive-router navigations, BP5007,
+  the leak check with retainers, N+1 requests, and the dashboard bridge.
 - End-to-end tests in Firefox and WebKit, and for Blazor Server circuit reconnection; CI installs all three browsers.
 - A two-hour simulated session test: storage, aggregates, analysis, the API, MCP, and export stay bounded and consistent
   after eviction.

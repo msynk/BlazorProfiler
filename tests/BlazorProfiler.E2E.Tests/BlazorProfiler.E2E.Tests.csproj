@@ -5,14 +5,20 @@
   <ItemGroup>
     <!-- Built so the tests can start it; not referenced as a library. -->
     <ProjectReference Include="..\..\demo\Server\BlazorProfiler.Demo.Server.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\demo\Standalone\BlazorProfiler.Demo.Standalone.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <PropertyGroup>
     <SampleDirectory>$(MSBuildThisFileDirectory)..\..\demo\Server\</SampleDirectory>
+    <StandaloneDirectory>$(MSBuildThisFileDirectory)..\..\demo\Standalone\</StandaloneDirectory>
   </PropertyGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>SampleDirectory</_Parameter1>
       <_Parameter2>$(SampleDirectory)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>StandaloneDirectory</_Parameter1>
+      <_Parameter2>$(StandaloneDirectory)</_Parameter2>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>Configuration</_Parameter1>

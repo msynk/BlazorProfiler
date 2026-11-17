@@ -6,7 +6,7 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Signal | Blazor Server / Interactive Server | WebAssembly / Interactive WebAssembly | Static SSR | Collector |
 |---|---|---|---|---|
 | Component creation (type, instance id) | M | M | M | component-activation |
-| Component disposal, lifetime | M (instrumented) | M (instrumented) | — | component-instrumentation |
+| Component disposal, lifetime | M (instrumented, including components with their own `IDisposable`; not those with their own `IAsyncDisposable`) | same | — | component-instrumentation |
 | Parameter updates per component type, duration incl. awaited work | M | M | M | component-metrics |
 | Parameter change detection (unchanged / reference-only / changed) | M (instrumented) | M (instrumented) | M (instrumented) | component-instrumentation |
 | Render (`BuildRenderTree`) duration per instance | M (instrumented) | M (instrumented) | M (instrumented) | component-instrumentation |

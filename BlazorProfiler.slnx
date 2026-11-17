@@ -5,6 +5,7 @@
   <Folder Name="/demo/">
     <Project Path="demo/Client/BlazorProfiler.Demo.Client.csproj" />
     <Project Path="demo/Server/BlazorProfiler.Demo.Server.csproj" />
+    <Project Path="demo/Standalone/BlazorProfiler.Demo.Standalone.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/BlazorProfiler.Cli/BlazorProfiler.Cli.csproj" />

@@ -1,0 +1,6 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #1f2933; }
+header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #d9dee5; flex-wrap: wrap; }
+header nav { display: flex; gap: 12px; }
+header nav a.active { font-weight: 600; }
+.hint { color: #6b7785; font-size: 13px; }
+main { padding: 16px; max-width: 900px; }

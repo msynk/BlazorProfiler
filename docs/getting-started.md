@@ -84,8 +84,10 @@ once per second.
 ```
 
 `ProfiledComponentBase` behaves like `ComponentBase` (same lifecycle order, rendering, and error behavior) and adds
-per-instance data. Components with an explicit `@inherits` keep their base class. If a component implements `IDisposable` or
-`IAsyncDisposable` itself, its own disposal runs as before and the profiler does not record its disposal.
+per-instance data. Components with an explicit `@inherits` keep their base class. A component that implements `IDisposable`
+itself keeps its own `Dispose` (called once, as with `ComponentBase`) and its disposal is recorded too, so leak detection
+covers the components most likely to leak. Only components that implement `IAsyncDisposable` themselves are not recorded
+when disposed (their scope's end is still watched on Blazor Server).
 
 ## Opening the dashboard
 
@@ -243,3 +245,7 @@ Profiler.Mark("Cache warmed");
 
 `demo/Server` contains one demo per problem category in both Interactive Server and Interactive
 WebAssembly modes. Run it with `dotnet run --project demo/Server` and open `http://localhost:5199`.
+
+`demo/Standalone` is a standalone Blazor WebAssembly app (no server project, interactive router): a page with N+1
+requests and a leaky page that subscribes to a singleton's event and starts a timer it never stops. Run it with
+`dotnet run --project demo/Standalone` and press Alt+Shift+P for the dashboard.
