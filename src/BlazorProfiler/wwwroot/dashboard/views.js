@@ -158,7 +158,7 @@ function vitalsTile(vitals) {
   return h('div', { class: 'tile', title: 'Core Web Vitals measured in this browser session. Good: LCP ≤ 2.5 s, CLS ≤ 0.1, INP ≤ 200 ms (INP estimated).' },
     h('div', { class: 'label' }, 'Web vitals'),
     h('div', { class: 'value vitals' }, names.map(n => h('span', { class: `vital ${vitals[n].rating}` }, `${n} ${value(n)}`))),
-    h('div', { class: 'sub' }, names.map(n => `${n} ${vitals[n].rating}`).join(' · ')));
+    h('div', { class: 'sub' }, names.map(n => `${n} ${vitals[n].rating}`).join(' · '), vitals.DOM ? ` · DOM ${fmtNum(vitals.DOM.value)} elements (${vitals.DOM.rating})` : ''));
 }
 
 export function deviceText(startup) {

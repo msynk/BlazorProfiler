@@ -439,14 +439,17 @@ public sealed class BrowserStartupEvent : ProfilerEvent
     public override int EstimateSize() => base.EstimateSize() + 160 + StringSize(NavigationType) + StringSize(RuntimeKind) + (LargestFiles.Count * 96);
 }
 
-/// <summary>A Core Web Vitals value reported by the browser: LCP (ms), CLS (unitless), or INP (ms, estimated).</summary>
+/// <summary>
+/// A page quality value reported by the browser: the Core Web Vitals LCP (ms), CLS (unitless), and INP (ms, estimated), and
+/// the DOM size (<c>DOM</c>: number of elements, reported when it changes by 10% or more).
+/// </summary>
 public sealed class BrowserVitalEvent : ProfilerEvent
 {
     /// <inheritdoc />
     [JsonIgnore]
     public override ProfilerEventKind Kind => ProfilerEventKind.BrowserVital;
 
-    /// <summary>The metric: <c>LCP</c>, <c>CLS</c>, or <c>INP</c>.</summary>
+    /// <summary>The metric: <c>LCP</c>, <c>CLS</c>, <c>INP</c>, or <c>DOM</c>.</summary>
     public string? Name { get; set; }
 
     /// <summary>The value (milliseconds for LCP and INP; unitless for CLS).</summary>
@@ -458,9 +461,13 @@ public sealed class BrowserVitalEvent : ProfilerEvent
     /// <summary>The Web Vitals rating: good, needs-improvement, or poor.</summary>
     public string? Rating => Rate(Name, Value);
 
-    /// <summary>Rates a value with the Web Vitals thresholds (LCP 2.5 s / 4 s, CLS 0.1 / 0.25, INP 200 / 500 ms).</summary>
+    /// <summary>
+    /// Rates a value with the Web Vitals thresholds (LCP 2.5 s / 4 s, CLS 0.1 / 0.25, INP 200 / 500 ms) and Lighthouse's DOM
+    /// size thresholds (800 / 1,400 elements).
+    /// </summary>
     public static string? Rate(string? name, double value) => name switch
     {
+        "DOM" => value <= 800 ? "good" : value <= 1400 ? "needs-improvement" : "poor",
         "LCP" => value <= 2500 ? "good" : value <= 4000 ? "needs-improvement" : "poor",
         "CLS" => value <= 0.1 ? "good" : value <= 0.25 ? "needs-improvement" : "poor",
         "INP" => value <= 200 ? "good" : value <= 500 ? "needs-improvement" : "poor",

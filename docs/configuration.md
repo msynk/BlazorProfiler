@@ -136,7 +136,7 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 `LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000), `ComponentChurnThreshold`
 (10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007),
 `RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005), `ExceptionsPerSecond` (10, BP5006),
-`TimerGrowthPerNavigation` (0.9, BP5007).
+`TimerGrowthPerNavigation` (0.9, BP5007), `DomElementsWarning` (800) and `LargeDomElements` (1,400, BP7009).
 
 ### `Telemetry` (OpenTelemetry)
 

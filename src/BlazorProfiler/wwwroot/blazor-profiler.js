@@ -1361,6 +1361,16 @@ function queueVitals() {
   if (inp != null) {
     queue('INP', Math.round(inp), undefined);
   }
+
+  // DOM size: the number of elements in the document (Lighthouse warns above 800 and fails above 1,400). Reported when it
+  // changes by 10% or more, so a list that grows is followed without a report on every flush.
+  if (typeof document !== 'undefined' && document.getElementsByTagName) {
+    const elements = document.getElementsByTagName('*').length;
+    const previous = state.vitals.sent.DOM;
+    if (previous === undefined || Math.abs(elements - previous) >= Math.max(50, previous * 0.1)) {
+      queue('DOM', elements, undefined);
+    }
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ DevTools tracks

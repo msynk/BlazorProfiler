@@ -652,6 +652,15 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
             var events = (await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 })).GetProperty("page").GetProperty("events").EnumerateArray();
             return events.Any(e => e.Str("type") == "componentRender" && e.TryGetProperty("allocatedBytes", out var bytes) && bytes.GetInt64() > 0);
         }, 30_000, "No render reported allocated bytes in WebAssembly.");
+
+        // The 1,000-row list also makes the DOM excessive (BP7009).
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var report = await BridgeAsync(page, new { op = "findings", sessionId });
+            return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP7009");
+        }, 20_000, "BP7009 was not reported for the 1,000-row list.");
         await page.CloseAsync();
     }
 

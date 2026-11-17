@@ -21,7 +21,7 @@ public static class DemoCatalog
     public static readonly (string Key, string Title, string Rules)[] All =
     [
         ("render-storm", "Render storm", "BP1001, BP1003, BP1004, BP6004"),
-        ("large-list", "Large list", "BP1002, BP1006, BP1007"),
+        ("large-list", "Large list", "BP1002, BP1006, BP1007, BP7009"),
         ("slow-handler", "Slow handlers", "BP1005, BP2001"),
         ("search", "Search as you type", "BP2002"),
         ("requests", "Request patterns", "BP2003, BP3001-BP3003, BP3006, BP3007"),

@@ -393,6 +393,15 @@ JavaScript interop calls to the interaction; content painted after an `HttpClien
 fetch callbacks. Blazor Server reports nothing, because updates arrive over the circuit. BP2001 and BP6001 cover those
 cases. Demo: *Interop chatter* → *Slow JavaScript* in WebAssembly.
 
+<a id="bp7009"></a>
+### BP7009 — Excessive DOM size
+
+The number of elements in the document (sampled with every browser batch and reported when it changes by 10% or more)
+reached `DomElementsWarning` (800, Low severity) or `LargeDomElements` (1,400, scaled from Medium), Lighthouse's thresholds.
+The evidence lists component types created in large numbers, the usual source of large Blazor DOMs. Recommends
+`<Virtualize>`, paging, rendering hidden sections with `@if` instead of hiding them with CSS, and flatter row markup.
+Demo: *Large list*.
+
 ## Database
 
 Database rules use commands captured from Entity Framework Core's `DiagnosticListener` (`Collectors.Database`). Command

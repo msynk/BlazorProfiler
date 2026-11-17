@@ -378,7 +378,13 @@ public sealed class ProfilerMcpServer
 
         foreach (var (name, vital) in summary.Vitals.OrderBy(v => v.Key, StringComparer.Ordinal))
         {
-            Line(sb, name, $"{(name == "CLS" ? vital.Value.ToString("0.###", CultureInfo.InvariantCulture) : Ms(vital.Value))} ({vital.Rating})");
+            var text = name switch
+            {
+                "CLS" => vital.Value.ToString("0.###", CultureInfo.InvariantCulture),
+                "DOM" => Num(vital.Value) + " elements (largest)",
+                _ => Ms(vital.Value),
+            };
+            Line(sb, name, $"{text} ({vital.Rating})");
         }
 
         if (summary.Startup is { } startup)

@@ -469,7 +469,7 @@ export function describeShort(e) {
     case 'browserFrustration': return `${e.signal === 'RageClick' ? `Rage click ×${e.clickCount}` : 'Dead click'} on ${e.target || e.targetTag || 'element'}`;
     case 'browserResource': return `${e.initiatorType || 'resource'} ${e.url}`;
     case 'browserStartup': return `Startup: interactive at ${Math.round(e.interactiveMs)} ms`;
-    case 'browserVital': return `${e.name} ${e.name === 'CLS' ? e.value : `${Math.round(e.value)} ms`} (${e.rating || '?'})`;
+    case 'browserVital': return `${e.name} ${e.name === 'CLS' ? e.value : e.name === 'DOM' ? `${Math.round(e.value)} elements` : `${Math.round(e.value)} ms`} (${e.rating || '?'})`;
     case 'operation': return e.name || 'Operation';
     case 'marker': return e.name || e.markerType || 'Marker';
     default: return e.type;

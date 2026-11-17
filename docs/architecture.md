@@ -18,7 +18,7 @@
 
 | Layer | Project | Key types |
 |---|---|---|
-| Event model | Core | `ProfilerEvent` and 20 concrete event types, `CorrelationKind`, `ValueQuality` |
+| Event model | Core | `ProfilerEvent` and 25 concrete event types, `CorrelationKind`, `ValueQuality` |
 | Collection | Core (abstractions), Blazor, Server | `IProfilerCollector`, `ProfilerCollectorBase`, collectors listed below |
 | Correlation | Core, Server | `ProfilerContext` / `OperationFrame` (ambient `AsyncLocal`), `IProfilerCorrelationProvider`, `CircuitCorrelationProvider` |
 | Processing | Core | `ProfilerHost` (queue, consumer, sampling, health), `IProfilerEventProcessor`, `IProfilerRedactionPolicy` |
@@ -55,7 +55,7 @@ Values that are estimates carry a `ValueQuality` (for example `HttpRequestEvent.
 | component-instrumentation | `ProfiledComponentBase` (opt-in per component) | on when components opt in |
 | http | `DelegatingHandler` added to every `IHttpClientFactory` client | on |
 | js-interop | Decorating `IJSRuntime` (WebAssembly) / `IProfiledJSRuntime` (server opt-in) | on |
-| runtime | Periodic sampling of public GC/runtime APIs | on |
+| runtime | Periodic sampling of public GC/runtime APIs, `Timer.ActiveCount`, and first-chance exception counts by type | on |
 | browser | `PerformanceObserver` in a JS module started by `BlazorProfilerClient` | on when the component is rendered |
 | circuits | `CircuitHandler` + `IHubFilter` (also applies simulated latency) | on (server) |
 | database | `DiagnosticListener` subscription to `Microsoft.EntityFrameworkCore` (no EF reference) | on |

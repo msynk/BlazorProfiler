@@ -394,3 +394,63 @@ public sealed class LateInteractionResultRule : DiagnosticRule
         }
     }
 }
+
+/// <summary>BP7009: excessive DOM size.</summary>
+public sealed class ExcessiveDomSizeRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP7009",
+        Title = "Excessive DOM size",
+        Category = DiagnosticCategory.Browser,
+        Description = "Reports pages whose document reached DomElementsWarning (Low severity) or LargeDomElements elements or more, with the component types created in large numbers that likely produced them.",
+        RequiredSignals = [ProfilerEventKind.BrowserVital],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var threshold = context.Options.LargeDomElements;
+        var samples = context.OfType<BrowserVitalEvent>().Where(v => v.Name == "DOM").ToList();
+        if (samples.Count == 0)
+        {
+            yield break;
+        }
+
+        var largest = samples.MaxBy(v => v.Value)!;
+        if (largest.Value < context.Options.DomElementsWarning)
+        {
+            yield break;
+        }
+
+        var severity = largest.Value < threshold ? DiagnosticSeverity.Low : (DiagnosticSeverity)Math.Max((int)DiagnosticSeverity.Medium, (int)Scale(largest.Value, threshold / 2.0));
+
+        // Components created in large numbers are the usual source of large Blazor DOMs (rows and cells of lists and grids).
+        var many = context.Summary.Components.Where(c => c.Created >= 50).OrderByDescending(c => c.Created).Take(3).ToList();
+        var server = context.Events.Any(e => e.CircuitId is not null);
+        yield return Create(
+            $"The page reached {FormatNumber(largest.Value)} DOM elements",
+            severity,
+            DiagnosticConfidence.High,
+            $"The document grew to {FormatNumber(largest.Value)} elements (Lighthouse warns from {FormatNumber(context.Options.DomElementsWarning)} and fails from {FormatNumber(threshold)}).{(many.Count > 0 ? $" Component types created in large numbers: {string.Join(", ", many.Select(c => $"{ShortType(c.ComponentType)} ×{FormatNumber(c.Created)}"))}." : string.Empty)}",
+            "A large DOM makes every style recalculation and layout slower, raises memory use, and makes interactions slower to paint. In Blazor it also means more render tree frames to diff and, " +
+            (server ? "on Blazor Server, larger initial render batches sent over the circuit." : "in WebAssembly, more DOM patching on the UI thread."),
+            "Render only what is visible: use <Virtualize> for long lists and grids, paginate, render collapsed sections (tabs, accordions, dialogs) conditionally with @if instead of hiding them with CSS, and simplify per-row markup (fewer wrapper elements).",
+            [
+                Evidence("Largest DOM size", FormatNumber(largest.Value) + " elements"),
+                Evidence("Thresholds", $"{FormatNumber(context.Options.DomElementsWarning)} (warning) / {FormatNumber(threshold)} (excessive) elements"),
+                many.Count > 0
+                    ? Evidence("Component types created in large numbers", string.Join("; ", many.Select(c => $"{ShortType(c.ComponentType)} ×{FormatNumber(c.Created)}")), ValueQuality.Inferred)
+                    : Evidence("Component types created in large numbers", "none (the elements come from markup)", ValueQuality.Measured),
+            ],
+            new ImpactEstimate { Occurrences = largest.Value, Method = "Elements in the document (document.getElementsByTagName('*')), the largest value reported.", Quality = ValueQuality.Measured },
+            subject: "dom-size",
+            caveats:
+            [
+                "Lighthouse's thresholds (800 warn, 1,400 fail) are guidelines; very simple elements cost less than deep, styled trees.",
+                "The DOM size is sampled every few seconds and reported when it changes by 10% or more, so short peaks can be missed.",
+            ],
+            related: samples.OrderByDescending(v => v.Value).Take(5));
+    }
+}

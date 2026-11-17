@@ -227,6 +227,7 @@ public static class BuiltInRules
         new ForcedLayoutRule(),
         new FrustrationSignalRule(),
         new LateInteractionResultRule(),
+        new ExcessiveDomSizeRule(),
         new NPlusOneQueriesRule(),
         new DuplicateQueriesRule(),
         new SlowQueryRule(),

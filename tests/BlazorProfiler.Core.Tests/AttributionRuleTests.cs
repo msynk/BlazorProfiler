@@ -64,6 +64,7 @@ public class AttributionRuleTests
         Assert.Contains("BP5005", ids);
         Assert.Contains("BP5006", ids);
         Assert.Contains("BP5007", ids);
+        Assert.Contains("BP7009", ids);
     }
 
     [Fact]
@@ -403,6 +404,40 @@ public class AttributionRuleTests
         }
 
         Assert.Empty(Findings(Analyze(circuits), "BP5007"));
+    }
+
+    [Fact]
+    public void BP7009_ReportsExcessiveDomSizeAndBP7005IgnoresIt()
+    {
+        var events = new List<ProfilerEvent>
+        {
+            new BrowserVitalEvent { Name = "DOM", Value = 600, Timestamp = Ev.T(0) },
+            new BrowserVitalEvent { Name = "DOM", Value = 5_200, Timestamp = Ev.T(1_000) },
+            new BrowserVitalEvent { Name = "DOM", Value = 900, Timestamp = Ev.T(2_000) },
+        };
+        for (var i = 0; i < 60; i++)
+        {
+            events.Add(new ComponentCreatedEvent { ComponentType = "App.GridRow", ComponentInstanceId = i + 1, Timestamp = Ev.T(900), Source = InstrumentationSource.ComponentActivator });
+        }
+
+        var (host, session, _) = TestHost.WithSession();
+        foreach (var e in events)
+        {
+            host.Emit(e);
+        }
+
+        var report = host.Diagnostics.Analyze(session);
+        var finding = Assert.Single(report.Findings, f => f.RuleId == "BP7009");
+        Assert.Contains("5,200", finding.Title, StringComparison.Ordinal);
+        Assert.Contains("GridRow ×60", finding.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain(report.Findings, f => f.RuleId == "BP7005");
+
+        // The summary keeps the largest DOM size, not the latest.
+        var dom = session.GetSummary().Vitals["DOM"];
+        Assert.Equal(5_200, dom.Value);
+        Assert.Equal("poor", dom.Rating);
+        Assert.Equal(DiagnosticSeverity.Low, Assert.Single(Findings(Analyze([new BrowserVitalEvent { Name = "DOM", Value = 1_000, Timestamp = Ev.T(0) }]), "BP7009")).Severity);
+        Assert.Empty(Findings(Analyze([new BrowserVitalEvent { Name = "DOM", Value = 700, Timestamp = Ev.T(0) }]), "BP7009"));
     }
 
     [Fact]

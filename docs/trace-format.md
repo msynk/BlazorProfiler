@@ -73,7 +73,7 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `componentRetained` (schema 2) | component fields, `reason` (`Disposed`, `ScopeEnded`), `releasedTimestamp`, `survivedCollections`, `forcedCollection` |
 | `dbCommand` (schema 2) | `commandText` (normalized: literals replaced with `?`), `commandHash`, `parameterHash` (hash of text and argument values; values are never stored), `parameterCount`, `executeMethod` (`Reader`, `NonQuery`, `Scalar`), `isAsync`, `rowsRead`, `contextType`, `contextInstanceId`, `provider`, `originComponentType`, `originComponentInstanceId`, `originLifecycleMethod`, `onRendererThread`, `source` |
 | `browserStartup` (schema 2) | `navigationType`, `runtimeKind`, `timeToFirstByteMs`, `firstContentfulPaintMs`, `domContentLoadedMs`, `loadMs`, `interactiveMs`, `frameworkFiles`, `frameworkTransferBytes`, `frameworkDecodedBytes`, `frameworkCachedFiles`, `frameworkUncompressedFiles`, `frameworkDownloadMs`, `largestFiles` (`name`, `transferSize`, `decodedSize`, `durationMs`, `cached`); schema 3: `hardwareConcurrency`, `deviceMemoryGb`, `cpuPerformance`, `effectiveConnectionType` |
-| `browserVital` (schema 2) | `name` (`LCP`, `CLS`, `INP`), `value`, `targetTag`, `rating` (computed; ignored on import) |
+| `browserVital` (schema 2) | `name` (`LCP`, `CLS`, `INP`; schema 3: `DOM`, the number of elements), `value`, `targetTag`, `rating` (computed; ignored on import) |
 | `browserFrustration` (schema 3) | `signal` (`RageClick`, `DeadClick`), `clickCount`, `targetTag`, `target` (tag, id, and up to two classes; never text) |
 
 `componentRetained` gained `retainedBy` in schema 3: short descriptions of likely retainers (at most 16).

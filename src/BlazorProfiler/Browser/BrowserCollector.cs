@@ -373,7 +373,7 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                         Cached = f.C,
                     }).ToList(),
                 },
-                "v" when entry.N is "LCP" or "CLS" or "INP" => new BrowserVitalEvent
+                "v" when entry.N is "LCP" or "CLS" or "INP" or "DOM" => new BrowserVitalEvent
                 {
                     Name = entry.N,
                     Value = Sanitize(entry.V),

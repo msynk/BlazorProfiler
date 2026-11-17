@@ -42,6 +42,8 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - **Disposal of components that implement `IDisposable` themselves is now recorded** (`ProfiledComponentBase` implements
   `IAsyncDisposable` and calls the component's own `Dispose` from it), so BP5004 and BP1008 cover the components most
   likely to leak; previously their disposal was invisible.
+- **DOM size** (sampled number of elements, reported as the `DOM` browser value) and rule **BP7009** (excessive DOM size,
+  Lighthouse thresholds).
 - **Standalone WebAssembly sample** (`demo/Standalone`) with end-to-end tests: interactive-router navigations, BP5007,
   the leak check with retainers, N+1 requests, and the dashboard bridge.
 - End-to-end tests in Firefox and WebKit, and for Blazor Server circuit reconnection; CI installs all three browsers.

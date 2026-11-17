@@ -147,7 +147,7 @@ public sealed class CoreWebVitalsRule : DiagnosticRule
     /// <inheritdoc />
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
-        foreach (var group in context.OfType<BrowserVitalEvent>().Where(v => v.Name is not null).GroupBy(v => v.Name!))
+        foreach (var group in context.OfType<BrowserVitalEvent>().Where(v => v.Name is "LCP" or "CLS" or "INP").GroupBy(v => v.Name!))
         {
             var worst = group.MaxBy(v => v.Value)!;
             if (worst.Rating is null or "good")

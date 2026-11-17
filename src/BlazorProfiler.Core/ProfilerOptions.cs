@@ -571,6 +571,15 @@ public sealed class DiagnosticOptions
     /// </summary>
     public int ComponentChurnThreshold { get; set; } = 10;
 
+    /// <summary>
+    /// BP7009: elements in the document considered an excessive DOM size (Lighthouse's failing threshold). From
+    /// <see cref="DomElementsWarning"/> the rule reports at Low severity.
+    /// </summary>
+    public int LargeDomElements { get; set; } = 1_400;
+
+    /// <summary>BP7009: elements in the document from which the DOM size is reported at Low severity (Lighthouse's warning).</summary>
+    public int DomElementsWarning { get; set; } = 800;
+
     /// <summary>BP5006: exceptions per second (in one runtime sample) considered frequent.</summary>
     public double ExceptionsPerSecond { get; set; } = 10;
 

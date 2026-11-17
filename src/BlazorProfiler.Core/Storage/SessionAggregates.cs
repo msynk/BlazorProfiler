@@ -506,7 +506,12 @@ public sealed class SessionAggregates
                 break;
 
             case BrowserVitalEvent vital when vital.Name is not null:
-                _vitals[vital.Name] = vital;
+                // Vitals keep the latest value (they are cumulative); the DOM size keeps the largest seen.
+                if (vital.Name != "DOM" || !_vitals.TryGetValue("DOM", out var largest) || vital.Value > largest.Value)
+                {
+                    _vitals[vital.Name] = vital;
+                }
+
                 break;
 
             case BrowserLongTaskEvent longTask:

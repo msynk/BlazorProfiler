@@ -43,6 +43,7 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Browser conditions: cores, device memory, CPU tier, connection type | M (browser; memory and tier Chromium only) | M (browser) | — | browser |
 | Application name, version, build configuration, OS, processor count (trace metadata) | M | M | M | export |
 | Core Web Vitals: LCP, CLS, INP (E) | M (browser) | M (browser) | — | browser |
+| DOM size (elements in the document, sampled) | M (browser) | M (browser) | — | browser |
 | DOM updates per second, update highlighting (in-page) | M (browser only) | M (browser only) | — | toolbar (no collector) |
 | Long animation frame script attribution (invoker, source, function, forced layout, pause) | M (Chromium) | M (Chromium) | — | browser |
 | Forced layout attributed to a JS interop call | I (temporal, when the browser attributes it to Blazor) | I (same) | — | browser + js-interop |
