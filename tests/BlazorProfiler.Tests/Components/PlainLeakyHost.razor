@@ -1,0 +1,9 @@
+@* An instrumented parent of a plain ComponentBase child that leaks itself: the parent records the child's disposal. *@
+@inherits ProfiledComponentBase
+@if (Show)
+{
+    <PlainLeaky />
+}
+@code {
+    [Parameter] public bool Show { get; set; } = true;
+}

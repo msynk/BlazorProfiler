@@ -70,6 +70,27 @@ public class RetentionTests
     }
 
     [Fact]
+    public async Task ReportsLeakingChildrenThatAreNotInstrumentedThroughTheirInstrumentedParent()
+    {
+        PlainLeaky.Holder.Clear();
+        await using var f = CreateFixture();
+        var id = await RenderAndForget<PlainLeakyHost>(f.Renderer);
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = false });
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = true });
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = false });
+
+        await RunLeakCheck(f);
+
+        var retained = f.All<ComponentRetainedEvent>().Where(e => e.ComponentType == typeof(PlainLeaky).FullName).ToList();
+        Assert.Equal(2, retained.Count);
+        Assert.All(retained, e => Assert.Equal(RetentionReason.Disposed, e.Reason));
+        Assert.All(retained, e => Assert.True(e.ComponentInstanceId > 0));
+        Assert.Equal(2, f.All<ComponentDisposedEvent>().Count(e => e.ComponentType == typeof(PlainLeaky).FullName));
+        Assert.Contains(f.Host.Diagnostics.Analyze(f.Session).Findings, x => x.RuleId == "BP5004" && x.ComponentType == typeof(PlainLeaky).FullName);
+        PlainLeaky.Holder.Clear();
+    }
+
+    [Fact]
     public async Task ReportsEachInstanceOnlyOnce()
     {
         LeakyChild.Holder.Clear();

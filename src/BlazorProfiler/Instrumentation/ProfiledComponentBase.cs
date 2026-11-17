@@ -60,6 +60,13 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
     private int _parameterCount;
     private RenderTreeBuilder? _lastBuilder;
     private ulong _childSetHash;
+
+    // Children that do not record their own disposal (components that are not ProfiledComponentBase, or that implement
+    // IAsyncDisposable themselves), held weakly: when they leave this component's render tree, or this component is
+    // disposed, the renderer disposes them, and this component records that and hands them to retention tracking.
+    private Dictionary<long, (string Type, WeakReference Instance)>? _untrackedChildren;
+    private const int MaxUntrackedChildren = 2_000;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> s_ownsAsyncDisposal = new();
     private bool _disposed;
 
     /// <summary>Creates the component.</summary>
@@ -358,6 +365,17 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
                 retention.Watch(this, _typeName, _instanceId, RetentionReason.Disposed, ComponentRetentionCollector.CurrentCircuitId(instrumentation.Profiler));
             }
         }
+
+        // The renderer disposes this component's children with it.
+        if (instrumentation is not null && instrumentation.IsActive && _untrackedChildren is { Count: > 0 } remaining)
+        {
+            foreach (var (id, child) in remaining)
+            {
+                ReportReleasedChild(instrumentation, id, child.Type, child.Instance);
+            }
+        }
+
+        _untrackedChildren = null;
 
         // Release references held only for instrumentation.
         _lastBuilder = null;
@@ -916,6 +934,95 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
         }
     }
 
+    /// <summary>
+    /// Updates the weakly held children that do not record their own disposal and reports those that left the render tree
+    /// (the renderer disposed them in the batch that just completed).
+    /// </summary>
+    private void TrackUntrackedChildren(ComponentInstrumentation instrumentation, Microsoft.AspNetCore.Components.RenderTree.ArrayRange<Microsoft.AspNetCore.Components.RenderTree.RenderTreeFrame> frames)
+    {
+        Dictionary<long, (string Type, WeakReference Instance)>? next = null;
+        for (var i = 0; i < frames.Count; i++)
+        {
+            ref var frame = ref frames.Array[i];
+            if (frame.FrameType != Microsoft.AspNetCore.Components.RenderTree.RenderTreeFrameType.Component || frame.Component is not { } child || RecordsOwnDisposal(child))
+            {
+                continue;
+            }
+
+            if (!instrumentation.Registry.TryGet(child, out var id))
+            {
+                continue;
+            }
+
+            next ??= [];
+            if (next.Count >= MaxUntrackedChildren)
+            {
+                break;
+            }
+
+            next[id] = _untrackedChildren is not null && _untrackedChildren.TryGetValue(id, out var known)
+                ? known
+                : (instrumentation.Registry.GetTypeName(child.GetType()), new WeakReference(child));
+        }
+
+        if (_untrackedChildren is { Count: > 0 } previous)
+        {
+            foreach (var (id, child) in previous)
+            {
+                if (next is null || !next.ContainsKey(id))
+                {
+                    ReportReleasedChild(instrumentation, id, child.Type, child.Instance);
+                }
+            }
+        }
+
+        _untrackedChildren = next;
+    }
+
+    private void ReportReleasedChild(ComponentInstrumentation instrumentation, long id, string type, WeakReference instance)
+    {
+        var child = instance.Target;
+        if (child is null)
+        {
+            return;
+        }
+
+        var now = instrumentation.Profiler.Clock.GetTimestamp();
+        var created = instrumentation.Registry.GetCreatedTimestamp(child);
+        instrumentation.Collector.Publish(new ComponentDisposedEvent
+        {
+            ComponentType = type,
+            ComponentInstanceId = id,
+            Timestamp = now,
+            LifetimeTicks = created > 0 ? now - created : 0,
+            Source = InstrumentationSource.ComponentInstrumentation,
+        });
+
+        if (instrumentation.Retention is { IsCollecting: true } retention)
+        {
+            retention.Watch(child, type, id, RetentionReason.Disposed, ComponentRetentionCollector.CurrentCircuitId(instrumentation.Profiler));
+        }
+    }
+
+    /// <summary>
+    /// Whether a component records its own disposal: a ProfiledComponentBase that does not implement IAsyncDisposable
+    /// itself (the renderer calls the base class's DisposeAsync, which records it).
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2070", Justification = "Blazor preserves component types; when the interface map cannot be read, the component is treated as recording its own disposal, which only loses detail.")]
+    private static bool RecordsOwnDisposal(object component) =>
+        component is ProfiledComponentBase && !s_ownsAsyncDisposal.GetOrAdd(component.GetType(), static type =>
+        {
+            try
+            {
+                var map = type.GetInterfaceMap(typeof(IAsyncDisposable));
+                return map.TargetMethods.Length > 0 && map.TargetMethods[0].DeclaringType != typeof(ProfiledComponentBase);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        });
+
     private void TrackChildren(ComponentInstrumentation instrumentation)
     {
         var builder = _lastBuilder;
@@ -956,6 +1063,7 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
             }
 
             _childSetHash = hash;
+            TrackUntrackedChildren(instrumentation, frames);
             instrumentation.Collector.Publish(new ComponentChildrenEvent
             {
                 ComponentType = _typeName,

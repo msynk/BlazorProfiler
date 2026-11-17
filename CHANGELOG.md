@@ -41,7 +41,9 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   `EnableDiagnostics`, recorded as timeline markers.
 - **Disposal of components that implement `IDisposable` themselves is now recorded** (`ProfiledComponentBase` implements
   `IAsyncDisposable` and calls the component's own `Dispose` from it), so BP5004 and BP1008 cover the components most
-  likely to leak; previously their disposal was invisible.
+  likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
+  that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
+  leave its render tree or the parent is disposed.
 - **DOM size** (sampled number of elements, reported as the `DOM` browser value) and rule **BP7009** (excessive DOM size,
   Lighthouse thresholds).
 - **Standalone WebAssembly sample** (`demo/Standalone`) with end-to-end tests: interactive-router navigations, BP5007,

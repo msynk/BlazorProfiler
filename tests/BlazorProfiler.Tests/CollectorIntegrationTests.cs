@@ -292,9 +292,34 @@ public class InstrumentationTests
         Assert.Equal(1, DisposableChild.Disposals);
         Assert.Single(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(DisposableChild).FullName);
 
-        // A component with its own DisposeAsync keeps it (called once); its disposal is not recorded.
+        // A component with its own DisposeAsync keeps it (called once); the instrumented parent records its disposal, as it
+        // does for children that are not instrumented at all. Each disposal is recorded exactly once.
         Assert.Equal(1, AsyncDisposableChild.Disposals);
-        Assert.DoesNotContain(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(AsyncDisposableChild).FullName);
+        Assert.Single(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(AsyncDisposableChild).FullName);
+        var plain = Assert.Single(f.All<ComponentDisposedEvent>(), e => e.ComponentType == typeof(PlainChild).FullName);
+        Assert.True(plain.ComponentInstanceId > 0);
+        Assert.True(plain.LifetimeTicks >= 0);
+
+        // Showing and hiding again records the new instances only.
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = true });
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = false });
+        Assert.Equal(2, f.All<ComponentDisposedEvent>().Count(e => e.ComponentType == typeof(AsyncDisposableChild).FullName));
+        Assert.Equal(2, f.All<ComponentDisposedEvent>().Count(e => e.ComponentType == typeof(PlainChild).FullName));
+        Assert.Equal(2, f.All<ComponentDisposedEvent>().Count(e => e.ComponentType == typeof(DisposableChild).FullName));
+        Assert.Equal(2, f.All<ComponentDisposedEvent>().Where(e => e.ComponentType == typeof(PlainChild).FullName).Select(e => e.ComponentInstanceId).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task RecordsDisposalOfChildrenRemovedWithTheirInstrumentedParent()
+    {
+        await using var f = ProfilerFixture.Create();
+        var (_, id) = await f.Renderer.RenderAsync<DisposalOuterHost>();
+        await f.Renderer.SetParametersAsync(id, new() { ["Show"] = false });
+
+        foreach (var type in new[] { typeof(DisposalHost), typeof(DisposableChild), typeof(AsyncDisposableChild), typeof(PlainChild) })
+        {
+            Assert.Single(f.All<ComponentDisposedEvent>(), e => e.ComponentType == type.FullName);
+        }
     }
 
     [Fact]

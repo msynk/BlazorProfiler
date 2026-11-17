@@ -11,7 +11,7 @@ Failed) with the reason and last error, plus dropped and sampled event counts.
 | No render batches or handlers in WebAssembly | Make sure `builder.AddBlazorProfiler()` runs on the `WebAssemblyHostBuilder` (it registers component metrics and tracing, which the WebAssembly host does not do by default). |
 | Handlers are not grouped into interactions | The `component-activities` collector must be running. Interaction context comes from the framework's `HandleEvent` activity (.NET 10+). |
 | No per-component renders, lifecycle times, or tree | Components must inherit `ProfiledComponentBase` (`@inherits` in `_Imports.razor`). Components with their own `@inherits` keep their base class. |
-| A component's disposal is not recorded | It implements `IDisposable`/`IAsyncDisposable` itself; its own disposal runs unchanged, and the profiler does not intercept it. |
+| A component's disposal is not recorded | It implements `IAsyncDisposable` itself or is not instrumented, and its parent is not instrumented either. Disposal is recorded by the component itself (`ProfiledComponentBase`, including with its own `IDisposable`) or by an instrumented parent (any child). Instrument the parent, or keep `TrackComponentTree` enabled (the parent learns its children from the component tree). |
 | HTTP requests missing | Only `HttpClient`s from `IHttpClientFactory` are instrumented automatically. For `new HttpClient(...)` (for example the WebAssembly template), construct it with `ProfilerHttpMessageHandler.Create(serviceProvider)`. |
 | JS interop missing on the server | Inject `IProfiledJSRuntime` in the components you want to profile. Replacing `IJSRuntime` is not possible on the server. |
 | Calls on imported JS modules missing | Enable `Collectors.JSObjectReferences`. |

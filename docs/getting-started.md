@@ -86,8 +86,11 @@ once per second.
 `ProfiledComponentBase` behaves like `ComponentBase` (same lifecycle order, rendering, and error behavior) and adds
 per-instance data. Components with an explicit `@inherits` keep their base class. A component that implements `IDisposable`
 itself keeps its own `Dispose` (called once, as with `ComponentBase`) and its disposal is recorded too, so leak detection
-covers the components most likely to leak. Only components that implement `IAsyncDisposable` themselves are not recorded
-when disposed (their scope's end is still watched on Blazor Server).
+covers the components most likely to leak. Components that implement `IAsyncDisposable` themselves, and components that
+are not instrumented at all (third-party components, `@inherits` other bases), are recorded by their instrumented parent:
+when they leave its render tree, or the parent is disposed, the parent records the disposal and hands them to the leak
+check. Only such components whose parent is not instrumented either go unrecorded (their scope's end is still watched on
+Blazor Server).
 
 ## Opening the dashboard
 

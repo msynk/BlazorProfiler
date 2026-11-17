@@ -1,0 +1,9 @@
+@* Removes a whole DisposalHost: its children are disposed with it. *@
+@inherits ProfiledComponentBase
+@if (Show)
+{
+    <DisposalHost />
+}
+@code {
+    [Parameter] public bool Show { get; set; } = true;
+}

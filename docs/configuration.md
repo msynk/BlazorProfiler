@@ -127,7 +127,7 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `TrackParameterChanges` | on | Compare incoming parameters with the previous set (values are never stored in events). |
 | `TrackRenderOutput` | off | Hash render output to detect identical renders (cost proportional to tree size). |
 | `TrackRenderAllocations` | on | Bytes allocated by each render (`GC.GetAllocatedBytesForCurrentThread` around `BuildRenderTree`; a few nanoseconds, no allocation). |
-| `TrackComponentTree` | on | Discover children after each render. |
+| `TrackComponentTree` | on | Discover children after each render; also lets an instrumented parent record the disposal of children that do not record their own. |
 
 ### `Diagnostics`
 
