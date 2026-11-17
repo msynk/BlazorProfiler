@@ -232,7 +232,7 @@ public class BrowserIngestionTests
         var origin = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 5000;
         var json = $$"""
             [
-              {"k":"s","n":"navigate","t":{{origin}},"d":4200,"ttfb":120,"fcp":600,"dcl":700,"ld":900,"ia":4200,"fc":40,"ft":7340032,"fd":20971520,"fca":2,"fu":3,"fdl":3100,"rk":"webapp-webassembly",
+              {"k":"s","n":"navigate","t":{{origin}},"d":4200,"ttfb":120,"fcp":600,"dcl":700,"ld":900,"ia":4200,"fc":40,"ft":7340032,"fd":20971520,"fca":2,"fu":3,"fdl":3100,"rk":"webapp-webassembly","hc":8,"dm":4,"cpu":3,"ect":"4g",
                "lf":[{"n":"dotnet.native.wasm","ts":3000000,"ds":9000000,"d":1500,"c":false},{"n":"App.wasm","ts":0,"ds":200000,"d":2,"c":true}]},
               {"k":"v","n":"LCP","t":{{origin + 4300}},"d":0,"v":3100,"tag":"img"},
               {"k":"v","n":"CLS","t":{{origin + 4300}},"d":0,"v":0.31,"tag":"div"},
@@ -251,6 +251,10 @@ public class BrowserIngestionTests
 
         var summary = f.Session.GetSummary();
         Assert.Equal(4200, summary.Startup!.InteractiveMs);
+        Assert.Equal(8, summary.Startup.HardwareConcurrency);
+        Assert.Equal(4, summary.Startup.DeviceMemoryGb);
+        Assert.Equal(3, summary.Startup.CpuPerformance);
+        Assert.Equal("4g", summary.Startup.EffectiveConnectionType);
         Assert.Equal("needs-improvement", summary.Vitals["LCP"].Rating);
         Assert.Equal("poor", summary.Vitals["CLS"].Rating);
         Assert.False(summary.Vitals.ContainsKey("FID"));

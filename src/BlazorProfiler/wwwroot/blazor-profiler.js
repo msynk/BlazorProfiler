@@ -1275,6 +1275,20 @@ function collectStartup(interactiveAt) {
     fdl: resources.length ? Math.max(0, last - first) : 0,
     rk: kind,
     lf: largest,
+    ...deviceInfo(),
+  };
+}
+
+// The conditions the page ran under, so sessions recorded on different machines or networks are not compared blindly.
+// Coarse values only (core count, memory bucket, CPU tier, connection class); nothing identifies the user.
+function deviceInfo() {
+  const nav = typeof navigator === 'undefined' ? {} : navigator;
+  const connection = nav.connection || {};
+  return {
+    hc: typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : undefined,
+    dm: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : undefined,
+    cpu: typeof nav.cpuPerformance === 'number' ? nav.cpuPerformance : undefined,
+    ect: typeof connection.effectiveType === 'string' ? cut(connection.effectiveType, 16) : undefined,
   };
 }
 

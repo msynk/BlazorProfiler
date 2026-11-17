@@ -98,6 +98,18 @@ public sealed class BrowserEntry
     /// <summary>Web vital: value.</summary>
     public double V { get; set; }
 
+    /// <summary>Startup: logical processors.</summary>
+    public int? Hc { get; set; }
+
+    /// <summary>Startup: device memory (GB).</summary>
+    public double? Dm { get; set; }
+
+    /// <summary>Startup: CPU performance tier.</summary>
+    public int? Cpu { get; set; }
+
+    /// <summary>Startup: effective connection type.</summary>
+    public string? Ect { get; set; }
+
     /// <summary>Long animation frames: forced style and layout (ms), summed over the frame's scripts.</summary>
     public double Fl { get; set; }
 
@@ -344,6 +356,10 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     FrameworkCachedFiles = Math.Max(0, entry.Fca),
                     FrameworkUncompressedFiles = Math.Max(0, entry.Fu),
                     FrameworkDownloadMs = Sanitize(entry.Fdl),
+                    HardwareConcurrency = entry.Hc is > 0 and <= 4096 ? entry.Hc : null,
+                    DeviceMemoryGb = entry.Dm is { } memory && double.IsFinite(memory) && memory > 0 && memory <= 1_048_576 ? memory : null,
+                    CpuPerformance = entry.Cpu is >= 0 and <= 16 ? entry.Cpu : null,
+                    EffectiveConnectionType = Truncate(entry.Ect, 16),
                     LargestFiles = (entry.Lf ?? []).Where(f => f is not null).Take(MaxStartupFiles).Select(f => new StartupResource
                     {
                         Name = Truncate(f.N, 128),

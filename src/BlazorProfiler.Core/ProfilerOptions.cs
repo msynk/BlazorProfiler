@@ -383,6 +383,13 @@ public sealed class InstrumentationOptions
     /// </summary>
     public bool TrackRenderOutput { get; set; }
 
+    /// <summary>
+    /// Measures the bytes each render of an instrumented component allocates
+    /// (<see cref="GC.GetAllocatedBytesForCurrentThread"/> before and after <c>BuildRenderTree</c>; a few nanoseconds per
+    /// render, no allocation). Defaults to true.
+    /// </summary>
+    public bool TrackRenderAllocations { get; set; } = true;
+
     /// <summary>Discovers parent/child relationships from rendered output.</summary>
     public bool TrackComponentTree { get; set; } = true;
 
@@ -563,6 +570,12 @@ public sealed class DiagnosticOptions
     /// of reused, typically a missing or unstable <c>@key</c>) before the churn is reported.
     /// </summary>
     public int ComponentChurnThreshold { get; set; } = 10;
+
+    /// <summary>BP5005: mean bytes allocated per render of one component type considered allocation-heavy.</summary>
+    public long RenderAllocationBytes { get; set; } = 32 * 1024;
+
+    /// <summary>BP5005: bytes allocated by all renders of one component type in a session considered allocation-heavy.</summary>
+    public long RenderAllocationTotalBytes { get; set; } = 64L * 1024 * 1024;
 
     /// <summary>BP7006: forced (synchronous) style and layout time in one frame, in milliseconds, considered layout thrashing.</summary>
     public double ForcedLayoutMs { get; set; } = 30;

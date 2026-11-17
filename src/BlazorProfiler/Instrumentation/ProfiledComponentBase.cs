@@ -759,6 +759,8 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
         var clock = instrumentation.Profiler.Clock;
         var reason = _renderNumber == 0 ? RenderReason.FirstRender : _nextRenderReason;
         _nextRenderReason = RenderReason.StateHasChanged;
+        var trackAllocations = instrumentation.Options.TrackRenderAllocations;
+        var allocatedBefore = trackAllocations ? GC.GetAllocatedBytesForCurrentThread() : 0;
         var start = clock.GetTimestamp();
         Exception? failure = null;
         try
@@ -773,6 +775,7 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
         finally
         {
             var end = clock.GetTimestamp();
+            long? allocated = trackAllocations ? Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore) : null;
             _renderNumber++;
             try
             {
@@ -806,6 +809,7 @@ public abstract class ProfiledComponentBase : IComponent, IHandleEvent, IHandleA
                     OutputUnchanged = unchanged,
                     Reason = reason,
                     RenderNumber = _renderNumber,
+                    AllocatedBytes = allocated,
                     Source = InstrumentationSource.ComponentInstrumentation,
                     Outcome = failure is null ? ProfilerOutcome.Success : ProfilerOutcome.Error,
                     ErrorType = failure?.GetType().FullName,

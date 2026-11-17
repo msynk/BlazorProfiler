@@ -46,6 +46,12 @@ public sealed class MarkdownReportExporter : IProfilerExporter
 
         md.Append("# Blazor Profiler report: ").AppendLine(Escape(meta.SessionName ?? "session")).AppendLine();
         md.Append("- **Source:** ").Append(meta.Source ?? "unknown").Append(" · ").Append(meta.Runtime ?? string.Empty).Append(" · profiler ").Append(meta.ProfilerVersion).Append(" · profile ").AppendLine(meta.Profile.ToString());
+        if (meta.AppName is not null || meta.BuildConfiguration is not null)
+        {
+            md.Append("- **Application:** ").Append(Escape(meta.AppName ?? "unknown")).Append(meta.AppVersion is null ? string.Empty : " " + Escape(meta.AppVersion))
+                .Append(" · ").Append(meta.BuildConfiguration ?? "build unknown").Append(meta.ProcessorCount is { } cpus ? $" · {cpus} CPU" : string.Empty).AppendLine();
+        }
+
         md.Append("- **Recorded:** ").Append(meta.CreatedAt.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC for ").Append(Ms(meta.DurationMs)).Append(" · ").Append(Num(document.Events.Count)).AppendLine(" events");
         if (meta.DroppedEvents > 0 || meta.EvictedEvents > 0)
         {

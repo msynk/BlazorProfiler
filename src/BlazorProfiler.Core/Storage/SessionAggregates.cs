@@ -200,6 +200,13 @@ public sealed class SessionAggregates
                         component.RendersWithOutputComparison += weight;
                     }
 
+                    if (render.AllocatedBytes is { } allocated)
+                    {
+                        component.RenderAllocatedBytes += allocated * weight;
+                        component.RendersWithAllocations += weight;
+                        component.MaxRenderAllocatedBytes = Math.Max(component.MaxRenderAllocatedBytes, allocated);
+                    }
+
                     var instance = TrackInstance(render);
                     if (instance is not null)
                     {
@@ -552,6 +559,10 @@ public sealed class SessionAggregates
                 FrameworkCachedFiles = _startup.FrameworkCachedFiles,
                 FrameworkUncompressedFiles = _startup.FrameworkUncompressedFiles,
                 FrameworkDownloadMs = _startup.FrameworkDownloadMs,
+                HardwareConcurrency = _startup.HardwareConcurrency,
+                DeviceMemoryGb = _startup.DeviceMemoryGb,
+                CpuPerformance = _startup.CpuPerformance,
+                EffectiveConnectionType = _startup.EffectiveConnectionType,
                 LargestFiles = [.. _startup.LargestFiles],
             },
         };
@@ -813,6 +824,9 @@ public sealed class SessionAggregates
         public DurationStats Renders { get; } = new();
         public double RendersWithUnchangedOutput { get; set; }
         public double RendersWithOutputComparison { get; set; }
+        public double RenderAllocatedBytes { get; set; }
+        public double RendersWithAllocations { get; set; }
+        public long MaxRenderAllocatedBytes { get; set; }
         public DurationStats ParametersSets { get; } = new();
         public double ParametersUnchanged { get; set; }
         public double ParametersChangedByReferenceOnly { get; set; }
@@ -835,6 +849,9 @@ public sealed class SessionAggregates
             Renders = Renders.ToSummary(clock),
             RendersWithUnchangedOutput = Math.Round(RendersWithUnchangedOutput, 2),
             RendersWithOutputComparison = Math.Round(RendersWithOutputComparison, 2),
+            RenderAllocatedBytes = Math.Round(RenderAllocatedBytes),
+            RendersWithAllocations = Math.Round(RendersWithAllocations, 2),
+            MaxRenderAllocatedBytes = MaxRenderAllocatedBytes,
             ParametersSets = ParametersSets.ToSummary(clock),
             ParametersUnchanged = Math.Round(ParametersUnchanged, 2),
             ParametersChangedByReferenceOnly = Math.Round(ParametersChangedByReferenceOnly, 2),

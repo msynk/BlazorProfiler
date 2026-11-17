@@ -25,6 +25,13 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - Demos: *Rows recreated*, *Layout thrashing*, *Rage and dead clicks*.
 - **Interaction contentful paint** (`BrowserInteractionEvent.ContentPaintMs`, Chromium) and rule **BP7008**: interaction
   results that paint long after the first paint.
+- **Per-render allocations** (`ComponentRenderEvent.AllocatedBytes`, `Instrumentation.TrackRenderAllocations`) and rule
+  **BP5005** (allocation-heavy rendering); BP5002 lists the components whose renders allocated during a spike; the
+  Components view, MCP, and `blazor-profiler compare` show allocations per render.
+- Rule **BP3007**: HTTP requests repeated after prerendering (BP8002 already covered database queries).
+- **Environment metadata**: application name, version, build configuration, OS, and processor count in traces;
+  browser cores, memory, CPU tier, and connection type with startup. `compare` and the dashboard comparison warn when
+  sessions ran under different conditions.
 - Interactions: **latency heatmap** with "explain the selection" (attributes over-represented among slow operations).
 - Timeline: **compare two windows** of one session (select a range, use it as baseline, compare another).
 - Toolbar: **deep capture** (CPU samples, GC dump, runtime counters as `.nettrace`) in WebAssembly builds with

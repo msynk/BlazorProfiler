@@ -25,6 +25,7 @@ omitted.
 | `format` | Must be `blazor-profiler-trace`. |
 | `formatVersion` | Document layout version. Readers reject versions they do not know. |
 | `eventSchemaVersion` | Event model version (`ProfilerEvent.SchemaVersion`). |
+| `metadata.appName`, `appVersion`, `buildConfiguration`, `operatingSystem`, `processorCount` | The profiled application's entry assembly, informational version, `Debug`/`Release` build, OS, and processors (optional; kept when an imported trace is exported again). `blazor-profiler compare` warns when builds, hosting models, runtimes, or processor counts differ. |
 | `metadata` | `sessionId`, `sessionName`, `circuitId` (if the session was circuit-scoped), `createdAt`, `exportedAt`, `durationMs`, `source` (`server`/`webassembly`), `runtime`, `profilerVersion`, `profile`, `samplingRates` (kind → rate; absent kinds were not sampled), `droppedEvents`, `evictedEvents`, `imported`. |
 | `clock` | `frequency` (ticks per second), `anchorTimestamp` (monotonic ticks), `anchorTime` (wall clock at the anchor). |
 | `collectors` | Collector descriptors and status at export time (capability, overhead, state, errors). |
@@ -53,7 +54,7 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `marker` | `markerType` (`Bookmark`, `SessionPaused`, `SessionResumed`, `EventsDropped`, `CollectorFailed`, `Custom`), `name`, `count` |
 | `componentCreated`, `componentDisposed` | `componentType`, `componentInstanceId`, `source`; disposed: `lifetimeTicks` |
 | `parametersSet` | component fields, `changeState` (`Unknown`, `Initial`, `Changed`, `ChangedByReferenceOnly`, `Unchanged`), `parameterCount`, `changedParameters` (names only) |
-| `componentRender` | component fields, `frameCount`, `outputUnchanged`, `reason`, `renderNumber` |
+| `componentRender` | component fields, `frameCount`, `outputUnchanged`, `reason`, `renderNumber`; schema 3: `allocatedBytes` |
 | `renderRequest` | component fields, `result` (`Coalesced`, `SuppressedByShouldRender`) |
 | `lifecycle` | component fields, `method`, `synchronousDuration`, `completedAsynchronously` |
 | `componentChildren` | component fields, `childInstanceIds`, `childTypes` |
@@ -71,7 +72,7 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `operation` | `name`, `category`, `componentType` |
 | `componentRetained` (schema 2) | component fields, `reason` (`Disposed`, `ScopeEnded`), `releasedTimestamp`, `survivedCollections`, `forcedCollection` |
 | `dbCommand` (schema 2) | `commandText` (normalized: literals replaced with `?`), `commandHash`, `parameterHash` (hash of text and argument values; values are never stored), `parameterCount`, `executeMethod` (`Reader`, `NonQuery`, `Scalar`), `isAsync`, `rowsRead`, `contextType`, `contextInstanceId`, `provider`, `originComponentType`, `originComponentInstanceId`, `originLifecycleMethod`, `onRendererThread`, `source` |
-| `browserStartup` (schema 2) | `navigationType`, `runtimeKind`, `timeToFirstByteMs`, `firstContentfulPaintMs`, `domContentLoadedMs`, `loadMs`, `interactiveMs`, `frameworkFiles`, `frameworkTransferBytes`, `frameworkDecodedBytes`, `frameworkCachedFiles`, `frameworkUncompressedFiles`, `frameworkDownloadMs`, `largestFiles` (`name`, `transferSize`, `decodedSize`, `durationMs`, `cached`) |
+| `browserStartup` (schema 2) | `navigationType`, `runtimeKind`, `timeToFirstByteMs`, `firstContentfulPaintMs`, `domContentLoadedMs`, `loadMs`, `interactiveMs`, `frameworkFiles`, `frameworkTransferBytes`, `frameworkDecodedBytes`, `frameworkCachedFiles`, `frameworkUncompressedFiles`, `frameworkDownloadMs`, `largestFiles` (`name`, `transferSize`, `decodedSize`, `durationMs`, `cached`); schema 3: `hardwareConcurrency`, `deviceMemoryGb`, `cpuPerformance`, `effectiveConnectionType` |
 | `browserVital` (schema 2) | `name` (`LCP`, `CLS`, `INP`), `value`, `targetTag`, `rating` (computed; ignored on import) |
 | `browserFrustration` (schema 3) | `signal` (`RageClick`, `DeadClick`), `clickCount`, `targetTag`, `target` (tag, id, and up to two classes; never text) |
 

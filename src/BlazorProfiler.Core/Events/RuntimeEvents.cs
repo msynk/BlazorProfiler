@@ -401,6 +401,21 @@ public sealed class BrowserStartupEvent : ProfilerEvent
     /// <summary>The largest framework files.</summary>
     public List<StartupResource> LargestFiles { get; set; } = [];
 
+    /// <summary>Logical processors reported by the browser (<c>navigator.hardwareConcurrency</c>), when available.</summary>
+    public int? HardwareConcurrency { get; set; }
+
+    /// <summary>Approximate device memory in GB (<c>navigator.deviceMemory</c>, Chromium; coarse buckets), when available.</summary>
+    public double? DeviceMemoryGb { get; set; }
+
+    /// <summary>
+    /// The browser's CPU performance tier (<c>navigator.cpuPerformance</c>, Chromium: 1 low to 4 high, 0 unknown), when
+    /// available.
+    /// </summary>
+    public int? CpuPerformance { get; set; }
+
+    /// <summary>The effective connection type (<c>navigator.connection.effectiveType</c>: slow-2g, 2g, 3g, 4g), when available.</summary>
+    public string? EffectiveConnectionType { get; set; }
+
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + 160 + StringSize(NavigationType) + StringSize(RuntimeKind) + (LargestFiles.Count * 96);
 }

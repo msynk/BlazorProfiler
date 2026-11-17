@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using BlazorProfiler.Cli;
 using BlazorProfiler.Events;
+using BlazorProfiler.Export;
 using BlazorProfiler.Pipeline;
 using BlazorProfiler.Storage;
 
@@ -185,6 +186,46 @@ public class TelemetryTests
     }
 
     [Fact]
+    public async Task TraceMetadataRecordsTheApplicationAndSurvivesReexport()
+    {
+        var (host, session, _) = TestHost.WithSession();
+        using (host)
+        {
+            host.Emit(Ev.Render("App.Row", 0));
+            var document = TraceDocumentBuilder.Create(session, host.Options, null, null, "test");
+            Assert.False(string.IsNullOrEmpty(document.Metadata.AppName));
+            Assert.Contains(document.Metadata.BuildConfiguration, new[] { "Debug", "Release" });
+            Assert.Equal(Environment.ProcessorCount, document.Metadata.ProcessorCount);
+
+            // An imported trace keeps the environment it was recorded in when exported again.
+            document.Metadata.AppName = "Shop.Web";
+            document.Metadata.BuildConfiguration = "Debug";
+            document.Metadata.ProcessorCount = 64;
+            using var stream = new MemoryStream();
+            await new JsonTraceExporter().ExportAsync(document, stream);
+            stream.Position = 0;
+            var imported = host.AddImportedSession(await TraceImporter.ReadAsync(stream));
+            var again = TraceDocumentBuilder.Create(imported, host.Options, null, null, "test");
+            Assert.Equal("Shop.Web", again.Metadata.AppName);
+            Assert.Equal("Debug", again.Metadata.BuildConfiguration);
+            Assert.Equal(64, again.Metadata.ProcessorCount);
+        }
+    }
+
+    [Fact]
+    public void CompareWarnsWhenTheEnvironmentsDiffer()
+    {
+        var release = new TraceMetadata { BuildConfiguration = "Release", Source = "server", Runtime = ".NET 10.0.14", ProcessorCount = 8 };
+        Assert.Empty(TraceCli.EnvironmentWarnings(release, new TraceMetadata { BuildConfiguration = "Release", Source = "server", Runtime = ".NET 10.0.14", ProcessorCount = 8 }));
+        var warnings = TraceCli.EnvironmentWarnings(release, new TraceMetadata { BuildConfiguration = "Debug", Source = "webassembly", Runtime = ".NET 11.0.0", ProcessorCount = 2 });
+        Assert.Equal(4, warnings.Count);
+        Assert.Contains(warnings, w => w.Contains("Debug builds are much slower", StringComparison.Ordinal));
+
+        // Unknown values (older traces) never produce warnings.
+        Assert.Empty(TraceCli.EnvironmentWarnings(new TraceMetadata(), release));
+    }
+
+    [Fact]
     public void CompareReportsPerComponentRegressions()
     {
         static SessionSummary Summary(double rowRenders, double rowP95, double cellRenders) => new()
@@ -203,6 +244,15 @@ public class TelemetryTests
 
         // Without --include-timings only deterministic counts are compared.
         Assert.DoesNotContain(TraceCli.CompareComponents(Summary(10, 2, 100), Summary(30, 5, 100), 0.1, includeTimings: false), r => r.Name.EndsWith("p95", StringComparison.Ordinal));
+
+        // Allocations per render are compared without --include-timings (they are deterministic for the same data).
+        var before = Summary(10, 2, 100);
+        var after = Summary(10, 2, 100);
+        before.Components[0].RenderAllocatedBytes = 10 * 4_096;
+        before.Components[0].RendersWithAllocations = 10;
+        after.Components[0].RenderAllocatedBytes = 10 * 40_960;
+        after.Components[0].RendersWithAllocations = 10;
+        Assert.Contains(TraceCli.CompareComponents(before, after, 0.1, includeTimings: false), r => r.Name == "Row alloc/render" && r.Regressed);
 
         // Fewer renders is an improvement, not a regression.
         Assert.Contains(TraceCli.CompareComponents(Summary(30, 2, 100), Summary(10, 2, 100), 0.1, false), r => r.Name == "Row renders" && r.Improved && !r.Regressed);

@@ -109,13 +109,21 @@ internal static class TraceCli
 
     private static async Task<int> CompareAsync(Options options, TextWriter output, CancellationToken cancellationToken)
     {
-        var (_, baseline, _) = await AnalyzeAsync(options.Positional(0, "baseline"), cancellationToken).ConfigureAwait(false);
-        var (_, current, _) = await AnalyzeAsync(options.Positional(1, "current"), cancellationToken).ConfigureAwait(false);
+        var (baselineDocument, baseline, _) = await AnalyzeAsync(options.Positional(0, "baseline"), cancellationToken).ConfigureAwait(false);
+        var (currentDocument, current, _) = await AnalyzeAsync(options.Positional(1, "current"), cancellationToken).ConfigureAwait(false);
         var threshold = options.Number("--threshold", 10) / 100;
         var includeTimings = options.Flag("--include-timings");
         var rows = Compare(baseline, current, threshold, includeTimings);
         var markdown = options.Value("--format") is "markdown" or "md";
         var text = new StringBuilder();
+        text.Append("Baseline: ").AppendLine(Describe(baselineDocument.Metadata));
+        text.Append("Current:  ").AppendLine(Describe(currentDocument.Metadata));
+        foreach (var warning in EnvironmentWarnings(baselineDocument.Metadata, currentDocument.Metadata))
+        {
+            text.Append(markdown ? "> **Warning:** " : "warning: ").AppendLine(warning);
+        }
+
+        text.AppendLine();
         if (markdown)
         {
             text.AppendLine("| Metric | Baseline | Current | Change | |").AppendLine("|---|---:|---:|---:|---|");
@@ -191,6 +199,56 @@ internal static class TraceCli
         return rows;
     }
 
+    private static string Describe(TraceMetadata m)
+    {
+        var parts = new List<string>();
+        if (m.AppName is not null)
+        {
+            parts.Add(m.AppVersion is null ? m.AppName : $"{m.AppName} {m.AppVersion}");
+        }
+
+        parts.Add(m.BuildConfiguration ?? "build unknown");
+        if (m.Runtime is not null)
+        {
+            parts.Add(m.Runtime);
+        }
+
+        if (m.ProcessorCount is { } processors)
+        {
+            parts.Add($"{processors} CPU");
+        }
+
+        parts.Add(m.Source ?? "unknown source");
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>Differences between the environments of two traces that make timing comparisons unreliable.</summary>
+    internal static List<string> EnvironmentWarnings(TraceMetadata baseline, TraceMetadata current)
+    {
+        var warnings = new List<string>();
+        if (baseline.BuildConfiguration is { } a && current.BuildConfiguration is { } b && a != b)
+        {
+            warnings.Add($"The traces come from different builds ({a} vs. {b}); Debug builds are much slower, so timings are not comparable.");
+        }
+
+        if (baseline.Source is { } sa && current.Source is { } sb && sa != sb)
+        {
+            warnings.Add($"The traces come from different hosting models ({sa} vs. {sb}).");
+        }
+
+        if (baseline.Runtime is { } ra && current.Runtime is { } rb && ra != rb)
+        {
+            warnings.Add($"The traces come from different runtimes ({ra} vs. {rb}).");
+        }
+
+        if (baseline.ProcessorCount is { } pa && current.ProcessorCount is { } pb && pa != pb)
+        {
+            warnings.Add($"The traces come from machines with different processor counts ({pa} vs. {pb}); timings may differ for that reason alone.");
+        }
+
+        return warnings;
+    }
+
     /// <summary>
     /// Compares component types present in both sessions: render counts (or parameter updates for components without
     /// instrumentation), and render p95 when timings are included. Only rows that changed by more than the threshold are
@@ -222,6 +280,16 @@ internal static class TraceCli
             if (a > 0 && Math.Abs(b - a) >= 1 && Math.Abs(b - a) / a > threshold)
             {
                 rows.Add((new ComparisonRow($"{name} {(instrumented ? "renders" : "parameter updates")}", a, b, Count, b > a, b < a), Math.Abs(b - a) / a));
+            }
+
+            // Allocations per render are deterministic for the same data, so they are compared without --include-timings.
+            if (was.MeanRenderAllocatedBytes is { } allocatedBefore && after.MeanRenderAllocatedBytes is { } allocatedAfter && was.RendersWithAllocations >= 5 && after.RendersWithAllocations >= 5)
+            {
+                var delta = allocatedAfter - allocatedBefore;
+                if (Math.Abs(delta) >= 1024 && Math.Abs(delta) / Math.Max(1, allocatedBefore) > threshold)
+                {
+                    rows.Add((new ComparisonRow($"{name} alloc/render", allocatedBefore, allocatedAfter, v => DiagnosticContext.FormatBytes(v), delta > 0, delta < 0), Math.Abs(delta) / Math.Max(1, allocatedBefore)));
+                }
             }
 
             if (includeTimings && instrumented && was.Renders.Count >= 5 && after.Renders.Count >= 5 && was.Renders.P95Ms > 0)

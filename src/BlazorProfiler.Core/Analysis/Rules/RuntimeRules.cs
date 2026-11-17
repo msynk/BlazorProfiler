@@ -110,19 +110,32 @@ public sealed class AllocationSpikeRule : DiagnosticRule
         }).Distinct().Take(5).ToList();
 
         var peak = Rate(spikes[0]);
+
+        // Renders of instrumented components measure their own allocations, which attributes part of a spike precisely.
+        var renderAllocations = context.OfType<ComponentRenderEvent>()
+            .Where(r => r.AllocatedBytes is > 0 && spikes.Any(s => r.Timestamp <= s.EndTimestamp && r.EndTimestamp >= s.Timestamp))
+            .GroupBy(r => r.ComponentType ?? "(unknown)")
+            .Select(g => (Type: g.Key, Bytes: g.Sum(r => r.AllocatedBytes!.Value * DiagnosticContext.WeightOf(r))))
+            .OrderByDescending(r => r.Bytes)
+            .Take(3)
+            .ToList();
         yield return Create(
             $"Allocation rate spiked to {FormatBytes(peak)}/s",
             Scale(peak / Math.Max(median, 1), context.Options.AllocationSpikeFactor * 2),
             DiagnosticConfidence.Medium,
             $"{spikes.Count} sample(s) allocated at {FormatBytes(threshold)}/s or more (peak {FormatBytes(peak)}/s; session median {FormatBytes(median)}/s).",
             names.Count > 0
-                ? $"These operations overlapped the spikes in time: {string.Join("; ", names)}. Overlap is temporal correlation only; allocations are measured process-wide and cannot be attributed to a component."
+                ? $"These operations overlapped the spikes in time: {string.Join("; ", names)}. Overlap is temporal correlation only; allocations are measured process-wide, except for the renders of instrumented components, which are measured per render (see the evidence)."
                 : "No interaction or navigation overlapped the spikes; background work (timers, polling, SignalR traffic) may be responsible.",
             "Profile the overlapping operations with a memory profiler (dotnet-trace, Visual Studio, or browser tools for WebAssembly) and reduce allocations: avoid materializing large collections, reuse buffers, and avoid re-creating large render trees.",
             [
                 Evidence("Peak allocation rate", FormatBytes(peak) + "/s"),
                 Evidence("Median allocation rate", FormatBytes(median) + "/s"),
                 Evidence("Overlapping operations", names.Count > 0 ? string.Join("; ", names) : "none", names.Count > 0 ? ValueQuality.Inferred : ValueQuality.Measured),
+                Evidence(
+                    "Render allocations during the spikes (instrumented components)",
+                    renderAllocations.Count > 0 ? string.Join("; ", renderAllocations.Select(r => $"{ShortType(r.Type)} {FormatBytes(r.Bytes)}")) : "none measured",
+                    renderAllocations.Count > 0 ? ValueQuality.Measured : ValueQuality.Unavailable),
             ],
             new ImpactEstimate { Occurrences = spikes.Count, Method = "Runtime samples above the spike threshold.", Quality = ValueQuality.Measured },
             subject: "allocation-spike",
@@ -693,5 +706,64 @@ public sealed class LongTaskRule : DiagnosticRule
             subject: "long-tasks",
             caveats: ["Overlap with .NET work is temporal correlation."],
             related: tasks.Cast<ProfilerEvent>().Concat(overlapping.Take(10)));
+    }
+}
+
+/// <summary>BP5005: component types whose renders allocate heavily.</summary>
+public sealed class AllocationHeavyRenderingRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP5005",
+        Title = "Allocation-heavy rendering",
+        Category = DiagnosticCategory.Memory,
+        Description = "Reports instrumented component types whose BuildRenderTree allocates many bytes per render, or in total, measured per render on the rendering thread.",
+        RequiredSignals = [ProfilerEventKind.ComponentRender],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var perRender = context.Options.RenderAllocationBytes;
+        var total = context.Options.RenderAllocationTotalBytes;
+        var processAllocated = context.Summary.Runtime.AllocatedBytes;
+        foreach (var c in context.Summary.Components
+            .Where(c => c.RendersWithAllocations >= 10 && c.MeanRenderAllocatedBytes is { } mean && (mean >= perRender || c.RenderAllocatedBytes >= total))
+            .OrderByDescending(c => c.RenderAllocatedBytes))
+        {
+            var mean = c.MeanRenderAllocatedBytes!.Value;
+            var share = processAllocated > 0 ? c.RenderAllocatedBytes / processAllocated : (double?)null;
+            var server = context.Events.Any(e => e.CircuitId is not null);
+            var renders = context.OfType<ComponentRenderEvent>().Where(r => r.ComponentType == c.ComponentType && r.AllocatedBytes is not null).OrderByDescending(r => r.AllocatedBytes).Take(20).ToList();
+            yield return Create(
+                $"{ShortType(c.ComponentType)} allocates {FormatBytes(mean)} per render",
+                Scale(Math.Max(mean / perRender, c.RenderAllocatedBytes / total), 1),
+                DiagnosticConfidence.High,
+                $"{FormatNumber(c.RendersWithAllocations)} render(s) of {ShortType(c.ComponentType)} allocated {FormatBytes(c.RenderAllocatedBytes)} in total ({FormatBytes(mean)} on average, at most {FormatBytes(c.MaxRenderAllocatedBytes)} in one render){(share is { } s ? $", {FormatPercent(s)} of everything the process allocated while sampled" : string.Empty)}.",
+                server
+                    ? "Every byte allocated while rendering is garbage soon after, so frequent heavy renders drive garbage collections that pause every circuit on the server."
+                    : "In WebAssembly, allocations made while rendering are collected on the browser's main thread: garbage collections pause the UI.",
+                "Move work out of markup: compute filtered, sorted, or formatted data once (OnParametersSet, or when the data changes) instead of with LINQ and string interpolation in the render, avoid capturing lambdas in loops (use @key and a child component, or cached delegates), avoid boxing in attribute values, and render fewer items (Virtualize). The render tree buffer itself grows with the number of frames, so very large renders allocate even when the code does not.",
+                [
+                    Evidence("Mean per render", FormatBytes(mean)),
+                    Evidence("Largest render", FormatBytes(c.MaxRenderAllocatedBytes)),
+                    Evidence("Total", FormatBytes(c.RenderAllocatedBytes)),
+                    Evidence("Renders measured", FormatNumber(c.RendersWithAllocations)),
+                    share is { } value
+                        ? Evidence("Share of process allocations", FormatPercent(value), ValueQuality.Estimated)
+                        : Evidence("Share of process allocations", "runtime samples unavailable", ValueQuality.Unavailable),
+                ],
+                new ImpactEstimate { Occurrences = c.RendersWithAllocations, Method = "Bytes allocated on the rendering thread during BuildRenderTree (GC.GetAllocatedBytesForCurrentThread), summed over measured renders.", Quality = ValueQuality.Measured },
+                componentType: c.ComponentType,
+                subject: c.ComponentType,
+                caveats:
+                [
+                    "Includes allocations of child components only when they render inside the same BuildRenderTree call (they normally render separately and are measured on their own).",
+                    "Includes the growth of the render tree buffer, which Blazor reuses across renders.",
+                ],
+                related: renders,
+                codeHint: $"{ShortType(c.ComponentType)}.razor: LINQ, string building, and lambdas in markup");
+        }
     }
 }

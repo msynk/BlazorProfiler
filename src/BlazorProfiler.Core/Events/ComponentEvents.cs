@@ -199,6 +199,13 @@ public sealed class ComponentRenderEvent : ComponentEvent
 
     /// <summary>Sequential render number of the instance, starting at 1.</summary>
     public int RenderNumber { get; set; }
+
+    /// <summary>
+    /// Bytes allocated on the rendering thread while <c>BuildRenderTree</c> ran (strings, LINQ, closures, boxed values, and
+    /// the growth of the render tree buffer), measured with <see cref="GC.GetAllocatedBytesForCurrentThread"/>. Null when
+    /// not measured. Allocations made by other threads at the same time are not included.
+    /// </summary>
+    public long? AllocatedBytes { get; set; }
 }
 
 /// <summary>The result of a render request (<c>StateHasChanged</c>).</summary>

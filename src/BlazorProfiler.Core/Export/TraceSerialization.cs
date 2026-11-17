@@ -212,6 +212,11 @@ public static class TraceImporter
 
         document.Metadata ??= new TraceMetadata();
         document.Metadata.SessionName = Truncate(document.Metadata.SessionName, 128);
+        document.Metadata.AppName = Truncate(document.Metadata.AppName, 256);
+        document.Metadata.AppVersion = Truncate(document.Metadata.AppVersion, 256);
+        document.Metadata.BuildConfiguration = Truncate(document.Metadata.BuildConfiguration, 32);
+        document.Metadata.OperatingSystem = Truncate(document.Metadata.OperatingSystem, 256);
+        document.Metadata.Runtime = Truncate(document.Metadata.Runtime, 256);
         document.Collectors ??= [];
 
         var max = options.MaxStringLength;
@@ -358,6 +363,7 @@ public static class TraceImporter
                 case BrowserStartupEvent startup:
                     startup.NavigationType = Truncate(startup.NavigationType, 32);
                     startup.RuntimeKind = Truncate(startup.RuntimeKind, 32);
+                    startup.EffectiveConnectionType = Truncate(startup.EffectiveConnectionType, 16);
                     if (startup.LargestFiles.Count > 50)
                     {
                         startup.LargestFiles = startup.LargestFiles.GetRange(0, 50);
@@ -416,6 +422,7 @@ public static class TraceImporter
             imported: true,
             stateChanged: null);
 
+        session.ImportedMetadataValue = document.Metadata;
         foreach (var e in document.Events)
         {
             session.AppendImported(e);

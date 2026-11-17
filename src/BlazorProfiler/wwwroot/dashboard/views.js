@@ -161,6 +161,31 @@ function vitalsTile(vitals) {
     h('div', { class: 'sub' }, names.map(n => `${n} ${vitals[n].rating}`).join(' · ')));
 }
 
+export function deviceText(startup) {
+  if (!startup) {
+    return '';
+  }
+
+  const parts = [];
+  if (startup.hardwareConcurrency) {
+    parts.push(`${startup.hardwareConcurrency} cores`);
+  }
+
+  if (startup.deviceMemoryGb) {
+    parts.push(`~${startup.deviceMemoryGb} GB memory`);
+  }
+
+  if (startup.cpuPerformance) {
+    parts.push(`CPU tier ${startup.cpuPerformance} of 4`);
+  }
+
+  if (startup.effectiveConnectionType) {
+    parts.push(`${startup.effectiveConnectionType} connection`);
+  }
+
+  return parts.join(' · ');
+}
+
 function startupPanel(startup) {
   const phase = (label, ms) => (ms ? [h('dt', null, label), h('dd', null, fmtMs(ms))] : null);
   return panel('Startup',
@@ -172,7 +197,8 @@ function startupPanel(startup) {
       phase('Load event', startup.loadMs),
       h('dt', null, 'Interactive (estimated)'), h('dd', null, fmtMs(startup.interactiveMs), startup.firstContentfulPaintMs ? h('span', { class: 'muted' }, ` · ${fmtMs(Math.max(0, startup.interactiveMs - startup.firstContentfulPaintMs))} after first paint`) : null),
       h('dt', null, 'Framework files'), h('dd', null, `${fmtNum(startup.frameworkFiles)} files · ${fmtBytes(startup.frameworkTransferBytes)} transferred · ${fmtBytes(startup.frameworkDecodedBytes)} decoded · ${fmtNum(startup.frameworkCachedFiles)} cached · ${fmtMs(startup.frameworkDownloadMs)}`),
-      startup.frameworkUncompressedFiles ? [h('dt', null, 'Uncompressed'), h('dd', { class: 'dup' }, `${fmtNum(startup.frameworkUncompressedFiles)} large file(s) without compression`)] : null),
+      startup.frameworkUncompressedFiles ? [h('dt', null, 'Uncompressed'), h('dd', { class: 'dup' }, `${fmtNum(startup.frameworkUncompressedFiles)} large file(s) without compression`)] : null,
+      deviceText(startup) ? [h('dt', null, 'Device'), h('dd', { title: 'Conditions reported by the browser. Compare sessions recorded under similar conditions.' }, deviceText(startup))] : null),
     startup.largestFiles?.length ? sortableTable({
       label: 'Largest framework files',
       rows: startup.largestFiles,
@@ -225,6 +251,7 @@ export function components(ctx, params) {
         { key: 'renderCount', title: 'Renders', num: true, sort: r => r.renders.count, render: r => r.instrumented ? fmtNum(r.renders.count) : 'n/a' },
         { key: 'renderTotal', title: 'Render time', num: true, sort: r => r.renders.totalMs || r.parametersSets.totalMs, render: r => r.instrumented ? fmtMs(r.renders.totalMs) : 'n/a' },
         { key: 'renderP95', title: 'Render p95', num: true, sort: r => r.renders.p95Ms, render: r => r.instrumented ? fmtMs(r.renders.p95Ms) : 'n/a' },
+        { key: 'alloc', title: 'Alloc/render', num: true, sort: r => (r.rendersWithAllocations ? r.renderAllocatedBytes / r.rendersWithAllocations : -1), render: r => (r.rendersWithAllocations ? h('span', { title: `${fmtBytes(r.renderAllocatedBytes)} in ${fmtNum(r.rendersWithAllocations)} render(s); largest ${fmtBytes(r.maxRenderAllocatedBytes)}` }, fmtBytes(r.renderAllocatedBytes / r.rendersWithAllocations)) : '—') },
         { key: 'params', title: 'Param updates', num: true, sort: r => r.parametersSets.count, render: r => fmtNum(r.parametersSets.count) },
         { key: 'paramsP95', title: 'Params p95', num: true, sort: r => r.parametersSets.p95Ms, render: r => fmtMs(r.parametersSets.p95Ms) },
         { key: 'unchanged', title: 'Unchanged params', num: true, render: r => (r.unchanged == null || !r.instrumented ? '—' : fmtPct(r.unchanged)) },
@@ -1301,6 +1328,11 @@ export function compareTable(a, b) {
   }
 
   const changes = [...components.values()].map(c => ({ ...c, delta: c.b - c.a })).sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta)).slice(0, 10);
+  const deviceA = deviceText(a.startup);
+  const deviceB = deviceText(b.startup);
+  const deviceWarning = deviceA && deviceB && deviceA !== deviceB
+    ? h('p', { class: 'banner', role: 'note' }, `The sessions ran under different browser conditions (${deviceA} vs. ${deviceB}); browser timings may differ for that reason alone.`)
+    : null;
 
   // Render time distributions of components instrumented in both sessions (at least 5 renders each, so percentiles mean
   // something). Sub-millisecond differences are shown but not colored: they are within measurement noise.
@@ -1325,7 +1357,7 @@ export function compareTable(a, b) {
           `${t.d95 > 0 ? '+' : ''}${fmtMs(t.d95)} (${t.rel > 0 ? '+' : ''}${(t.rel * 100).toFixed(0)}%)`)))))
     : null;
 
-  return h('div', null, h('div', { class: 'grid cols-2' },
+  return h('div', null, deviceWarning, h('div', { class: 'grid cols-2' },
     h('table', { 'aria-label': 'Metric comparison' },
       h('thead', null, h('tr', null, h('th', null, 'Metric'), h('th', { class: 'num' }, 'Baseline'), h('th', { class: 'num' }, 'Compared'), h('th', { class: 'num' }, 'Change'))),
       h('tbody', null, metrics.map(row))),

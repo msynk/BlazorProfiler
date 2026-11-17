@@ -227,6 +227,41 @@ public class InstrumentationTests
     }
 
     [Fact]
+    public async Task MeasuresTheAllocationsOfEachRender()
+    {
+        await using var f = ProfilerFixture.Create();
+        var (_, id) = await f.Renderer.RenderAsync<AllocatingList>();
+        for (var version = 1; version <= 11; version++)
+        {
+            await f.Renderer.SetParametersAsync(id, new() { ["Version"] = version });
+        }
+
+        var renders = f.All<ComponentRenderEvent>().Where(r => r.ComponentType == typeof(AllocatingList).FullName).ToList();
+        Assert.Equal(12, renders.Count);
+
+        // Each render allocates the 100 KB buffer plus the LINQ list and 50 strings.
+        Assert.All(renders, r => Assert.InRange(r.AllocatedBytes!.Value, 100_000, 1_000_000));
+        var summary = f.Session.GetSummary().Components.Single(c => c.ComponentType == typeof(AllocatingList).FullName);
+        Assert.Equal(12, summary.RendersWithAllocations);
+        Assert.InRange(summary.MeanRenderAllocatedBytes!.Value, 100_000, 1_000_000);
+
+        var finding = Assert.Single(f.Host.Diagnostics.Analyze(f.Session).Findings, x => x.RuleId == "BP5005");
+        Assert.Equal(typeof(AllocatingList).FullName, finding.ComponentType);
+
+        // A component that allocates little stays below the threshold.
+        Assert.All(f.All<ComponentRenderEvent>().Where(r => r.ComponentType != typeof(AllocatingList).FullName), r => Assert.True(r.AllocatedBytes < 32 * 1024));
+    }
+
+    [Fact]
+    public async Task RenderAllocationTrackingCanBeTurnedOff()
+    {
+        await using var f = ProfilerFixture.Create(o => o.Instrumentation.TrackRenderAllocations = false);
+        await f.Renderer.RenderAsync<AllocatingList>();
+        Assert.All(f.All<ComponentRenderEvent>(), r => Assert.Null(r.AllocatedBytes));
+        Assert.Null(f.Session.GetSummary().Components.Single(c => c.ComponentType == typeof(AllocatingList).FullName).MeanRenderAllocatedBytes);
+    }
+
+    [Fact]
     public async Task DetectsReferenceOnlyParameterChangesAndDeduplicatesFrameworkMetrics()
     {
         await using var f = ProfilerFixture.Create();

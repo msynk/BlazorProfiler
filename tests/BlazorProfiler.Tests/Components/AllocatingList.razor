@@ -1,0 +1,18 @@
+@inherits ProfiledComponentBase
+@* Allocates in markup on every render: a LINQ pipeline, string formatting, and a large temporary buffer. *@
+@{
+    var buffer = new byte[Bytes];
+    var labels = Enumerable.Range(0, 50).Select(i => $"Item {i} of {Version}").ToList();
+}
+<ul>
+    @foreach (var label in labels)
+    {
+        <li>@label</li>
+    }
+</ul>
+<span>@buffer.Length</span>
+@code {
+    [Parameter] public int Bytes { get; set; } = 100_000;
+
+    [Parameter] public int Version { get; set; }
+}

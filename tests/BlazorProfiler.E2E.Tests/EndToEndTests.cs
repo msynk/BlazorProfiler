@@ -111,6 +111,9 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         Assert.EndsWith("ProductRow", detail.Str("originComponentType"), StringComparison.Ordinal);
         Assert.Equal("OnInitializedAsync", detail.Str("originLifecycleMethod"));
         Assert.Contains(await app.FindingsAsync(session), f => f.Str("ruleId") == "BP3003");
+
+        // The page is prerendered: OnInitializedAsync loads the products once without a circuit and again on the circuit.
+        Assert.Contains(await app.FindingsAsync(session), f => f.Str("ruleId") == "BP3007" && f.Str("componentType").EndsWith("RequestPatterns", StringComparison.Ordinal));
         await page.CloseAsync();
     }
 
@@ -299,6 +302,11 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
             var events = await app.ApiAsync($"/sessions/{session}/events?after=0&max=10000");
             return events.GetProperty("events").EnumerateArray().Any(e => e.Str("type") == "browserStartup");
         }, 30_000, "No startup was reported.");
+
+        // The browser's conditions are recorded with startup (Chromium reports cores and memory).
+        var startup = (await app.ApiAsync($"/sessions/{session}/events?after=0&max=10000")).GetProperty("events").EnumerateArray().First(e => e.Str("type") == "browserStartup");
+        Assert.True(startup.GetProperty("hardwareConcurrency").GetInt32() > 0);
+        Assert.True(startup.GetProperty("deviceMemoryGb").GetDouble() > 0);
 
         var dashboard = await OpenAsync("_blazor-profiler/");
         await dashboard.WaitForSelectorAsync(".tile", new() { Timeout = 20_000 });
@@ -628,6 +636,22 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         var text = await table.InnerTextAsync();
         Assert.True(text.Contains("api/slow", StringComparison.Ordinal), text + Environment.NewLine + await dashboard.InnerTextAsync("table[aria-label=Operations]"));
         await dashboard.CloseAsync();
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task WebAssemblyMeasuresRenderAllocations()
+    {
+        // GC.GetAllocatedBytesForCurrentThread must work in the browser runtime as well, or the allocation columns lie.
+        var page = await OpenAsync("wasm/large-list");
+        await ClickWhenInteractiveAsync(page, "#sort", "(ascending)", "#sort");
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var events = (await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 })).GetProperty("page").GetProperty("events").EnumerateArray();
+            return events.Any(e => e.Str("type") == "componentRender" && e.TryGetProperty("allocatedBytes", out var bytes) && bytes.GetInt64() > 0);
+        }, 30_000, "No render reported allocated bytes in WebAssembly.");
         await page.CloseAsync();
     }
 

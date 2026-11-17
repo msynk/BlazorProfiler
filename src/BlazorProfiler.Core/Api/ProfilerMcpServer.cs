@@ -384,6 +384,31 @@ public sealed class ProfilerMcpServer
         if (summary.Startup is { } startup)
         {
             Line(sb, "Startup", $"interactive at {Ms(startup.InteractiveMs)}, framework {DiagnosticContext.FormatBytes(startup.FrameworkTransferBytes)} transferred in {startup.FrameworkFiles} file(s)");
+            var device = new List<string>();
+            if (startup.HardwareConcurrency is { } cores)
+            {
+                device.Add($"{cores} cores");
+            }
+
+            if (startup.DeviceMemoryGb is { } memory)
+            {
+                device.Add($"~{memory.ToString(CultureInfo.InvariantCulture)} GB memory");
+            }
+
+            if (startup.CpuPerformance is { } tier and > 0)
+            {
+                device.Add($"CPU tier {tier} of 4");
+            }
+
+            if (startup.EffectiveConnectionType is { } connection)
+            {
+                device.Add($"{connection} connection");
+            }
+
+            if (device.Count > 0)
+            {
+                Line(sb, "Browser device", string.Join(", ", device));
+            }
         }
 
         if (summary.Runtime.Samples > 0)
@@ -539,11 +564,12 @@ public sealed class ProfilerMcpServer
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine("| component | instrumented | renders | render time | render p95 | unchanged output | parameter updates | created | retained |").AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|");
+        sb.AppendLine("| component | instrumented | renders | render time | render p95 | alloc/render | unchanged output | parameter updates | created | retained |").AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
         foreach (var c in rows)
         {
             sb.Append("| ").Append(Cell(c.ComponentType)).Append(" | ").Append(c.Instrumented ? "yes" : "no").Append(" | ")
                 .Append(Num(c.Renders.Count)).Append(" | ").Append(Ms(c.Renders.TotalMs)).Append(" | ").Append(Ms(c.Renders.P95Ms)).Append(" | ")
+                .Append(c.MeanRenderAllocatedBytes is { } allocated ? DiagnosticContext.FormatBytes(allocated) : "n/a").Append(" | ")
                 .Append(c.RendersWithOutputComparison > 0 ? DiagnosticContext.FormatPercent(c.RendersWithUnchangedOutput / c.RendersWithOutputComparison) : "n/a").Append(" | ")
                 .Append(Num(c.ParametersSets.Count)).Append(" | ").Append(Num(c.Created)).Append(" | ").Append(Num(c.Retained)).AppendLine(" |");
         }
@@ -581,6 +607,10 @@ public sealed class ProfilerMcpServer
         if (c.Instrumented)
         {
             Line(sb, "Renders", $"{Num(c.Renders.Count)}, total {Ms(c.Renders.TotalMs)}, mean {Ms(c.Renders.MeanMs)}, p50 {Ms(c.Renders.P50Ms)}, p95 {Ms(c.Renders.P95Ms)}, max {Ms(c.Renders.MaxMs)}");
+            if (c.MeanRenderAllocatedBytes is { } allocated)
+            {
+                Line(sb, "Allocations per render", $"{DiagnosticContext.FormatBytes(allocated)} on average, {DiagnosticContext.FormatBytes(c.MaxRenderAllocatedBytes)} at most, {DiagnosticContext.FormatBytes(c.RenderAllocatedBytes)} in total");
+            }
             if (c.RendersWithOutputComparison > 0)
             {
                 Line(sb, "Renders with identical output", $"{Num(c.RendersWithUnchangedOutput)} of {Num(c.RendersWithOutputComparison)} compared");

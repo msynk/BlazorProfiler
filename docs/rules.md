@@ -140,6 +140,15 @@ re-render counts. Demo: *Failing endpoint*.
 Endpoints requested from lifecycle methods of 3+ instances of one component type (5+ requests), or 3+ times by one instance
 from `OnParametersSet(Async)`. Requires instrumentation for origin attribution. Demo: *Request patterns*.
 
+<a id="bp3007"></a>
+### BP3007 — Request repeated after prerendering
+
+A GET request made by a component's initialization while prerendering (no circuit) and again, identically, when the same
+component type became interactive on a Blazor Server circuit within 30 seconds. High confidence; BP3001 does not report
+these pairs again. Recommends `[PersistentState]` / `PersistentComponentState`, or turning prerendering off for the
+component. WebAssembly interactivity is not covered (the second request runs in the browser runtime, profiled
+separately). Demo: *Request patterns* (verified end to end on the prerendered server page).
+
 ## JavaScript interop
 
 <a id="bp4001"></a>
@@ -237,6 +246,15 @@ An instance with an identified (not merely possible) retainer is always treated 
 becomes the finding's "where to look" hint. Other retaining paths (caches, closures stored elsewhere) are not found; use a
 memory profiler or `dotnet-gcdump` for those. Demo: *Leaky component* (navigate away and back several times, then check
 for leaks).
+
+<a id="bp5005"></a>
+### BP5005 — Allocation-heavy rendering
+
+Instrumented component types whose renders allocate at least `RenderAllocationBytes` (32 KB) on average, or
+`RenderAllocationTotalBytes` (64 MB) in total, over at least 10 measured renders. Allocations are measured per render on the
+rendering thread (`GC.GetAllocatedBytesForCurrentThread` before and after `BuildRenderTree`; verified in WebAssembly as
+well), so they are attributed exactly, unlike process-wide samples. The evidence includes the share of all process
+allocations. BP5002 (allocation spikes) also lists the components whose renders allocated during each spike.
 
 ## Blazor Server
 

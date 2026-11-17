@@ -254,6 +254,9 @@ public sealed class ProfilerSession : IProfilerSession
     /// <inheritdoc />
     public bool IsImported { get; }
 
+    /// <summary>The metadata of the trace an imported session was created from (null for live sessions).</summary>
+    internal Export.TraceMetadata? ImportedMetadataValue { get; set; }
+
     /// <summary>Bookmarks added to the session.</summary>
     public IReadOnlyList<MarkerEvent> Bookmarks
     {

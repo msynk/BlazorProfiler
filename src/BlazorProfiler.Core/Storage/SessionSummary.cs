@@ -102,6 +102,18 @@ public sealed class ComponentSummary
     /// <summary>Renders for which output comparison was performed.</summary>
     public double RendersWithOutputComparison { get; set; }
 
+    /// <summary>Bytes allocated by measured renders (weighted by sampling).</summary>
+    public double RenderAllocatedBytes { get; set; }
+
+    /// <summary>Renders whose allocations were measured.</summary>
+    public double RendersWithAllocations { get; set; }
+
+    /// <summary>The most bytes allocated by one render.</summary>
+    public long MaxRenderAllocatedBytes { get; set; }
+
+    /// <summary>Mean bytes allocated per measured render, or null when none was measured.</summary>
+    public double? MeanRenderAllocatedBytes => RendersWithAllocations > 0 ? Math.Round(RenderAllocatedBytes / RendersWithAllocations) : null;
+
     /// <summary>Parameter updates.</summary>
     public DurationSummary ParametersSets { get; set; } = new();
 
@@ -331,6 +343,18 @@ public sealed class StartupSummary
 
     /// <summary>The largest framework files.</summary>
     public List<Events.StartupResource> LargestFiles { get; set; } = [];
+
+    /// <summary>Logical processors reported by the browser, when available.</summary>
+    public int? HardwareConcurrency { get; set; }
+
+    /// <summary>Approximate device memory in GB, when available.</summary>
+    public double? DeviceMemoryGb { get; set; }
+
+    /// <summary>The browser's CPU performance tier, when available.</summary>
+    public int? CpuPerformance { get; set; }
+
+    /// <summary>The effective connection type, when available.</summary>
+    public string? EffectiveConnectionType { get; set; }
 }
 
 /// <summary>The latest value of one Core Web Vitals metric.</summary>

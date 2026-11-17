@@ -24,7 +24,7 @@ public static class DemoCatalog
         ("large-list", "Large list", "BP1002, BP1006, BP1007"),
         ("slow-handler", "Slow handlers", "BP1005, BP2001"),
         ("search", "Search as you type", "BP2002"),
-        ("requests", "Request patterns", "BP2003, BP3001, BP3002, BP3003, BP3006"),
+        ("requests", "Request patterns", "BP2003, BP3001-BP3003, BP3006, BP3007"),
         ("flaky", "Failing endpoint", "BP3004, BP3005"),
         ("interop", "Interop chatter", "BP4001-BP4004, BP7008"),
         ("allocations", "Allocation spike", "BP5001, BP5002"),

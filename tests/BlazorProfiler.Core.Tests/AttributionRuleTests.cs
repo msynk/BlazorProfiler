@@ -60,6 +60,8 @@ public class AttributionRuleTests
         Assert.Contains("BP7006", ids);
         Assert.Contains("BP7007", ids);
         Assert.Contains("BP7008", ids);
+        Assert.Contains("BP3007", ids);
+        Assert.Contains("BP5005", ids);
     }
 
     [Fact]
@@ -250,6 +252,56 @@ public class AttributionRuleTests
         Assert.Contains("HTTP request(s) ran meanwhile", finding.Summary, StringComparison.Ordinal);
         Assert.Contains(finding.Evidence, e => e.Label == ".NET handlers during the wait" && e.Value.Contains("Report.LoadAsync", StringComparison.Ordinal));
         Assert.Empty(Findings(Analyze([new BrowserInteractionEvent { EventType = "click", Timestamp = Ev.T(0), Duration = Ev.D(400) }]), "BP7008"));
+    }
+
+    [Fact]
+    public void BP3007_ReportsRequestsRepeatedAfterPrerenderingAndBP3001LeavesThemAlone()
+    {
+        static HttpRequestEvent Request(double at, string? circuit) => new()
+        {
+            Method = "GET",
+            Url = "https://localhost/api/products",
+            UrlHash = 42,
+            Endpoint = "GET https://localhost/api/products",
+            Timestamp = Ev.T(at),
+            Duration = Ev.D(80),
+            StatusCode = 200,
+            CircuitId = circuit,
+            OriginComponentType = "App.Pages.Products",
+            OriginLifecycleMethod = LifecycleMethod.OnInitializedAsync,
+            Source = InstrumentationSource.HttpMessageHandler,
+        };
+
+        var events = new List<ProfilerEvent> { Request(0, null), Request(900, "circuit-1") };
+        var report = Analyze(events);
+        var finding = Assert.Single(Findings(report, "BP3007"));
+        Assert.Equal("App.Pages.Products", finding.ComponentType);
+        Assert.Contains("PersistentState", finding.Recommendation, StringComparison.Ordinal);
+        Assert.Empty(Findings(report, "BP3001"));
+
+        // Two interactive requests are an ordinary duplicate, not a prerender double fetch.
+        var interactive = Analyze([Request(0, "circuit-1"), Request(900, "circuit-1")]);
+        Assert.Empty(Findings(interactive, "BP3007"));
+        Assert.Single(Findings(interactive, "BP3001"));
+    }
+
+    [Fact]
+    public void BP5005_ReportsAllocationHeavyRendering()
+    {
+        var events = Enumerable.Range(0, 12).Select(i => (ProfilerEvent)new ComponentRenderEvent
+        {
+            ComponentType = "App.Grid",
+            ComponentInstanceId = 1,
+            Timestamp = Ev.T(i * 100),
+            Duration = Ev.D(3),
+            AllocatedBytes = 120_000,
+            Source = InstrumentationSource.ComponentInstrumentation,
+        }).ToList();
+        events.AddRange(Enumerable.Range(0, 12).Select(i => (ProfilerEvent)new ComponentRenderEvent { ComponentType = "App.Row", ComponentInstanceId = 2, Timestamp = Ev.T(i * 100), Duration = Ev.D(1), AllocatedBytes = 800, Source = InstrumentationSource.ComponentInstrumentation }));
+
+        var finding = Assert.Single(Findings(Analyze(events), "BP5005"));
+        Assert.Equal("App.Grid", finding.ComponentType);
+        Assert.Contains("117.2 KB", finding.Title, StringComparison.Ordinal);
     }
 
     [Fact]

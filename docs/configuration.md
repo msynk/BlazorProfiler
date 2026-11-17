@@ -126,6 +126,7 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `TrackRenderRequests` | on | Coalesced and `ShouldRender`-suppressed requests. |
 | `TrackParameterChanges` | on | Compare incoming parameters with the previous set (values are never stored in events). |
 | `TrackRenderOutput` | off | Hash render output to detect identical renders (cost proportional to tree size). |
+| `TrackRenderAllocations` | on | Bytes allocated by each render (`GC.GetAllocatedBytesForCurrentThread` around `BuildRenderTree`; a few nanoseconds, no allocation). |
 | `TrackComponentTree` | on | Discover children after each render. |
 
 ### `Diagnostics`
@@ -133,7 +134,8 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules["BP1001"] = new RuleSettings { Enabled = false, Severity = DiagnosticSeverity.Low }`.
 `MaxFindingsPerRule` limits output (default 10). Newer thresholds: `NPlusOneQueryThreshold` (5), `SlowQueryMs` (100),
 `LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000), `ComponentChurnThreshold`
-(10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007).
+(10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007),
+`RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005).
 
 ### `Telemetry` (OpenTelemetry)
 

@@ -82,6 +82,24 @@ public sealed class TraceMetadata
     /// <summary>The profiler version.</summary>
     public string? ProfilerVersion { get; set; }
 
+    /// <summary>The profiled application's entry assembly name, when known.</summary>
+    public string? AppName { get; set; }
+
+    /// <summary>The application's informational version (often including the source commit, for example <c>1.4.0+3f2a1c9</c>).</summary>
+    public string? AppVersion { get; set; }
+
+    /// <summary>
+    /// How the application was compiled: <c>Debug</c> (JIT optimizations disabled) or <c>Release</c>. Timings of Debug builds
+    /// are not comparable with Release builds.
+    /// </summary>
+    public string? BuildConfiguration { get; set; }
+
+    /// <summary>The operating system the application ran on (<see cref="RuntimeInformation.OSDescription"/>).</summary>
+    public string? OperatingSystem { get; set; }
+
+    /// <summary>The number of processors available to the application.</summary>
+    public int? ProcessorCount { get; set; }
+
     /// <summary>The configuration profile.</summary>
     public ProfilerProfile Profile { get; set; }
 
@@ -149,6 +167,9 @@ public static class TraceDocumentBuilder
         exportOptions ??= new TraceExportOptions();
         var snapshot = session.CreateSnapshot();
         var clock = session.Clock;
+
+        // A re-exported imported trace keeps the environment it was recorded in.
+        var importedMetadata = (session as Sessions.ProfilerSession)?.ImportedMetadataValue;
         var events = snapshot.Events.AsEnumerable();
         if (snapshot.Events.Length > exportOptions.MaxEvents)
         {
@@ -166,8 +187,13 @@ public static class TraceDocumentBuilder
                 ExportedAt = DateTimeOffset.UtcNow,
                 DurationMs = snapshot.Statistics.DurationMs,
                 Source = source,
-                Runtime = RuntimeInformation.FrameworkDescription,
+                Runtime = importedMetadata?.Runtime ?? RuntimeInformation.FrameworkDescription,
                 ProfilerVersion = ProfilerVersion,
+                AppName = importedMetadata is { } imported ? imported.AppName : AppInfo.Name,
+                AppVersion = importedMetadata is { } importedVersion ? importedVersion.AppVersion : AppInfo.Version,
+                BuildConfiguration = importedMetadata is { } importedBuild ? importedBuild.BuildConfiguration : AppInfo.BuildConfiguration,
+                OperatingSystem = importedMetadata is { } importedOs ? importedOs.OperatingSystem : RuntimeInformation.OSDescription,
+                ProcessorCount = importedMetadata is { } importedProcessors ? importedProcessors.ProcessorCount : Environment.ProcessorCount,
                 Profile = options.Profile,
                 SamplingRates = options.Sampling.Rates.ToDictionary(p => p.Key.ToString(), p => p.Value, StringComparer.Ordinal),
                 DroppedEvents = health?.DroppedQueueFull ?? snapshot.Summary.DroppedEventsReported,
@@ -236,6 +262,41 @@ public static class TraceDocumentBuilder
             {
                 circuit.CircuitId = Map(circuit.CircuitId) ?? string.Empty;
             }
+        }
+    }
+}
+
+/// <summary>Information about the profiled application, read once from its entry assembly.</summary>
+internal static class AppInfo
+{
+    private static readonly Lazy<(string? Name, string? Version, string? Build)> s_info = new(Read);
+
+    public static string? Name => s_info.Value.Name;
+
+    public static string? Version => s_info.Value.Version;
+
+    public static string? BuildConfiguration => s_info.Value.Build;
+
+    private static (string? Name, string? Version, string? Build) Read()
+    {
+        try
+        {
+            var assembly = System.Reflection.Assembly.GetEntryAssembly();
+            if (assembly is null)
+            {
+                return (null, null, null);
+            }
+
+            var name = assembly.GetName();
+            var version = assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? name.Version?.ToString();
+            var debuggable = assembly.GetCustomAttributes(typeof(System.Diagnostics.DebuggableAttribute), false).OfType<System.Diagnostics.DebuggableAttribute>().FirstOrDefault();
+            var build = debuggable is { IsJITOptimizerDisabled: true } ? "Debug" : "Release";
+            return (name.Name, version, build);
+        }
+        catch (Exception)
+        {
+            return (null, null, null);
         }
     }
 }

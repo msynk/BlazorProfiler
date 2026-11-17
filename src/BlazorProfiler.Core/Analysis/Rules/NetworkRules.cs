@@ -41,6 +41,13 @@ public sealed class DuplicateRequestsRule : DiagnosticRule
             for (var i = 1; i < requests.Count; i++)
             {
                 var previous = requests[i - 1];
+
+                // A prerender request (no circuit) repeated by the interactive render is reported by BP3007.
+                if (PrerenderDoubleFetchRule.IsPrerenderPair(previous, requests[i]))
+                {
+                    continue;
+                }
+
                 if (requests[i].Timestamp - previous.Timestamp <= window)
                 {
                     duplicates.Add(requests[i]);
@@ -428,4 +435,84 @@ public sealed class RequestsDuringInitializationRule : DiagnosticRule
                 related: requests);
         }
     }
+}
+
+/// <summary>BP3007: a request made while prerendering and again when the component became interactive.</summary>
+public sealed class PrerenderDoubleFetchRule : DiagnosticRule
+{
+    private const double WindowMs = 30_000;
+
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP3007",
+        Title = "Request repeated after prerendering",
+        Category = DiagnosticCategory.Network,
+        Description = "Detects GET requests that a component's initialization made while prerendering (no circuit) and again, identically, when the same component type became interactive on a Blazor Server circuit.",
+        RequiredSignals = [ProfilerEventKind.HttpRequest],
+    };
+
+    /// <summary>Whether two requests are the same request made by prerendering and then by the interactive render.</summary>
+    internal static bool IsPrerenderPair(HttpRequestEvent first, HttpRequestEvent second) =>
+        first.CircuitId is null && second.CircuitId is not null && first.UrlHash == second.UrlHash && first.UrlHash != 0
+        && first.OriginComponentType is not null && first.OriginComponentType == second.OriginComponentType
+        && IsInitialization(first) && IsInitialization(second);
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var window = context.Ticks(WindowMs);
+        var requests = context.OfType<HttpRequestEvent>()
+            .Where(r => r.Method is "GET" or "HEAD" && r.UrlHash != 0 && r.OriginComponentType is not null && IsInitialization(r))
+            .ToList();
+        foreach (var group in requests.GroupBy(r => r.OriginComponentType!).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var list = group.OrderBy(r => r.Timestamp).ToList();
+            var pairs = new List<(HttpRequestEvent Prerender, HttpRequestEvent Interactive)>();
+            var used = new HashSet<long>();
+            foreach (var prerender in list.Where(r => r.CircuitId is null))
+            {
+                var interactive = list.FirstOrDefault(r => !used.Contains(r.Id) && IsPrerenderPair(prerender, r) && r.Timestamp > prerender.Timestamp && r.Timestamp - prerender.Timestamp <= window);
+                if (interactive is not null)
+                {
+                    used.Add(interactive.Id);
+                    pairs.Add((prerender, interactive));
+                }
+            }
+
+            if (pairs.Count == 0)
+            {
+                continue;
+            }
+
+            var shortType = ShortType(group.Key);
+            var wastedMs = pairs.Sum(p => context.Ms(p.Interactive.Duration));
+            var endpoints = pairs.Select(p => p.Interactive.Endpoint ?? p.Interactive.Url).Distinct().Take(3).ToList();
+            yield return Create(
+                $"{shortType} requests the same data during prerendering and again when it becomes interactive",
+                Scale(pairs.Count, 2),
+                DiagnosticConfidence.High,
+                $"{FormatNumber(pairs.Count)} time(s), {shortType} made an identical request while prerendering and again after its circuit started ({string.Join(", ", endpoints)}). The repeated requests took {FormatMs(wastedMs)}, and the prerendered result had already been sent to the browser.",
+                "With prerendering, components are initialized twice: once to produce the static HTML and once when they become interactive. Data loaded in OnInitializedAsync is fetched both times unless it is persisted across the two renders, and the page can flicker when the second result replaces the first.",
+                "Persist the prerendered state: mark the property with `[PersistentState]` (.NET 10) or use `PersistentComponentState`, or turn prerendering off for this component (`@rendermode @(new InteractiveServerRenderMode(prerender: false))`). Alternatively cache the response for the user's session.",
+                [
+                    Evidence("Double fetches", FormatNumber(pairs.Count)),
+                    Evidence("Endpoints", string.Join("; ", endpoints!)),
+                    Evidence("Time of the repeated requests", FormatMs(wastedMs)),
+                ],
+                new ImpactEstimate { TotalMs = Math.Round(wastedMs, 3), Occurrences = pairs.Count, Method = "Duration of the requests repeated by the interactive render.", Quality = ValueQuality.Measured },
+                componentType: group.Key,
+                subject: "prerender:" + group.Key,
+                caveats:
+                [
+                    "The data may legitimately differ between the two renders (for example per-user data that changed in between).",
+                    "Only Blazor Server is covered: with WebAssembly interactivity the second request runs in the browser, which is profiled separately.",
+                ],
+                related: pairs.SelectMany(p => new ProfilerEvent[] { p.Prerender, p.Interactive }),
+                codeHint: $"{shortType}.OnInitializedAsync");
+        }
+    }
+
+    private static bool IsInitialization(HttpRequestEvent e) =>
+        e.OriginLifecycleMethod is LifecycleMethod.OnInitialized or LifecycleMethod.OnInitializedAsync or LifecycleMethod.SetParametersAsync or LifecycleMethod.OnParametersSet or LifecycleMethod.OnParametersSetAsync;
 }
