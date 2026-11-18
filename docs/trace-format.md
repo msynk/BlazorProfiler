@@ -62,7 +62,7 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `eventHandler` | component fields, `methodName`, `attributeName`, `synchronousDuration` |
 | `navigation` | component fields, `route` (template) |
 | `http` | `method`, `url` (sanitized), `endpoint`, `urlHash`, `statusCode`, `requestBytes`, `responseBytes`, `responseBytesQuality`, `fromCache`, `retryAttempt`, `source`, `originComponentType`, `originComponentInstanceId`, `originLifecycleMethod` |
-| `jsInterop` | `direction`, `identifier`, `synchronous`, `viaObjectReference`, `argumentCount`, `payloadBytes`, `payloadBytesQuality`, `source`, `originComponentType`, `originComponentInstanceId` |
+| `jsInterop` | `direction`, `identifier`, `synchronous`, `viaObjectReference`, `argumentCount`, `payloadBytes`, `payloadBytesQuality`, `source`, `originComponentType`, `originComponentInstanceId`. Calls from JavaScript to .NET (`direction` `JSToDotNet`, `source` `Browser`) use the method name as `identifier` for instance methods and `Method (Assembly)` for static ones; a failed call has `errorType` `Microsoft.JSInterop.DotNetInvocationFailure`. |
 | `runtime` | `allocatedBytes`, `heapSizeBytes`, `totalMemoryBytes`, `gen0Collections`, `gen1Collections`, `gen2Collections`, `gcPauseTicks`, `cpuTicks`, `processorCount`, `workingSetBytes`, `threadPoolThreads`, `threadPoolQueueLength`, `lockContentions`, `exceptions` (unavailable values are omitted); schema 3: `exceptionTypes` (type name → count, at most 5), `activeTimers` |
 | `circuit` | `change` (`Opened`, `ConnectionUp`, `ConnectionDown`, `Closed`) |
 | `circuitActivity` | `activityName` (hub method) |

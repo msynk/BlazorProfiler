@@ -27,6 +27,7 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | .NET → JS interop calls | M via `IProfiledJSRuntime` only | M (all `IJSRuntime` calls) | — | js-interop |
 | Calls on `IJSObjectReference` (modules) | M via `IProfiledJSRuntime` + `JSObjectReferences` | M with `JSObjectReferences` | — | js-interop |
 | Interop payload size | E (opt-in) | E (opt-in) | — | js-interop |
+| JS → .NET calls (`DotNetObjectReference`, `DotNet.invokeMethodAsync`), timed until .NET returns | M (browser; includes the round trip) | M (browser) | — | browser + js-interop |
 | JS → .NET calls | M as circuit activities | — | — | circuits |
 | Allocation rate, heap size, GC counts, GC pause time | M (process) | M (.NET runtime in the tab) | M (process) | runtime |
 | CPU time, working set, thread pool, lock contention | M (process) | — | M | runtime |

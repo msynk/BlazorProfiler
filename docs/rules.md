@@ -154,27 +154,32 @@ separately). Demo: *Request patterns* (verified end to end on the prerendered se
 <a id="bp4001"></a>
 ### BP4001 — Excessive JavaScript interop calls
 
-Operations with at least `ExcessiveInteropCallsPerOperation` (50) calls, and sustained rates of
-`ExcessiveInteropCallsPerSecond` (60). Demo: *Interop chatter*.
+Operations with at least `ExcessiveInteropCallsPerOperation` (50) .NET-to-JavaScript calls, and sustained rates of
+`ExcessiveInteropCallsPerSecond` (60). Calls from JavaScript to .NET are reported by BP4007. Demo: *Interop chatter*.
 
 <a id="bp4002"></a>
 ### BP4002 — Batchable interop calls
 
-The same identifier called 10+ times in one operation. Demo: *Interop chatter*.
+The same JavaScript identifier called 10+ times in one operation. Demo: *Interop chatter*.
 
 <a id="bp4003"></a>
 ### BP4003 — Large interop payloads
 
 Calls whose estimated argument size is at least `LargeInteropPayloadBytes` (64 KB). Requires
-`Collectors.JSInteropPayloadEstimation`; sizes are estimates. Demo: *Interop chatter* (one call with 20,000 points).
+`Collectors.JSInteropPayloadEstimation`; sizes are estimates. Calls from JavaScript to .NET on Blazor Server are reported
+from `LargeServerJSToDotNetPayloadBytes` (24 KB, 75% of the hub's default `MaximumReceiveMessageSize`), because a larger
+message closes the circuit: Medium severity, High from 32 KB. Their sizes are estimated in the browser with
+`JSON.stringify` (byte arrays, which Blazor sends in binary, are overestimated). Demo: *Interop chatter* (one call with
+20,000 points).
 
 <a id="bp4004"></a>
 ### BP4004 — Slow interop calls
 
 Identifiers whose p95 is at least `SlowInteropMs` (100), over the calls that JavaScript answered (a result or a
 `JSException`). Calls without a response are left to BP4006, because their duration is the caller's wait (for example the
-one-minute interop timeout), not JavaScript time. On the server the time includes the network round trip. Demo: *Interop
-chatter* (slow JavaScript).
+one-minute interop timeout), not JavaScript time. On the server the time includes the network round trip. Calls from
+JavaScript to .NET are reported too, timed in the browser until .NET returned (on the server including the round trip
+and the wait for the circuit's dispatcher). Demo: *Interop chatter* (slow JavaScript).
 
 <a id="bp4005"></a>
 ### BP4005 — Interop after component disposal
@@ -190,6 +195,18 @@ failed with `InvalidOperationException` (interop unavailable, for example from a
 calls made while the circuit is disconnected never reach the browser and wait for the interop timeout; the finding counts
 the timeouts that started while the circuit was disconnected or closed. Severity capped at High. Timeouts and deliberate
 cancellations cannot be told apart. Demo: *Leaky component* (leave the page or close the tab).
+
+<a id="bp4007"></a>
+### BP4007 — Frequent JavaScript-to-.NET calls
+
+Calls from JavaScript into .NET (`DotNetObjectReference.invokeMethodAsync`/`invokeMethod` and
+`DotNet.invokeMethodAsync`/`invokeMethod`, recorded by the browser module) peaking at `FrequentServerJSToDotNetCallsPerSecond`
+(20) per second on Blazor Server, where each call is a message over the circuit queued on its dispatcher, or
+`FrequentJSToDotNetCallsPerSecond` (60) in WebAssembly. The evidence lists the most frequent methods with their own peaks.
+Typical sources are unthrottled `scroll`, `pointermove`, `resize`, and `input` listeners. Recommends throttling in
+JavaScript (once per animation frame), keeping high-frequency logic in JavaScript, and batching updates into one call.
+Blazor's own plumbing (event dispatch, root components) is not counted; calls made by framework components such as
+`Virtualize` and `InputFile` are. Demo: *Interop chatter* (pointer moves one by one, and the batched fix).
 
 ## Memory
 

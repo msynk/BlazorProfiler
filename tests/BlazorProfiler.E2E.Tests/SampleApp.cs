@@ -124,12 +124,23 @@ public class SampleApp : IAsyncLifetime
     public async Task<string> StartSessionAsync(string name)
     {
         var info = await ApiAsync("/info");
+        var stopped = new List<string>();
         foreach (var session in info.GetProperty("sessions").EnumerateArray())
         {
+            var id = session.GetProperty("id").GetString()!;
             if (session.GetProperty("state").GetString() == "Recording")
             {
-                await ApiAsync($"/sessions/{session.GetProperty("id").GetString()}/stop", HttpMethod.Post);
+                await ApiAsync($"/sessions/{id}/stop", HttpMethod.Post);
             }
+
+            stopped.Add(id);
+        }
+
+        // The profiler keeps at most Retention.MaxSessions (16) sessions. Tests in one class run sequentially, so sessions
+        // started by earlier tests are no longer read and the oldest are removed to stay below the limit.
+        for (var i = 0; i < stopped.Count - 8; i++)
+        {
+            await ApiAsync($"/sessions/{stopped[i]}", HttpMethod.Delete);
         }
 
         return (await ApiAsync("/sessions", HttpMethod.Post, new { name })).GetProperty("id").GetString()!;

@@ -72,4 +72,4 @@ repository. Nothing in the design relies on undocumented behavior without a fall
 | Server: diff-generation time separate from transport | Not exposed. | Round-trip time is labelled as such; small-batch medians are used as evidence of network-bound latency. |
 | Browser paint time for a specific render batch | Not exposed to .NET. | Event Timing presentation delay per interaction. |
 | Server-side JS interop through `IJSRuntime` | Decoration breaks circuits (see above). | Opt-in `IProfiledJSRuntime`. |
-| JavaScript-to-.NET callbacks (WebAssembly) | No public hook. | Not reported (server: visible as `BeginInvokeDotNetFromJS` circuit activities). |
+| JavaScript-to-.NET callbacks (WebAssembly) | No public hook in .NET. | Recorded in the browser: the module wraps `invokeMethod(Async)` on the shared `DotNetObjectReference` prototype and on `DotNet`, in both hosting models (BP4007). |

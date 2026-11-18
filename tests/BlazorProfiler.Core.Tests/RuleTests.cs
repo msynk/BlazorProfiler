@@ -371,6 +371,78 @@ public class RuleTests
         Assert.Contains(finding.Evidence, e => e.Quality == ValueQuality.Estimated);
     }
 
+    private static JSInteropEvent FromJs(string identifier, double atMs, double durationMs = 0.5, long? payload = null, string? circuit = null)
+    {
+        var call = Ev.Interop(identifier, atMs, durationMs, payload: payload);
+        call.Direction = InteropDirection.JSToDotNet;
+        call.Source = InstrumentationSource.Browser;
+        call.ViaObjectReference = true;
+        call.CircuitId = circuit;
+        return call;
+    }
+
+    [Fact]
+    public void BP4007_ReportsFrequentJavaScriptToDotNetCallsWithHostingSpecificThresholds()
+    {
+        // 30 calls in one second: frequent on Blazor Server (threshold 20), not in WebAssembly (threshold 60).
+        var server = Enumerable.Range(0, 30).Select(i => (ProfilerEvent)FromJs("OnPointerMove", i * 30, 2, circuit: "c1")).ToList();
+        var finding = Assert.Single(Findings(Analyze(server), "BP4007"));
+        Assert.Contains("OnPointerMove", finding.Summary, StringComparison.Ordinal);
+        Assert.Contains("circuit", finding.Explanation, StringComparison.Ordinal);
+        Assert.Equal(DiagnosticConfidence.High, finding.Confidence);
+
+        var wasm = Enumerable.Range(0, 30).Select(i => (ProfilerEvent)FromJs("OnPointerMove", i * 30, 2)).ToList();
+        Assert.Empty(Findings(Analyze(wasm), "BP4007"));
+        var busy = Enumerable.Range(0, 90).Select(i => (ProfilerEvent)FromJs("OnScroll", i * 10, 0.2)).ToList();
+        Assert.Single(Findings(Analyze(busy), "BP4007"));
+
+        // The same calls spread out are not frequent; .NET-to-JavaScript calls never count.
+        var spread = Enumerable.Range(0, 30).Select(i => (ProfilerEvent)FromJs("OnPointerMove", i * 1000, 2, circuit: "c1")).ToList();
+        Assert.Empty(Findings(Analyze(spread), "BP4007"));
+        var outbound = Enumerable.Range(0, 90).Select(i => (ProfilerEvent)Ev.Interop("plot", i * 10, 0.2)).ToList();
+        Assert.Empty(Findings(Analyze(outbound), "BP4007"));
+    }
+
+    [Fact]
+    public void BP4001_AndBP4002_IgnoreJavaScriptToDotNetCalls()
+    {
+        var events = new List<ProfilerEvent> { Ev.Handler("App.Chart", "Draw", 0, 50, 1) };
+        events.AddRange(Enumerable.Range(0, 90).Select(i =>
+        {
+            var call = FromJs("OnTick", i * 10, 0.1);
+            call.OperationId = 1;
+            return (ProfilerEvent)call;
+        }));
+        var report = Analyze(events);
+        Assert.Empty(Findings(report, "BP4001"));
+        Assert.Empty(Findings(report, "BP4002"));
+        Assert.Single(Findings(report, "BP4007"));
+    }
+
+    [Fact]
+    public void BP4003_UsesTheHubMessageLimitForJavaScriptToDotNetCallsOnServer()
+    {
+        // 28 KB: below the general threshold (64 KB), above 75% of the default MaximumReceiveMessageSize on the server.
+        var server = Assert.Single(Findings(Analyze([FromJs("UploadChunk", 0, 5, payload: 28 * 1024, circuit: "c1")]), "BP4003"));
+        Assert.Equal(DiagnosticSeverity.Medium, server.Severity);
+        Assert.Contains("MaximumReceiveMessageSize", server.Explanation, StringComparison.Ordinal);
+        Assert.StartsWith("JavaScript sends", server.Title, StringComparison.Ordinal);
+        Assert.Equal(DiagnosticSeverity.High, Assert.Single(Findings(Analyze([FromJs("UploadChunk", 0, 5, payload: 40 * 1024, circuit: "c1")]), "BP4003")).Severity);
+
+        // In WebAssembly there is no message limit; the general threshold applies.
+        Assert.Empty(Findings(Analyze([FromJs("UploadChunk", 0, 5, payload: 28 * 1024)]), "BP4003"));
+        Assert.Empty(Findings(Analyze([Ev.Interop("grid.load", 0, 5, payload: 28 * 1024)]), "BP4003"));
+    }
+
+    [Fact]
+    public void BP4004_DescribesSlowJavaScriptToDotNetCalls()
+    {
+        var events = Enumerable.Range(0, 5).Select(i => (ProfilerEvent)FromJs("Compute", i * 1000, 300)).ToList();
+        var finding = Assert.Single(Findings(Analyze(events), "BP4004"));
+        Assert.StartsWith("JavaScript calls to Compute", finding.Title, StringComparison.Ordinal);
+        Assert.Contains("JSInvokable", finding.Recommendation, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void BP4004_ReportsSlowInterop()
     {

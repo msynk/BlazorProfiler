@@ -44,6 +44,12 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
   that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
   leave its render tree or the parent is disposed.
+- **Calls from JavaScript to .NET** (`DotNetObjectReference.invokeMethodAsync`, `DotNet.invokeMethodAsync`, and their
+  synchronous forms) are recorded by the browser module in both hosting models, timed until .NET returns; previously they
+  were invisible in WebAssembly. Blazor's own plumbing (event dispatch, root components) is excluded. New rule **BP4007**
+  (frequent JavaScript-to-.NET calls; 20 per second on Blazor Server, 60 in WebAssembly); BP4003 reports JavaScript-to-.NET
+  payloads on the server from 24 KB (the hub's default 32 KB message limit closes the circuit); BP4004 covers slow calls
+  in this direction. BP4001 and BP4002 now count .NET-to-JavaScript calls only.
 - **DOM size** (sampled number of elements, reported as the `DOM` browser value) and rule **BP7009** (excessive DOM size,
   Lighthouse thresholds).
 - **Standalone WebAssembly sample** (`demo/Standalone`) with end-to-end tests: interactive-router navigations, BP5007,

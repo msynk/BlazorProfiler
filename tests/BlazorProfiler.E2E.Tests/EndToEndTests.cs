@@ -253,6 +253,60 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         await page.CloseAsync();
     }
 
+    private static void AssertJavaScriptToDotNetCalls(List<JsonElement> events)
+    {
+        var calls = events.Where(e => e.Str("type") == "jsInterop" && e.Str("direction") == "JSToDotNet").ToList();
+        var moves = calls.Where(c => c.Str("identifier") == "OnPointerMove").ToList();
+        Assert.True(moves.Count >= 150, $"Expected 150 OnPointerMove calls, got {moves.Count}.");
+        Assert.All(moves, c => Assert.True(c.GetProperty("viaObjectReference").GetBoolean()));
+        Assert.All(moves, c => Assert.Equal(2, c.GetProperty("argumentCount").GetInt32()));
+        Assert.Contains(calls, c => c.Str("identifier") == "DemoPing (BlazorProfiler.Demo.Client)" && !c.GetProperty("viaObjectReference").GetBoolean());
+
+        // Blazor's own plumbing (event dispatch, root components) and the profiler's own calls are not recorded.
+        Assert.DoesNotContain(calls, c => c.Str("identifier") is "DispatchEventAsync" or "AddRootComponent" or "SetRootComponentParameters" or "RemoveRootComponent");
+        Assert.DoesNotContain(calls, c => c.Str("identifier").StartsWith("BlazorProfiler.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ServerRecordsJavaScriptToDotNetCallsAndReportsFrequentOnes()
+    {
+        var session = await app.StartSessionAsync("js-to-dotnet");
+        var page = await OpenAsync("server/interop");
+        await ClickWhenInteractiveAsync(page, "#stream-to-dotnet", "150 calls", "#interop-status");
+
+        await Waits.UntilAsync(async () => (await app.FindingsAsync(session)).Any(f => f.Str("ruleId") == "BP4007"), 30_000, "BP4007 was not reported.");
+        AssertJavaScriptToDotNetCalls(await app.EventsAsync(session));
+        var finding = (await app.FindingsAsync(session)).First(f => f.Str("ruleId") == "BP4007");
+        Assert.Contains("OnPointerMove", finding.Str("summary"), StringComparison.Ordinal);
+
+        // The fix sends the same moves in one call.
+        await page.ClickAsync("#stream-batched");
+        await page.WaitForSelectorAsync("text=Sent 150 pointer moves to .NET with one call", new() { Timeout = 20_000 });
+        await Waits.UntilAsync(async () => (await app.EventsAsync(session)).Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "OnPointerMoves"), 20_000, "The batched call was not recorded.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task WebAssemblyRecordsJavaScriptToDotNetCallsAndReportsFrequentOnes()
+    {
+        var page = await app.Browser.NewPageAsync();
+        await page.GotoAsync(app.BaseUrl + "wasm/interop");
+        await ClickWhenInteractiveAsync(page, "#stream-to-dotnet", "150 calls", "#interop-status");
+
+        string? sessionId = null;
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var report = await BridgeAsync(page, new { op = "findings", sessionId });
+            return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP4007");
+        }, 30_000, "BP4007 was not reported in WebAssembly.");
+
+        var events = (await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 })).GetProperty("page").GetProperty("events").EnumerateArray().ToList();
+        AssertJavaScriptToDotNetCalls(events);
+        await page.CloseAsync();
+    }
+
     [Fact]
     public async Task WebAssemblyDashboardShowsInteropFindingsThroughTheBridge()
     {

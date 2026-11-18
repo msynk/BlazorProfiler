@@ -511,6 +511,21 @@ public sealed class DiagnosticOptions
     /// <summary>Estimated interop payload size considered large.</summary>
     public long LargeInteropPayloadBytes { get; set; } = 64 * 1024;
 
+    /// <summary>
+    /// BP4003: estimated JavaScript-to-.NET payload size considered large on Blazor Server, where a message above the hub's
+    /// <c>MaximumReceiveMessageSize</c> (32 KB by default) closes the circuit. The default is 75% of that limit.
+    /// </summary>
+    public long LargeServerJSToDotNetPayloadBytes { get; set; } = 24 * 1024;
+
+    /// <summary>BP4007: JavaScript-to-.NET calls per second (peak) considered frequent in WebAssembly.</summary>
+    public double FrequentJSToDotNetCallsPerSecond { get; set; } = 60;
+
+    /// <summary>
+    /// BP4007: JavaScript-to-.NET calls per second (peak) considered frequent on Blazor Server, where each call is a message
+    /// over the circuit.
+    /// </summary>
+    public double FrequentServerJSToDotNetCallsPerSecond { get; set; } = 20;
+
     /// <summary>Interop call duration considered slow.</summary>
     public double SlowInteropMs { get; set; } = 100;
 

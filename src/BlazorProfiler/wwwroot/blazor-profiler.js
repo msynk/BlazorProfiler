@@ -26,6 +26,11 @@ const DEAD_CLICK_MS = 1000;
 const INTERACTIVE_SELECTOR = 'button, a[href], input[type=button], input[type=submit], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=tab], summary';
 // The interaction an entry was created for. A symbol key is not serialized by JSON.stringify.
 const INTERACTION_ID = Symbol('interactionId');
+// Blazor's own JS-to-.NET plumbing that goes through DotNetObjectReference instances: event dispatch (recorded as event
+// handlers) and root component management. Calls made by framework components (Virtualize, InputFile) are kept.
+const FRAMEWORK_DOTNET_METHODS = new Set(['DispatchEventAsync', 'AddRootComponent', 'RemoveRootComponent', 'SetRootComponentParameters']);
+const WRAPPED = Symbol('blazorProfilerWrapped');
+const MAX_PAYLOAD_ESTIMATE_BYTES = 16 * 1024 * 1024;
 
 let state = null;
 // performance.now() when the last collecting client stopped. The module lives as long as the document, so a client created
@@ -67,6 +72,10 @@ export function start(dotNetRef, optionsJson) {
   }
 
   if (state.collect) {
+    if (options.dotNetCalls) {
+      instrumentDotNetCalls(dotNetRef);
+    }
+
     if (options.frustration !== false) {
       observeFrustration(options.frustrationIgnoreSelector);
     }
@@ -231,6 +240,105 @@ function epoch(startTime) {
 // Long strings are cut here as well as in .NET, so a single entry can never exceed the batch budget.
 function cut(value, max) {
   return typeof value === 'string' && value.length > max ? value.slice(0, max) : value;
+}
+
+/**
+ * Records JavaScript-to-.NET calls: DotNetObjectReference.invokeMethod(Async) (instance methods, found through the
+ * prototype of the profiler's own reference, which every reference shares) and DotNet.invokeMethod(Async) (static methods).
+ * The wrappers are installed once per document and record only while a client collects; they never change arguments,
+ * results, or errors. The duration runs from the call until .NET returns (asynchronous calls: until the returned promise
+ * settles), which on Blazor Server includes the round trip over the circuit.
+ */
+function instrumentDotNetCalls(ref) {
+  try {
+    const proto = ref && Object.getPrototypeOf(ref);
+    if (proto && proto !== Object.prototype) {
+      wrapDotNetMethod(proto, 'invokeMethodAsync', true, true);
+      wrapDotNetMethod(proto, 'invokeMethod', true, false);
+    }
+
+    const dotNet = globalThis.DotNet;
+    if (dotNet && typeof dotNet === 'object') {
+      wrapDotNetMethod(dotNet, 'invokeMethodAsync', false, true);
+      wrapDotNetMethod(dotNet, 'invokeMethod', false, false);
+    }
+  } catch { /* never break the page */ }
+}
+
+function wrapDotNetMethod(target, name, instance, async) {
+  const original = target[name];
+  if (typeof original !== 'function' || original[WRAPPED]) {
+    return;
+  }
+
+  const wrapper = function (...args) {
+    const current = state;
+    const method = instance ? args[0] : args[1];
+    if (!current || !current.collect || !current.options.dotNetCalls || (instance && this === current.ref)
+      || typeof method !== 'string' || method.startsWith('BlazorProfiler.') || (instance && FRAMEWORK_DOTNET_METHODS.has(method))) {
+      return original.apply(this, args);
+    }
+
+    const identifier = instance ? method : `${method} (${args[0]})`;
+    const argumentCount = Math.max(0, args.length - (instance ? 1 : 2));
+    const payload = current.options.estimatePayload ? estimateArguments(args, instance ? 1 : 2) : undefined;
+    const started = performance.now();
+    const record = error => {
+      try {
+        push({
+          k: 'x',
+          n: cut(identifier, 256),
+          t: epoch(started),
+          d: Math.max(0, performance.now() - started),
+          c: argumentCount,
+          sy: async ? 0 : 1,
+          or: instance ? 1 : 0,
+          er: error === undefined ? undefined : cut((error && error.name) || 'Error', 64),
+          pb: payload,
+        });
+      } catch { /* never break the page */ }
+    };
+
+    let result;
+    try {
+      result = original.apply(this, args);
+    } catch (error) {
+      record(error || null);
+      throw error;
+    }
+
+    if (async && result && typeof result.then === 'function') {
+      // A separate chain: the caller still receives the original promise and its rejection.
+      result.then(() => record(undefined), error => record(error || null));
+    } else {
+      record(undefined);
+    }
+
+    return result;
+  };
+
+  wrapper[WRAPPED] = true;
+  try {
+    target[name] = wrapper;
+  } catch { /* read-only: not recorded */ }
+}
+
+// The JSON size of the arguments in UTF-8 bytes; undefined when they cannot be serialized here (cycles) or are huge.
+function estimateArguments(args, skip) {
+  try {
+    let bytes = 0;
+    for (let i = skip; i < args.length; i++) {
+      const json = JSON.stringify(args[i]);
+      bytes += json === undefined ? 4 : utf8Length(json) + 1;
+      if (bytes > MAX_PAYLOAD_ESTIMATE_BYTES) {
+        return MAX_PAYLOAD_ESTIMATE_BYTES;
+      }
+    }
+
+    return bytes;
+  } catch {
+    return undefined;
+  }
 }
 
 function observeInteractions(threshold, live) {

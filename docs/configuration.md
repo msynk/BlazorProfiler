@@ -104,9 +104,9 @@ Replace the whole policy by registering your own `IProfilerRedactionPolicy` befo
 | `ComponentActivities` | on | Interaction/navigation context. |
 | `ComponentActivator` | on | Component creation tracking. Register a custom `IComponentActivator` *before* `AddBlazorProfiler` so the profiler wraps it. |
 | `Http` | on | `ProfilerHttpMessageHandler` on all `IHttpClientFactory` clients. |
-| `JSInterop` | on | `IJSRuntime` (WebAssembly) / `IProfiledJSRuntime` (server). |
+| `JSInterop` | on | `IJSRuntime` (WebAssembly) / `IProfiledJSRuntime` (server); calls from JavaScript to .NET are recorded by the browser module (`<BlazorProfilerClient>`) in both hosting models. |
 | `JSObjectReferences` | off | Wrap returned `IJSObjectReference`s (modules). A wrapped reference cannot be passed inside a nested argument object. |
-| `JSInteropPayloadEstimation` | off | Serialize arguments a second time to estimate size. |
+| `JSInteropPayloadEstimation` | off | Serialize arguments a second time to estimate size (calls from JavaScript to .NET: `JSON.stringify` in the browser). |
 | `Runtime`, `RuntimeSampleInterval` | on, 1 s | Runtime sampling, first-chance exception counts by type (one counter increment per exception), and the active timer count. |
 | `Circuits` | on | Circuit handler and hub filter (server). |
 | `Browser`, `BrowserInteractionThresholdMs` | on, 40 ms | Browser entries, startup, and Core Web Vitals (needs `BlazorProfilerClient`). Long animation frames carry script attribution (the 5 longest scripts per frame: invoker, sanitized source, function, forced layout). |
@@ -136,7 +136,9 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 `LargeFrameworkDownloadBytes` (5 MB), `SlowStartupMs` (3,000), `InteractivityGapMs` (2,000), `ComponentChurnThreshold`
 (10, BP1008), `ForcedLayoutMs` (30, BP7006), `FrustrationThreshold` (2 dead clicks per element, BP7007),
 `RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005), `ExceptionsPerSecond` (10, BP5006),
-`TimerGrowthPerNavigation` (0.9, BP5007), `DomElementsWarning` (800) and `LargeDomElements` (1,400, BP7009).
+`TimerGrowthPerNavigation` (0.9, BP5007), `DomElementsWarning` (800) and `LargeDomElements` (1,400, BP7009),
+`FrequentJSToDotNetCallsPerSecond` (60) and `FrequentServerJSToDotNetCallsPerSecond` (20, BP4007),
+`LargeServerJSToDotNetPayloadBytes` (24 KB, BP4003).
 
 ### `Telemetry` (OpenTelemetry)
 

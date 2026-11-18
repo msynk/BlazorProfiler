@@ -230,6 +230,59 @@ public class BrowserIngestionTests
     }
 
     [Fact]
+    public async Task IngestsJavaScriptToDotNetCalls()
+    {
+        await using var f = ProfilerFixture.Create();
+        var collector = f.Root.GetRequiredService<BrowserCollector>();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var json = $$"""
+            [
+              {"k":"x","n":"OnPointerMove","t":{{now}},"d":3.5,"c":2,"sy":0,"or":1,"pb":40},
+              {"k":"x","n":"Ping (Demo.Client)","t":{{now}},"d":0.4,"c":0,"sy":1,"or":0},
+              {"k":"x","n":"Save","t":{{now}},"d":12,"c":1,"or":1,"er":"Error"},
+              {"k":"x","n":"","t":{{now}},"d":1}
+            ]
+            """;
+        Assert.Equal(3, collector.Ingest(json, 0));
+        var calls = f.All<JSInteropEvent>();
+        Assert.All(calls, c => Assert.Equal(InteropDirection.JSToDotNet, c.Direction));
+        Assert.All(calls, c => Assert.Equal(InstrumentationSource.Browser, c.Source));
+
+        var move = Assert.Single(calls, c => c.Identifier == "OnPointerMove");
+        Assert.True(move.ViaObjectReference);
+        Assert.False(move.Synchronous);
+        Assert.Equal(2, move.ArgumentCount);
+        Assert.Equal(40, move.PayloadBytes);
+        Assert.Equal(ValueQuality.Estimated, move.PayloadBytesQuality);
+        Assert.Equal(3.5, f.Host.Clock.ToMilliseconds(move.Duration), 3);
+
+        var ping = Assert.Single(calls, c => c.Identifier == "Ping (Demo.Client)");
+        Assert.True(ping.Synchronous);
+        Assert.False(ping.ViaObjectReference);
+        Assert.Null(ping.PayloadBytes);
+        Assert.Equal(ValueQuality.Unavailable, ping.PayloadBytesQuality);
+
+        var failed = Assert.Single(calls, c => c.Identifier == "Save");
+        Assert.Equal(ProfilerOutcome.Error, failed.Outcome);
+        Assert.Equal(JSInteropEvent.DotNetErrorType, failed.ErrorType);
+
+        // Aggregated separately from .NET-to-JavaScript calls; a failure reported by .NET counts as answered.
+        var summary = f.Session.GetSummary().Interop;
+        Assert.All(summary, i => Assert.Equal(InteropDirection.JSToDotNet, i.Direction));
+        Assert.Equal(1, summary.Single(i => i.Identifier == "Save").ResponseDurations.Count);
+    }
+
+    [Fact]
+    public async Task IgnoresJavaScriptToDotNetCallsWhenInteropCollectionIsDisabled()
+    {
+        await using var f = ProfilerFixture.Create(o => o.Collectors.JSInterop = false);
+        var collector = f.Root.GetRequiredService<BrowserCollector>();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        Assert.Equal(0, collector.Ingest($$"""[{"k":"x","n":"OnPointerMove","t":{{now}},"d":1,"or":1}]""", 0));
+        Assert.Empty(f.All<JSInteropEvent>());
+    }
+
+    [Fact]
     public async Task IngestsStartupAndWebVitals()
     {
         await using var f = ProfilerFixture.Create();

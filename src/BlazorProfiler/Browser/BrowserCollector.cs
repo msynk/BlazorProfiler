@@ -101,6 +101,18 @@ public sealed class BrowserEntry
     /// <summary>Web vital: value.</summary>
     public double V { get; set; }
 
+    /// <summary>JS-to-.NET call (<c>x</c>): 1 when the call was synchronous (<c>invokeMethod</c>).</summary>
+    public int Sy { get; set; }
+
+    /// <summary>JS-to-.NET call (<c>x</c>): 1 when the call targeted a <c>DotNetObjectReference</c> (instance method).</summary>
+    public int Or { get; set; }
+
+    /// <summary>JS-to-.NET call (<c>x</c>): the JavaScript error name when the call failed.</summary>
+    public string? Er { get; set; }
+
+    /// <summary>JS-to-.NET call (<c>x</c>): the estimated JSON size of the arguments, when estimation is enabled.</summary>
+    public long? Pb { get; set; }
+
     /// <summary>Startup: logical processors.</summary>
     public int? Hc { get; set; }
 
@@ -378,6 +390,19 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     Name = entry.N,
                     Value = Sanitize(entry.V),
                     TargetTag = Truncate(entry.Tag, 32),
+                },
+                "x" when !string.IsNullOrWhiteSpace(entry.N) && profiler.Options.Collectors.JSInterop => new JSInteropEvent
+                {
+                    Direction = InteropDirection.JSToDotNet,
+                    Identifier = Truncate(entry.N, 256),
+                    Synchronous = entry.Sy == 1,
+                    ViaObjectReference = entry.Or == 1,
+                    ArgumentCount = Math.Clamp(entry.C, 0, 1_000),
+                    PayloadBytes = entry.Pb is >= 0 and var bytes ? bytes : null,
+                    PayloadBytesQuality = entry.Pb is >= 0 ? ValueQuality.Estimated : ValueQuality.Unavailable,
+                    Source = InstrumentationSource.Browser,
+                    Outcome = entry.Er is null ? ProfilerOutcome.Success : ProfilerOutcome.Error,
+                    ErrorType = entry.Er is null ? null : JSInteropEvent.DotNetErrorType,
                 },
                 "r" => new BrowserResourceEvent
                 {

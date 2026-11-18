@@ -143,8 +143,17 @@ public sealed class JSInteropEvent : ProfilerEvent
     /// </summary>
     internal const string UnavailableErrorType = "System.InvalidOperationException";
 
-    /// <summary>Whether JavaScript answered the call: it returned a result or threw a JavaScript exception.</summary>
-    internal bool Answered => Outcome == ProfilerOutcome.Success || (Outcome == ProfilerOutcome.Error && ErrorType == JavaScriptErrorType);
+    /// <summary>
+    /// The <see cref="ProfilerEvent.ErrorType"/> of a JavaScript-to-.NET call that failed: the .NET method threw, or the
+    /// method or object reference was not found. The browser does not receive the .NET exception type.
+    /// </summary>
+    public const string DotNetErrorType = "Microsoft.JSInterop.DotNetInvocationFailure";
+
+    /// <summary>
+    /// Whether the callee answered the call: it returned a result or threw (a JavaScript exception, or for JavaScript-to-.NET
+    /// calls a failure reported by .NET).
+    /// </summary>
+    internal bool Answered => Outcome == ProfilerOutcome.Success || (Outcome == ProfilerOutcome.Error && ErrorType is JavaScriptErrorType or DotNetErrorType);
 
     /// <summary>
     /// Whether the call ended without a response from JavaScript: it was canceled or timed out

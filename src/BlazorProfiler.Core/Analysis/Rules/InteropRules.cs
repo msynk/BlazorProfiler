@@ -12,7 +12,7 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
         Id = "BP4001",
         Title = "Excessive JavaScript interop calls",
         Category = DiagnosticCategory.Interop,
-        Description = "Detects operations with many interop crossings and sustained high interop call rates.",
+        Description = "Detects operations with many .NET-to-JavaScript interop calls and sustained high call rates. Calls from JavaScript to .NET are reported by BP4007.",
         RequiredSignals = [ProfilerEventKind.JSInterop],
     };
 
@@ -20,7 +20,7 @@ public sealed class ExcessiveInteropRule : DiagnosticRule
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
         var options = context.Options;
-        var calls = context.OfType<JSInteropEvent>();
+        var calls = context.OfType<JSInteropEvent>().Where(c => c.Direction == InteropDirection.DotNetToJS).ToList();
         if (calls.Count == 0)
         {
             yield break;
@@ -91,7 +91,7 @@ public sealed class BatchableInteropRule : DiagnosticRule
     {
         // Counts are weighted: under sampling each retained call stands for several calls.
         var groups = context.OfType<JSInteropEvent>()
-            .Where(c => c.OperationId != 0 && c.Identifier is not null)
+            .Where(c => c.Direction == InteropDirection.DotNetToJS && c.OperationId != 0 && c.Identifier is not null)
             .GroupBy(c => (c.OperationId, c.Identifier))
             .Select(g => (g.Key.Identifier, Calls: g.ToList(), Weight: Weighted(g)))
             .Where(g => g.Weight >= 10)
@@ -137,22 +137,45 @@ public sealed class LargeInteropPayloadRule : DiagnosticRule
     /// <inheritdoc />
     public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
     {
-        var threshold = context.Options.LargeInteropPayloadBytes;
-        foreach (var group in context.OfType<JSInteropEvent>().Where(c => c.PayloadBytes >= threshold).GroupBy(c => c.Identifier).OrderByDescending(g => g.Max(c => c.PayloadBytes)))
+        var options = context.Options;
+
+        // JavaScript-to-.NET calls on Blazor Server are hub messages: above MaximumReceiveMessageSize the circuit is closed, so
+        // they are reported at a lower size.
+        long ThresholdFor(JSInteropEvent call) => call.Direction == InteropDirection.JSToDotNet && call.CircuitId is not null
+            ? Math.Min(options.LargeInteropPayloadBytes, options.LargeServerJSToDotNetPayloadBytes)
+            : options.LargeInteropPayloadBytes;
+
+        foreach (var group in context.OfType<JSInteropEvent>().Where(c => c.PayloadBytes >= ThresholdFor(c)).GroupBy(c => (c.Direction, c.Identifier)).OrderByDescending(g => g.Max(c => c.PayloadBytes)))
         {
             var calls = group.ToList();
             var max = calls.Max(c => c.PayloadBytes ?? 0);
+            var threshold = calls.Min(ThresholdFor);
+            var toDotNet = group.Key.Direction == InteropDirection.JSToDotNet;
+            var server = calls.Any(c => c.CircuitId is not null);
             yield return Create(
-                $"{group.Key} sends up to {FormatBytes(max)} (estimated)",
-                Scale(max, threshold),
+                toDotNet ? $"JavaScript sends up to {FormatBytes(max)} to {group.Key.Identifier} (estimated)" : $"{group.Key.Identifier} sends up to {FormatBytes(max)} (estimated)",
+                toDotNet && server ? (max >= 32 * 1024 ? DiagnosticSeverity.High : DiagnosticSeverity.Medium) : Scale(max, threshold),
                 DiagnosticConfidence.Medium,
-                $"{calls.Count} call(s) to {group.Key} passed arguments estimated at {FormatBytes(threshold)} or more (max {FormatBytes(max)}).",
-                "Large payloads are serialized to JSON on every call; on Blazor Server they are also sent over the circuit, where messages above the SignalR maximum message size fail.",
-                "Send only the data JavaScript needs, use streaming interop (DotNetStreamReference / IJSStreamReference) for large binary data, or keep large data on one side and exchange identifiers.",
-                [Evidence("Calls", FormatNumber(calls.Count)), Evidence("Largest payload", FormatBytes(max), ValueQuality.Estimated)],
-                new ImpactEstimate { Occurrences = calls.Count, Method = "Estimated JSON size of the arguments (serialized separately by the profiler; not the framework's exact wire size).", Quality = ValueQuality.Estimated },
-                subject: group.Key,
-                caveats: ["Sizes are estimates computed with System.Text.Json default options and may differ from the framework's serialization."],
+                $"{calls.Count} call(s) {(toDotNet ? "from JavaScript to" : "to")} {group.Key.Identifier} passed arguments estimated at {FormatBytes(threshold)} or more (max {FormatBytes(max)}).",
+                toDotNet && server
+                    ? "On Blazor Server a call from JavaScript to .NET is one SignalR message from the browser. A message above the hub's MaximumReceiveMessageSize (32 KB by default) is rejected and the circuit is closed: the user sees the reconnection UI and loses their state."
+                    : "Large payloads are serialized to JSON on every call; on Blazor Server they are also sent over the circuit, where messages above the SignalR maximum message size fail.",
+                toDotNet
+                    ? "Send only what .NET needs, stream large data (pass a stream reference: DotNet.createJSStreamReference in JavaScript, IJSStreamReference in .NET), or split it into chunks. Raising MaximumReceiveMessageSize only moves the limit and increases memory per circuit."
+                    : "Send only the data JavaScript needs, use streaming interop (DotNetStreamReference / IJSStreamReference) for large binary data, or keep large data on one side and exchange identifiers.",
+                [Evidence("Calls", FormatNumber(calls.Count)), Evidence("Largest payload", FormatBytes(max), ValueQuality.Estimated), Evidence("Threshold", FormatBytes(threshold))],
+                new ImpactEstimate
+                {
+                    Occurrences = calls.Count,
+                    Method = toDotNet
+                        ? "Estimated JSON size of the arguments, measured in the browser (JSON.stringify; not the framework's exact wire size)."
+                        : "Estimated JSON size of the arguments (serialized separately by the profiler; not the framework's exact wire size).",
+                    Quality = ValueQuality.Estimated,
+                },
+                subject: toDotNet ? "js-to-dotnet|" + group.Key.Identifier : group.Key.Identifier,
+                caveats: [toDotNet
+                    ? "Sizes are estimated with JSON.stringify in the browser; byte arrays are sent in binary by Blazor and are overestimated."
+                    : "Sizes are estimates computed with System.Text.Json default options and may differ from the framework's serialization."],
                 related: calls);
         }
     }
@@ -190,15 +213,22 @@ public sealed class SlowInteropRule : DiagnosticRule
 
             var related = context.OfType<JSInteropEvent>().Where(c => c.Identifier == interop.Identifier && c.Direction == interop.Direction && c.Answered).OrderByDescending(c => c.Duration).Take(20).ToList();
             var server = related.Any(c => c.CircuitId is not null);
+            var toDotNet = interop.Direction == InteropDirection.JSToDotNet;
             yield return Create(
-                $"{interop.Identifier} p95 is {FormatMs(durations.P95Ms)}",
+                toDotNet ? $"JavaScript calls to {interop.Identifier} take {FormatMs(durations.P95Ms)} (p95)" : $"{interop.Identifier} p95 is {FormatMs(durations.P95Ms)}",
                 Scale(durations.P95Ms, threshold),
                 DiagnosticConfidence.Medium,
-                $"{FormatNumber(durations.Count)} answered call(s) to {interop.Identifier}: p95 {FormatMs(durations.P95Ms)}, max {FormatMs(durations.MaxMs)}.",
-                server
-                    ? "On Blazor Server the measured time includes the network round trip to the browser and the JavaScript execution."
-                    : "The measured time includes JavaScript execution and, for asynchronous calls, any awaited JavaScript promises (for example user prompts or network calls).",
-                "Profile the JavaScript function in the browser developer tools; avoid awaiting long-running JavaScript work in UI paths, and cache results where possible.",
+                $"{FormatNumber(durations.Count)} answered call(s) {(toDotNet ? "from JavaScript to the .NET method" : "to")} {interop.Identifier}: p95 {FormatMs(durations.P95Ms)}, max {FormatMs(durations.MaxMs)}.",
+                toDotNet
+                    ? (server
+                        ? "Measured in the browser from the call until .NET returned: the round trip over the circuit, waiting for the circuit's dispatcher (busy with other events and renders), and the .NET method itself."
+                        : "Measured in the browser from the call until .NET returned. In WebAssembly .NET runs on the browser's main thread: a synchronous call (invokeMethod) blocks the page for its whole duration, and an asynchronous one for its synchronous part.")
+                    : server
+                        ? "On Blazor Server the measured time includes the network round trip to the browser and the JavaScript execution."
+                        : "The measured time includes JavaScript execution and, for asynchronous calls, any awaited JavaScript promises (for example user prompts or network calls).",
+                toDotNet
+                    ? "Keep [JSInvokable] methods short: return quickly and continue long work asynchronously, avoid synchronous invokeMethod for slow work, and do not await slow I/O before returning when JavaScript does not need the result."
+                    : "Profile the JavaScript function in the browser developer tools; avoid awaiting long-running JavaScript work in UI paths, and cache results where possible.",
                 [Evidence("Answered calls", FormatNumber(durations.Count)), Evidence("p95", FormatMs(durations.P95Ms)), Evidence("Maximum", FormatMs(durations.MaxMs))],
                 new ImpactEstimate { TotalMs = durations.TotalMs, Occurrences = durations.Count, Method = "Total measured time of the answered calls.", Quality = ValueQuality.Measured },
                 subject: interop.Identifier,
@@ -392,5 +422,70 @@ public sealed class InteropAfterDisposeRule : DiagnosticRule
                 subject: $"{group.Key.OriginComponentType}|{group.Key.Identifier}",
                 related: calls);
         }
+    }
+}
+
+/// <summary>BP4007: frequent JavaScript-to-.NET calls.</summary>
+public sealed class FrequentJSToDotNetCallsRule : DiagnosticRule
+{
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP4007",
+        Title = "Frequent JavaScript-to-.NET calls",
+        Category = DiagnosticCategory.Interop,
+        Description = "Detects sustained high rates of calls from JavaScript into .NET (DotNetObjectReference and DotNet.invokeMethodAsync), typically from scroll, pointer, resize, or input listeners. Recorded by the browser module.",
+        RequiredSignals = [ProfilerEventKind.JSInterop],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var calls = context.OfType<JSInteropEvent>().Where(c => c.Direction == InteropDirection.JSToDotNet).ToList();
+        if (calls.Count == 0)
+        {
+            yield break;
+        }
+
+        var server = calls.Any(c => c.CircuitId is not null);
+        var threshold = server ? context.Options.FrequentServerJSToDotNetCallsPerSecond : context.Options.FrequentJSToDotNetCallsPerSecond;
+        var peak = PeakWeight(SortedByTimestamp(calls), context.Clock.Frequency);
+        if (peak < threshold)
+        {
+            yield break;
+        }
+
+        var quality = Core.ValueQualityFor(calls);
+        var byIdentifier = calls.GroupBy(c => c.Identifier)
+            .Select(g => (Identifier: g.Key, Weight: Weighted(g), Peak: PeakWeight(SortedByTimestamp(g.ToList()), context.Clock.Frequency)))
+            .OrderByDescending(g => g.Peak)
+            .ThenByDescending(g => g.Weight)
+            .ToList();
+        var top = byIdentifier.Take(3).Select(g => $"{g.Identifier} ×{FormatNumber(g.Weight)} (peak {FormatNumber(g.Peak)}/s)").ToList();
+        var totalMs = Math.Round(WeightedMs(context, calls), 3);
+        yield return Create(
+            $"JavaScript calls .NET up to {FormatNumber(peak)} times per second",
+            Scale(peak, threshold),
+            DiagnosticConfidence.High,
+            $"{FormatNumber(Weighted(calls))} call(s) from JavaScript to .NET, peaking at {FormatNumber(peak)} per second (threshold {FormatNumber(threshold)}). Most frequent: {string.Join(", ", top)}.",
+            server
+                ? "On Blazor Server every call from JavaScript to .NET is a message over the circuit that is queued on the circuit's dispatcher, competing with the user's events and renders; a method that calls StateHasChanged also sends a render batch back for each call. High-frequency listeners (scroll, pointermove, resize, input) can saturate the connection and delay real interactions."
+                : "In WebAssembly each call crosses from JavaScript into the .NET runtime on the main thread and serializes its arguments; a method that calls StateHasChanged also renders for each call. High-frequency listeners (scroll, pointermove, resize, input) can keep the main thread busy and delay real interactions.",
+            "Throttle or debounce the listener in JavaScript (for example once per animation frame with requestAnimationFrame, or after input pauses), keep high-frequency logic in JavaScript and send only results .NET needs, and batch several updates into one call.",
+            [
+                Evidence("Peak per second", FormatNumber(peak), quality),
+                Evidence("Calls", FormatNumber(Weighted(calls)), quality),
+                Evidence("Threshold", FormatNumber(threshold) + (server ? " per second (Blazor Server)" : " per second (WebAssembly)")),
+                Evidence("Most frequent methods", string.Join("; ", top), quality),
+                Evidence("Time until .NET returned", FormatMs(totalMs), quality),
+            ],
+            new ImpactEstimate { TotalMs = totalMs, Occurrences = Weighted(calls), Method = "Peak calls in any one-second window, measured in the browser; time is the sum of call durations until .NET returned (weighted by sampling).", Quality = quality },
+            subject: "js-to-dotnet-rate",
+            caveats:
+            [
+                "Calls made by Blazor's own plumbing (event dispatch, root components) are not counted; calls made by framework components such as Virtualize and InputFile are.",
+                "Calls are recorded by the browser module, so only pages that render <BlazorProfilerClient> are observed.",
+            ],
+            related: calls.OrderByDescending(c => c.Duration).Take(20));
     }
 }

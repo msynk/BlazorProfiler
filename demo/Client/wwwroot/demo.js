@@ -67,3 +67,38 @@ export function batchedLayout(count) {
 
   return total;
 }
+
+// Calls .NET for every simulated pointer move, the way an unthrottled pointermove listener would (BP4007).
+export function streamToDotNet(ref, count, intervalMs) {
+  return new Promise(resolve => {
+    let sent = 0;
+    const timer = setInterval(() => {
+      ref.invokeMethodAsync('OnPointerMove', sent, sent * 2);
+      sent++;
+      if (sent >= count) {
+        clearInterval(timer);
+        resolve(sent);
+      }
+    }, intervalMs);
+  });
+}
+
+// The fix: collect moves in JavaScript and send them to .NET in one call (here: once at the end; in an app, at most once
+// per animation frame).
+export function streamBatchedToDotNet(ref, count, intervalMs) {
+  return new Promise(resolve => {
+    const moves = [];
+    const timer = setInterval(() => {
+      moves.push([moves.length, moves.length * 2]);
+      if (moves.length >= count) {
+        clearInterval(timer);
+        ref.invokeMethodAsync('OnPointerMoves', moves).then(() => resolve(moves.length));
+      }
+    }, intervalMs);
+  });
+}
+
+// A static JS-to-.NET call (DotNet.invokeMethodAsync).
+export function pingStatic() {
+  return DotNet.invokeMethodAsync('BlazorProfiler.Demo.Client', 'DemoPing');
+}

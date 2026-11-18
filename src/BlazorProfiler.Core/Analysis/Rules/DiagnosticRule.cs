@@ -207,6 +207,7 @@ public static class BuiltInRules
         new SlowInteropRule(),
         new InteropAfterDisposeRule(),
         new InteropWithoutResponseRule(),
+        new FrequentJSToDotNetCallsRule(),
         new HighGcPressureRule(),
         new AllocationSpikeRule(),
         new MemoryGrowthAcrossNavigationRule(),

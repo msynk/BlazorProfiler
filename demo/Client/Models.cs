@@ -26,7 +26,7 @@ public static class DemoCatalog
         ("search", "Search as you type", "BP2002"),
         ("requests", "Request patterns", "BP2003, BP3001-BP3003, BP3006, BP3007"),
         ("flaky", "Failing endpoint", "BP3004, BP3005"),
-        ("interop", "Interop chatter", "BP4001-BP4004, BP7008"),
+        ("interop", "Interop chatter", "BP4001-BP4004, BP4007, BP7008"),
         ("allocations", "Allocation spike", "BP5001, BP5002"),
         ("leaky", "Leaky component", "BP4005, BP4006, BP5003, BP5004"),
         ("churn", "Rows recreated", "BP1008"),

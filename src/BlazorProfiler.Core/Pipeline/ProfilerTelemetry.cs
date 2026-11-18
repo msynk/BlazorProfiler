@@ -159,7 +159,7 @@ public sealed class ProfilerTelemetry : IProfilerEventProcessor, IDisposable
         {
             ComponentRenderEvent r => ($"Render {DiagnosticContext.ShortType(r.ComponentType)}", true),
             LifecycleMethodEvent l => ($"{l.Method} {DiagnosticContext.ShortType(l.ComponentType)}", true),
-            JSInteropEvent j => ($"JS interop {j.Identifier}", true),
+            JSInteropEvent j => ($"JS interop {j.Identifier}", j.Source != InstrumentationSource.Browser || _options.BrowserSpans),
             BrowserInteractionEvent b => ($"Browser interaction {b.EventType}", _options.BrowserSpans),
             BrowserLongTaskEvent => ("Long animation frame", _options.BrowserSpans),
             _ => (string.Empty, false),
