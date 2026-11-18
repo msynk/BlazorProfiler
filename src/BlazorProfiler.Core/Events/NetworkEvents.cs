@@ -128,6 +128,14 @@ public sealed class JSInteropEvent : ProfilerEvent
     /// </summary>
     public ValueQuality PayloadBytesQuality { get; set; }
 
+    /// <summary>
+    /// The bytes passed through stream references, which are transferred separately from <see cref="PayloadBytes"/>:
+    /// <c>DotNetStreamReference</c> arguments over seekable streams (.NET to JavaScript), an <c>IJSStreamReference</c>
+    /// result, and JavaScript stream references (<c>DotNet.createJSStreamReference</c>) passed to .NET. <see langword="null"/>
+    /// when the call used no stream reference or its size was unknown (a stream that cannot seek).
+    /// </summary>
+    public long? StreamBytes { get; set; }
+
     /// <summary>The mechanism that observed the call.</summary>
     public InstrumentationSource Source { get; set; }
 

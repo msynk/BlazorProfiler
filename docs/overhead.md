@@ -64,6 +64,24 @@ allocation), each received invocation adds a weak-table entry until its hub meth
 made through `IProfiledJSRuntime` counts the UTF-8 bytes of its argument JSON (linear in the payload size). Message
 contents are never copied or stored.
 
+## Dashboard at scale
+
+`DashboardScaleTests` imports a trace with about 19,000 component instances (near the default
+`Retention.MaxTrackedInstances` of 20,000; sections of 1,200 children) and 58,000 events, and drives the dashboard in
+headless Chromium. Measured on a developer machine:
+
+| Step | Time |
+|---|---|
+| Select the session (overview from the summary) | 0.2–0.3 s |
+| Components view (types table and tree) | 40–70 ms |
+| Expand the root, then a section of 1,200 children (500 shown) | 30–70 ms each |
+| Filter component types | under 0.2 s |
+| Load all events (paged over two polls) | 0.9 s |
+| Timeline with all events, diagnostics | under 0.1 s each |
+
+No animation frame took longer than 50 ms. The test's budgets are several times these numbers, so it fails on changes in
+complexity rather than on machine noise.
+
 ## Optimization history
 
 The first benchmark run showed `ProfiledComponentBase` recording at **765 µs (14.4×)** with 573 KB allocated, and

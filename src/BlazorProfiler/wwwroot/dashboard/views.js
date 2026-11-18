@@ -863,24 +863,26 @@ export function interop(ctx) {
       { key: 'p95', title: 'p95 (answered)', num: true, sort: r => answeredP95(r) ?? -1, render: r => { const v = answeredP95(r); return v == null ? '—' : fmtMs(v); } },
       { key: 'total', title: 'Total', num: true, sort: r => r.durations.totalMs, render: r => fmtMs(r.durations.totalMs) },
       { key: 'maxPayloadBytes', title: 'Max payload', num: true, render: r => (r.maxPayloadBytes ? h('span', { title: 'Measured for .NET-to-JavaScript calls on Blazor Server, estimated otherwise' }, fmtBytes(r.maxPayloadBytes)) : '—') },
+      { key: 'streamBytes', title: 'Streamed', num: true, sort: r => r.streamBytes ?? 0, render: r => (r.streamBytes ? h('span', { title: 'Bytes passed through stream references (DotNetStreamReference, IJSStreamReference, DotNet.createJSStreamReference), transferred separately from the arguments' }, fmtBytes(r.streamBytes)) : '—') },
     ],
   })));
 
   root.appendChild(panel(`Calls (${fmtNum(calls.length)})`, virtualList({
     rows: calls,
     label: 'Interop calls',
-    columns: '80px minmax(0,2fr) 60px 80px 90px minmax(0,1fr)',
+    columns: '80px minmax(0,2fr) 60px 80px 150px minmax(0,1fr)',
     header: ['Start', 'Identifier', 'Sync', 'Duration', 'Payload', 'Origin'],
     renderRow: c => [
       h('span', { class: 'mono' }, fmtMs(ctx.toMs(c.timestamp))),
       h('span', { class: 'mono', title: c.identifier }, `${c.viaObjectReference ? 'module.' : ''}${c.identifier}`),
       h('span', null, c.synchronous ? 'sync' : 'async'),
       interopDuration(ctx, c),
-      c.payloadBytes == null
-        ? h('span', null, '—')
-        : c.payloadBytesQuality === 'Measured'
-          ? h('span', { title: 'Serialized size sent over the circuit (measured)' }, fmtBytes(c.payloadBytes))
-          : h('span', { title: 'Estimated serialized size' }, `≈ ${fmtBytes(c.payloadBytes)}`),
+      h('span', { title: [
+        c.payloadBytes == null ? null : c.payloadBytesQuality === 'Measured' ? 'Arguments: serialized size sent over the circuit (measured)' : 'Arguments: estimated serialized size',
+        c.streamBytes ? `Stream references: ${fmtBytes(c.streamBytes)}` : null,
+      ].filter(Boolean).join('; ') || null },
+      c.payloadBytes == null ? '—' : c.payloadBytesQuality === 'Measured' ? fmtBytes(c.payloadBytes) : `≈ ${fmtBytes(c.payloadBytes)}`,
+      c.streamBytes ? ` + ${fmtBytes(c.streamBytes)} stream` : ''),
       h('span', null, c.originComponentType ? shortType(c.originComponentType) : '—'),
     ],
     onSelect: c => ctx.showEvent(c),

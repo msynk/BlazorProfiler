@@ -272,6 +272,9 @@ public sealed class InteropSummary
 
     /// <summary>The largest estimated payload.</summary>
     public long MaxPayloadBytes { get; set; }
+
+    /// <summary>Total bytes passed through stream references (see <see cref="Events.JSInteropEvent.StreamBytes"/>).</summary>
+    public long StreamBytes { get; set; }
 }
 
 /// <summary>Database commands with the same normalized text.</summary>

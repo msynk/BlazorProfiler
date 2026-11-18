@@ -15,12 +15,12 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
     public override CollectorDescriptor Descriptor { get; } = new()
     {
         Name = "js-interop",
-        Description = ".NET-to-JavaScript interop calls: identifier, duration, outcome, argument count, optional payload size estimates, and the originating operation/component.",
+        Description = ".NET-to-JavaScript interop calls: identifier, duration, outcome, argument count, payload size (measured on Blazor Server, optional estimate otherwise), bytes passed through stream references, and the originating operation/component. Calls from JavaScript to .NET are recorded by the browser module.",
         Mechanism = "A decorating IJSRuntime (and, optionally, IJSObjectReference) implementation.",
         Capability = CapabilityLevel.Partial,
         Overhead = OverheadLevel.Low,
         Compatibility = "WebAssembly: IJSRuntime is decorated automatically. Server: the framework requires the concrete circuit runtime, so only calls made through the injectable IProfiledJSRuntime are recorded.",
-        Degradation = "Calls made by framework internals that hold the runtime directly, and JavaScript-to-.NET callbacks, are not observed. Payload sizes are estimates.",
+        Degradation = "Calls made by framework internals that hold the runtime directly are not observed. Payload sizes are estimates unless measured from the circuit; streams that cannot seek have no size.",
     };
 
     /// <summary>Whether calls should be recorded.</summary>
@@ -50,7 +50,7 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
 
     internal long StartTimestamp() => Profiler?.Clock.GetTimestamp() ?? 0;
 
-    internal void Record(string identifier, object?[]? args, bool synchronous, bool viaReference, long start, Exception? exception, long? measuredBytes = null)
+    internal void Record(string identifier, object?[]? args, bool synchronous, bool viaReference, long start, Exception? exception, CallSizes sizes = default, object? result = null)
     {
         var profiler = Profiler;
         if (profiler is null)
@@ -74,7 +74,9 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
                 ErrorType = exception?.GetType().FullName,
             };
 
-            if (measuredBytes is { } measured)
+            var resultStream = StreamBytes(null, result);
+            e.StreamBytes = sizes.Streamed is null && resultStream is null ? null : (sizes.Streamed ?? 0) + (resultStream ?? 0);
+            if (sizes.Measured is { } measured)
             {
                 // The arguments as the framework serialized them for the circuit (Blazor Server).
                 e.PayloadBytes = measured;
@@ -92,6 +94,40 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
         {
             RecordError(ex);
         }
+    }
+
+    /// <summary>
+    /// The bytes passed through stream references: seekable streams of <see cref="DotNetStreamReference"/> arguments (from
+    /// their position to their end, which is what the framework sends) and the length of an <see cref="IJSStreamReference"/>
+    /// result.
+    /// </summary>
+    internal static long? StreamBytes(object?[]? args, object? result)
+    {
+        long? total = null;
+        if (args is not null)
+        {
+            foreach (var arg in args)
+            {
+                if (arg is DotNetStreamReference { Stream: { CanSeek: true } stream })
+                {
+                    try
+                    {
+                        total = (total ?? 0) + Math.Max(0, stream.Length - stream.Position);
+                    }
+                    catch (Exception ex) when (ex is ObjectDisposedException or NotSupportedException or IOException)
+                    {
+                        // Disposed or not measurable: the size stays unknown.
+                    }
+                }
+            }
+        }
+
+        if (result is IJSStreamReference reference)
+        {
+            total = (total ?? 0) + Math.Max(0, reference.Length);
+        }
+
+        return total;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Opt-in estimation. Blazor JS interop already serializes arguments with reflection-based System.Text.Json; failures are caught and reported as unavailable.")]
@@ -217,9 +253,10 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
             return invoke(target, identifier, unwrapped);
         }
 
+        // Streams are read during the call: their remaining size is taken before it.
+        var sizes = new CallSizes(null, JSInteropCollector.StreamBytes(args, null));
         var start = Collector.StartTimestamp();
         ValueTask<TValue> task;
-        long? measured;
         InteropMessageSize.Begin();
         try
         {
@@ -227,22 +264,22 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, InteropMessageSize.End());
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, sizes with { Measured = InteropMessageSize.End() });
             throw;
         }
         finally
         {
-            measured = InteropMessageSize.End();
+            sizes = sizes with { Measured = InteropMessageSize.End() ?? sizes.Measured };
         }
 
         if (task.IsCompletedSuccessfully)
         {
             var result = task.Result;
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, null, measured);
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, null, sizes, result);
             return new ValueTask<TValue>(WrapResult(result));
         }
 
-        return AwaitAsync(task, identifier, args, viaReference, start, measured);
+        return AwaitAsync(task, identifier, args, viaReference, start, sizes);
     }
 
     /// <summary>Intercepts an asynchronous void call.</summary>
@@ -253,9 +290,9 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
             return invoke(target, identifier);
         }
 
+        var sizes = new CallSizes(null, JSInteropCollector.StreamBytes(args, null));
         var start = Collector.StartTimestamp();
         ValueTask task;
-        long? measured;
         InteropMessageSize.Begin();
         try
         {
@@ -263,21 +300,21 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, InteropMessageSize.End());
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, sizes with { Measured = InteropMessageSize.End() });
             throw;
         }
         finally
         {
-            measured = InteropMessageSize.End();
+            sizes = sizes with { Measured = InteropMessageSize.End() ?? sizes.Measured };
         }
 
         if (task.IsCompletedSuccessfully)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, measured);
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, sizes);
             return default;
         }
 
-        return AwaitVoidAsync(task, identifier, args, start, measured);
+        return AwaitVoidAsync(task, identifier, args, start, sizes);
     }
 
     /// <summary>Intercepts a synchronous call.</summary>
@@ -289,21 +326,22 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
             return invoke(target, identifier, unwrapped);
         }
 
+        var sizes = new CallSizes(null, JSInteropCollector.StreamBytes(args, null));
         var start = Collector.StartTimestamp();
         try
         {
             var result = invoke(target, identifier, unwrapped);
-            Collector.Record(identifier, args, synchronous: true, viaReference, start, null);
+            Collector.Record(identifier, args, synchronous: true, viaReference, start, null, sizes, result);
             return WrapResult(result);
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: true, viaReference, start, ex);
+            Collector.Record(identifier, args, synchronous: true, viaReference, start, ex, sizes);
             throw;
         }
     }
 
-    private async ValueTask<TValue> AwaitAsync<TValue>(ValueTask<TValue> task, string identifier, object?[]? args, bool viaReference, long start, long? measured)
+    private async ValueTask<TValue> AwaitAsync<TValue>(ValueTask<TValue> task, string identifier, object?[]? args, bool viaReference, long start, CallSizes sizes)
     {
         TValue result;
         try
@@ -312,15 +350,15 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, measured);
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, sizes);
             throw;
         }
 
-        Collector.Record(identifier, args, synchronous: false, viaReference, start, null, measured);
+        Collector.Record(identifier, args, synchronous: false, viaReference, start, null, sizes, result);
         return WrapResult(result);
     }
 
-    private async ValueTask AwaitVoidAsync(ValueTask task, string identifier, object?[]? args, long start, long? measured)
+    private async ValueTask AwaitVoidAsync(ValueTask task, string identifier, object?[]? args, long start, CallSizes sizes)
     {
         try
         {
@@ -328,11 +366,11 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, measured);
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, sizes);
             throw;
         }
 
-        Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, measured);
+        Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, sizes);
     }
 
     private TValue WrapResult<TValue>(TValue value)
@@ -419,3 +457,9 @@ internal static class InteropArguments
         return copy ?? args;
     }
 }
+
+/// <summary>
+/// Sizes taken around an interop call: the arguments as measured by the transport (Blazor Server), and the remaining bytes
+/// of argument streams, taken before the call reads them.
+/// </summary>
+internal readonly record struct CallSizes(long? Measured, long? Streamed);

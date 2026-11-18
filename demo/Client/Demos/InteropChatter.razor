@@ -3,12 +3,13 @@
 <h2>Interop chatter</h2>
 <p>Plots 120 points with one JavaScript call each, sends a large array in one call, and awaits a slow JavaScript promise.
    In the other direction, JavaScript reports 150 pointer moves to .NET with one call each (BP4007), or collects them and
-   sends them in one call.</p>
+   sends them in one call. Large data can be streamed instead: 200 KB to JavaScript, to .NET, and back.</p>
 <button id="chatter" @onclick="ChatterAsync">Plot point by point</button>
 <button id="batched" @onclick="BatchedAsync">Plot in one call</button>
 <button id="slow-js" @onclick="SlowJsAsync">Slow JavaScript</button>
 <button id="stream-to-dotnet" @onclick="StreamAsync">Send pointer moves to .NET one by one</button>
 <button id="stream-batched" @onclick="StreamBatchedAsync">Send pointer moves in one call</button>
+<button id="stream-data" @onclick="StreamDataAsync">Stream data</button>
 <p id="interop-status">@status</p>
 @code {
     private IJSObjectReference? module;
@@ -24,6 +25,33 @@
 
     [JSInvokable]
     public static string DemoPing() => "pong";
+
+    [JSInvokable]
+    public async Task<long> ReceiveStream(IJSStreamReference stream)
+    {
+        await using var data = await stream.OpenReadStreamAsync(maxAllowedSize: 1_000_000);
+        var buffer = new byte[16 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await data.ReadAsync(buffer)) > 0)
+        {
+            total += read;
+        }
+
+        return total;
+    }
+
+    private async Task StreamDataAsync()
+    {
+        const int size = 200_000;
+        self ??= DotNetObjectReference.Create(this);
+        var m = await ModuleAsync();
+        using var source = new MemoryStream(new byte[size]);
+        var toJavaScript = await m.InvokeAsync<int>("receiveStream", new DotNetStreamReference(source, leaveOpen: true));
+        var toDotNet = await m.InvokeAsync<long>("sendStream", self, size);
+        await using var back = await m.InvokeAsync<IJSStreamReference>("makeStream", size);
+        status = $"Streamed {toJavaScript} bytes to JavaScript, {toDotNet} bytes to .NET, {back.Length} bytes back";
+    }
 
     private async Task StreamAsync()
     {

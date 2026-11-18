@@ -353,8 +353,9 @@ Blazor's SignalR hub protocol. Reports, per circuit:
   input bound with `@bind` sends its whole value twice per event (as the event value and as the bound field value), so
   about 16,000 characters of plain text reach the default limit.
 
-Messages above the limit close the circuit before they are processed and are not recorded; repeated drops are reported by
-BP6002. Demo: *Large list* (server: sort, and paste a long text into the notes box).
+Chunks of streams from JavaScript (`ReceiveJSDataChunk`), which the framework sizes just below the limit, are not
+reported: streaming is the remedy. Messages above the limit close the circuit before they are processed and are not
+recorded; repeated drops are reported by BP6002. Demo: *Large list* (server: sort, and paste a long text into the notes box).
 
 ## Browser
 

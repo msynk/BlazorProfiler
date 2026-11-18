@@ -572,6 +572,10 @@ public sealed class LargeCircuitMessageRule : DiagnosticRule
 {
     private const long DefaultReceiveLimit = 32 * 1024;
 
+    // Chunks of streams from JavaScript (DotNet.createJSStreamReference), which the framework sizes just below the limit:
+    // streaming is the remedy for large messages, not a cause.
+    private const string StreamChunkMethod = "ReceiveJSDataChunk";
+
     /// <inheritdoc />
     public override DiagnosticRuleDescriptor Descriptor { get; } = new()
     {
@@ -612,7 +616,7 @@ public sealed class LargeCircuitMessageRule : DiagnosticRule
 
         var receiveThreshold = options.LargeCircuitReceivedMessageBytes;
         var receivedGroups = context.OfType<CircuitActivityEvent>()
-            .Where(a => a.CircuitId is not null && a.ReceivedBytes >= receiveThreshold)
+            .Where(a => a.CircuitId is not null && a.ReceivedBytes >= receiveThreshold && a.ActivityName != StreamChunkMethod)
             .GroupBy(a => (CircuitId: a.CircuitId!, Activity: a.ActivityName ?? "(unknown)"))
             .OrderByDescending(g => g.Max(a => a.ReceivedBytes));
         foreach (var group in receivedGroups)

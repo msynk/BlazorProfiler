@@ -28,6 +28,7 @@ Legend: **M** measured · **E** estimated (labelled in the UI) · **I** inferred
 | Calls on `IJSObjectReference` (modules) | M via `IProfiledJSRuntime` + `JSObjectReferences` | M with `JSObjectReferences` | — | js-interop |
 | Interop payload size | M (.NET to JS through `IProfiledJSRuntime`, from the circuit message); E (opt-in) otherwise | E (opt-in) | — | js-interop + circuits |
 | Circuit message sizes: each render batch sent, each message received (by hub method) | M (Blazor's hub protocol) | — | — | circuits |
+| Streaming interop sizes (`DotNetStreamReference` over seekable streams, `IJSStreamReference` results, `DotNet.createJSStreamReference` to .NET) | M | M | — | js-interop + browser |
 | JS → .NET calls (`DotNetObjectReference`, `DotNet.invokeMethodAsync`), timed until .NET returns | M (browser; includes the round trip) | M (browser) | — | browser + js-interop |
 | JS → .NET calls | M as circuit activities | — | — | circuits |
 | Allocation rate, heap size, GC counts, GC pause time | M (process) | M (.NET runtime in the tab) | M (process) | runtime |

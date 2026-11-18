@@ -371,6 +371,67 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         await page.CloseAsync();
     }
 
+    private const string StreamedStatus = "Streamed 200000 bytes to JavaScript, 200000 bytes to .NET, 200000 bytes back";
+
+    private static void AssertStreamSizes(List<JsonElement> events)
+    {
+        static long? Streamed(JsonElement e) =>
+            e.TryGetProperty("streamBytes", out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt64() : null;
+
+        JsonElement Call(string identifier) => events.First(e => e.Str("type") == "jsInterop" && e.Str("identifier") == identifier);
+
+        // A DotNetStreamReference argument, a JavaScript stream reference passed to .NET, and an IJSStreamReference result.
+        Assert.Equal(200_000, Streamed(Call("receiveStream")));
+        Assert.Equal(200_000, Streamed(Call("ReceiveStream")));
+        Assert.Equal(200_000, Streamed(Call("makeStream")));
+        Assert.Null(Streamed(Call("sendStream")));
+    }
+
+    [Fact]
+    public async Task ServerRecordsInteropStreamSizes()
+    {
+        var session = await app.StartSessionAsync("streams");
+        var page = await OpenAsync("server/interop");
+        await ClickWhenInteractiveAsync(page, "#stream-data", StreamedStatus, "#interop-status");
+
+        List<JsonElement> events = [];
+        await Waits.UntilAsync(
+            async () =>
+            {
+                events = await app.EventsAsync(session);
+                return events.Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "ReceiveStream")
+                    && events.Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "makeStream");
+            },
+            20_000,
+            "The streaming calls were not recorded.");
+        AssertStreamSizes(events);
+
+        // The framework sends streams from JavaScript in chunks below the hub's receive limit: streaming is the fix for large
+        // messages, not a large message itself.
+        Assert.DoesNotContain(await app.FindingsAsync(session), f => f.Str("ruleId") == "BP6006");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task WebAssemblyRecordsInteropStreamSizes()
+    {
+        var page = await app.Browser.NewPageAsync();
+        await page.GotoAsync(app.BaseUrl + "wasm/interop");
+        await ClickWhenInteractiveAsync(page, "#stream-data", StreamedStatus, "#interop-status");
+
+        List<JsonElement> events = [];
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            events = [.. (await BridgeAsync(page, new { op = "events", sessionId, after = 0, max = 10000 })).GetProperty("page").GetProperty("events").EnumerateArray()];
+            return events.Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "ReceiveStream")
+                && events.Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "makeStream");
+        }, 30_000, "The streaming calls were not recorded in WebAssembly.");
+        AssertStreamSizes(events);
+        await page.CloseAsync();
+    }
+
     [Fact]
     public async Task WebAssemblyDashboardShowsInteropFindingsThroughTheBridge()
     {

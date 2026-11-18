@@ -44,6 +44,15 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
   that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
   leave its render tree or the parent is disposed.
+- **Streaming interop sizes**: calls record the bytes passed through stream references (`streamBytes`):
+  `DotNetStreamReference` arguments over seekable streams (taken before JavaScript reads them), `IJSStreamReference`
+  results, and `DotNet.createJSStreamReference` arguments of calls from JavaScript to .NET. The Interop view shows them
+  next to the payload. BP6006 no longer reports the framework's stream chunks (`ReceiveJSDataChunk`, sized just below the
+  hub's limit). The *Interop chatter* demo streams 200 KB in each direction.
+- **Dashboard at scale**: an end-to-end test measures the dashboard with about 19,000 component instances and 58,000
+  events. It found that the first load of a large session reset the view when it completed (collapsing an expanded tree
+  and clearing filters): a view shown early from the summary is now kept, and the refresh hint appears only when the
+  summary changed meanwhile.
 - **Circuit message sizes** (Blazor Server): the profiler wraps Blazor's SignalR hub protocol and measures each render
   batch sent to the browser (`renderBatch.transportBytes`), each message received from it
   (`circuitActivity.receivedBytes`), and the arguments of .NET-to-JavaScript calls through `IProfiledJSRuntime` (measured

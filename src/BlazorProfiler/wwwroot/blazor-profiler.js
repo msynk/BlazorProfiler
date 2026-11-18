@@ -31,6 +31,8 @@ const INTERACTION_ID = Symbol('interactionId');
 const FRAMEWORK_DOTNET_METHODS = new Set(['DispatchEventAsync', 'AddRootComponent', 'RemoveRootComponent', 'SetRootComponentParameters']);
 const WRAPPED = Symbol('blazorProfilerWrapped');
 const MAX_PAYLOAD_ESTIMATE_BYTES = 16 * 1024 * 1024;
+// The property holding the byte length of a JavaScript stream reference (DotNet.createJSStreamReference).
+const JS_STREAM_LENGTH = '__jsStreamReferenceLength';
 
 let state = null;
 // performance.now() when the last collecting client stopped. The module lives as long as the document, so a client created
@@ -282,6 +284,7 @@ function wrapDotNetMethod(target, name, instance, async) {
     const identifier = instance ? method : `${method} (${args[0]})`;
     const argumentCount = Math.max(0, args.length - (instance ? 1 : 2));
     const payload = current.options.estimatePayload ? estimateArguments(args, instance ? 1 : 2) : undefined;
+    const streamed = streamBytes(args, instance ? 1 : 2);
     const started = performance.now();
     const record = error => {
       try {
@@ -295,6 +298,7 @@ function wrapDotNetMethod(target, name, instance, async) {
           or: instance ? 1 : 0,
           er: error === undefined ? undefined : cut((error && error.name) || 'Error', 64),
           pb: payload,
+          sb: streamed,
         });
       } catch { /* never break the page */ }
     };
@@ -321,6 +325,29 @@ function wrapDotNetMethod(target, name, instance, async) {
   try {
     target[name] = wrapper;
   } catch { /* read-only: not recorded */ }
+}
+
+// The bytes of JavaScript stream references (DotNet.createJSStreamReference) among the arguments, which .NET reads
+// separately; undefined when there are none. Arrays are searched one level deep.
+function streamBytes(args, skip) {
+  let total;
+  const add = value => {
+    const length = value && typeof value === 'object' ? value[JS_STREAM_LENGTH] : undefined;
+    if (typeof length === 'number' && length >= 0) {
+      total = (total || 0) + length;
+    }
+  };
+
+  for (let i = skip; i < args.length; i++) {
+    add(args[i]);
+    if (Array.isArray(args[i])) {
+      for (let j = 0; j < Math.min(args[i].length, 100); j++) {
+        add(args[i][j]);
+      }
+    }
+  }
+
+  return total;
 }
 
 // The JSON size of the arguments in UTF-8 bytes; undefined when they cannot be serialized here (cycles) or are huge.

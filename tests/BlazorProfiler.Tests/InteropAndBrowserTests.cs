@@ -69,6 +69,27 @@ public class InteropTests
     }
 
     [Fact]
+    public async Task RecordsTheBytesPassedThroughStreamReferences()
+    {
+        var (f, runtime, inner) = Create();
+        await using var _ = f;
+
+        // The remaining bytes of a seekable stream are taken before the call, which reads it.
+        using var data = new MemoryStream(new byte[1_000]) { Position = 100 };
+        await runtime.InvokeVoidAsync("upload", new DotNetStreamReference(data, leaveOpen: true));
+        Assert.Equal(1_000, data.Position);
+
+        var back = await runtime.InvokeAsync<IJSStreamReference>("download", []);
+        Assert.Equal(500, back.Length);
+        await runtime.InvokeVoidAsync("log", "no stream");
+
+        var calls = f.All<JSInteropEvent>();
+        Assert.Equal(900, calls[0].StreamBytes);
+        Assert.Equal(500, calls[1].StreamBytes);
+        Assert.Null(calls[2].StreamBytes);
+    }
+
+    [Fact]
     public async Task FailuresAndCancellationPropagateAndAreRecorded()
     {
         var (f, runtime, inner) = Create();
@@ -149,6 +170,15 @@ public class InteropTests
             }
 
             await Task.Yield();
+            foreach (var arg in args ?? [])
+            {
+                // JavaScript reads the stream, as the framework does.
+                if (arg is DotNetStreamReference reference)
+                {
+                    await reference.Stream.CopyToAsync(Stream.Null);
+                }
+            }
+
             if (Fail is not null)
             {
                 throw Fail;
@@ -166,7 +196,17 @@ public class InteropTests
             return Result<TResult>();
         }
 
-        private static T Result<T>() => typeof(T) == typeof(int) ? (T)(object)42 : default!;
+        private static T Result<T>() =>
+            typeof(T) == typeof(int) ? (T)(object)42 : typeof(T) == typeof(IJSStreamReference) ? (T)(object)new FakeStreamReference() : default!;
+    }
+
+    internal sealed class FakeStreamReference : IJSStreamReference
+    {
+        public long Length => 500;
+
+        public ValueTask<Stream> OpenReadStreamAsync(long maxAllowedSize = 512000, CancellationToken cancellationToken = default) => ValueTask.FromResult<Stream>(new MemoryStream(new byte[Length]));
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     internal sealed class FakeModule : IJSObjectReference
@@ -271,11 +311,14 @@ public class BrowserIngestionTests
             [
               {"k":"x","n":"OnPointerMove","t":{{now}},"d":3.5,"c":2,"sy":0,"or":1,"pb":40},
               {"k":"x","n":"Ping (Demo.Client)","t":{{now}},"d":0.4,"c":0,"sy":1,"or":0},
-              {"k":"x","n":"Save","t":{{now}},"d":12,"c":1,"or":1,"er":"Error"},
+              {"k":"x","n":"Save","t":{{now}},"d":12,"c":1,"or":1,"er":"Error","sb":-5},
+              {"k":"x","n":"Upload","t":{{now}},"d":20,"c":1,"or":1,"sb":200000},
               {"k":"x","n":"","t":{{now}},"d":1}
             ]
             """;
-        Assert.Equal(3, collector.Ingest(json, 0));
+        Assert.Equal(4, collector.Ingest(json, 0));
+        Assert.Equal(200_000, Assert.Single(f.All<JSInteropEvent>(), c => c.Identifier == "Upload").StreamBytes);
+        Assert.Null(Assert.Single(f.All<JSInteropEvent>(), c => c.Identifier == "Save").StreamBytes);
         var calls = f.All<JSInteropEvent>();
         Assert.All(calls, c => Assert.Equal(InteropDirection.JSToDotNet, c.Direction));
         Assert.All(calls, c => Assert.Equal(InstrumentationSource.Browser, c.Source));

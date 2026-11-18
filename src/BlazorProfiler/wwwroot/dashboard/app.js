@@ -48,6 +48,9 @@ const state = {
   liveSessions: [],
   tick: 0,
   pendingRefresh: false,
+  // Whether the current view shows session data (not a loading placeholder). A view shown early from the summary is
+  // not rebuilt when the first poll completes, so what the user did in it meanwhile (an expanded tree, a filter) stays.
+  viewHasData: false,
   // Incremented whenever per-session data is reset or invalidated. A poll that started under an older generation
   // discards its results instead of writing another session's (or outdated) data into the current state.
   generation: 0,
@@ -238,6 +241,7 @@ async function pollOnce() {
   // then belong to another state and must be discarded (a follow-up pass loads the current one).
   const stale = () => generation !== state.generation || source !== state.source;
   let changed = false;
+  let earlyViewCurrent = false;
   try {
     const info = await source.info();
     if (source !== state.source) {
@@ -307,6 +311,13 @@ async function pollOnce() {
           return;
         }
 
+        // A view shown early from the first summary only needs refreshing when the summary changed meanwhile (an
+        // imported or stopped session's does not); comparing once per session is cheap enough even for large ones.
+        if (state.tick === 0 && state.viewHasData && SUMMARY_VIEWS.has(state.view) && state.summary
+          && JSON.stringify(summary) === JSON.stringify(state.summary)) {
+          earlyViewCurrent = true;
+        }
+
         state.summary = summary;
       }
 
@@ -324,9 +335,9 @@ async function pollOnce() {
 
     updateChrome();
     state.tick++;
-    if (state.tick === 1 || AUTO_RENDER_VIEWS.has(state.view)) {
+    if ((state.tick === 1 && !state.viewHasData) || AUTO_RENDER_VIEWS.has(state.view)) {
       render();
-    } else if (changed) {
+    } else if (changed && !(state.tick === 1 && earlyViewCurrent)) {
       if (state.view === 'timeline' && timelineRef) {
         timelineRef.setData(views.inRange(ctx, state.events), ctx.toMs);
       } else {
@@ -386,6 +397,7 @@ function resetSessionData() {
   state.report = null;
   state.fileMeta = null;
   state.tick = 0;
+  state.viewHasData = false;
 }
 
 async function selectSession(id) {
@@ -403,8 +415,13 @@ async function selectSession(id) {
     hideBanner();
   }
 
-  await poll();
+  // Show the loading state now rather than the previous session's data. Loading a large session takes several polls'
+  // worth of time: once a view shows its data (the summary arrives first), what the user does in it is kept.
   render();
+  await poll();
+  if (!state.viewHasData) {
+    render();
+  }
 }
 
 // ----------------------------------------------------------------------------------------------- Rendering
@@ -433,6 +450,7 @@ function route() {
 function render() {
   const host = clear($('view'));
   hideRefreshHint();
+  state.viewHasData = false;
   if (state.view !== 'timeline' && timelineRef) {
     timelineRef.destroy();
     timelineRef = null;
@@ -460,6 +478,7 @@ function render() {
 
   try {
     host.appendChild(VIEWS[state.view](ctx, state.params));
+    state.viewHasData = !SESSIONLESS_VIEWS.has(state.view);
   } catch (error) {
     host.appendChild(h('div', { class: 'banner error', role: 'alert' }, `This view failed to render: ${error.message}`));
     console.error(error);

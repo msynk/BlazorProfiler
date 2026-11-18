@@ -431,6 +431,11 @@ public sealed class SessionAggregates
                         aggregate.MaxPayloadBytes = Math.Max(aggregate.MaxPayloadBytes, payload);
                     }
 
+                    if (js.StreamBytes is { } streamed)
+                    {
+                        aggregate.StreamBytes += streamed;
+                    }
+
                     if (bucket is not null)
                     {
                         bucket.InteropCalls += weight;
@@ -660,6 +665,7 @@ public sealed class SessionAggregates
                 NoResponse = Math.Round(interop.NoResponse, 2),
                 PayloadBytes = interop.PayloadBytes,
                 MaxPayloadBytes = interop.MaxPayloadBytes,
+                StreamBytes = interop.StreamBytes,
             });
         }
 
@@ -995,6 +1001,7 @@ public sealed class SessionAggregates
         public double NoResponse { get; set; }
         public long PayloadBytes { get; set; }
         public long MaxPayloadBytes { get; set; }
+        public long StreamBytes { get; set; }
     }
 
     private sealed class CircuitAggregate(string circuitId)

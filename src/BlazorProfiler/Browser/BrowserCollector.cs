@@ -113,6 +113,9 @@ public sealed class BrowserEntry
     /// <summary>JS-to-.NET call (<c>x</c>): the estimated JSON size of the arguments, when estimation is enabled.</summary>
     public long? Pb { get; set; }
 
+    /// <summary>JS-to-.NET call (<c>x</c>): the bytes of JavaScript stream references among the arguments.</summary>
+    public long? Sb { get; set; }
+
     /// <summary>Startup: logical processors.</summary>
     public int? Hc { get; set; }
 
@@ -400,6 +403,7 @@ public sealed class BrowserCollector : ProfilerCollectorBase
                     ArgumentCount = Math.Clamp(entry.C, 0, 1_000),
                     PayloadBytes = entry.Pb is >= 0 and var bytes ? bytes : null,
                     PayloadBytesQuality = entry.Pb is >= 0 ? ValueQuality.Estimated : ValueQuality.Unavailable,
+                    StreamBytes = entry.Sb is >= 0 and var streamed ? streamed : null,
                     Source = InstrumentationSource.Browser,
                     Outcome = entry.Er is null ? ProfilerOutcome.Success : ProfilerOutcome.Error,
                     ErrorType = entry.Er is null ? null : JSInteropEvent.DotNetErrorType,

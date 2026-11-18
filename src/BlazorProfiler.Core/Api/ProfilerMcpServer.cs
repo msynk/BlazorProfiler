@@ -733,7 +733,7 @@ public sealed class ProfilerMcpServer
         RenderBatchEvent b => $"render batch ({b.UpdatedComponentCount} component(s){(b.IncludesClientRoundTrip == true ? ", incl. browser round trip" : string.Empty)}{(b.TransportBytes is { } sent ? $", {DiagnosticContext.FormatBytes(sent)} sent" : string.Empty)})",
         HttpRequestEvent h => $"HTTP {h.Method} {h.Url} → {h.StatusCode?.ToString(CultureInfo.InvariantCulture) ?? h.Outcome.ToString()}",
         DatabaseCommandEvent d => $"SQL {(d.CommandText is { Length: > 160 } text ? text[..160] + "…" : d.CommandText)}{(d.RowsRead is { } rows ? $" ({rows} rows)" : string.Empty)}{(d.IsAsync ? string.Empty : " [sync]")}",
-        JSInteropEvent j => $"interop {j.Direction} {j.Identifier}{(j.PayloadBytes is { } bytes ? $" ({DiagnosticContext.FormatBytes(bytes)})" : string.Empty)}",
+        JSInteropEvent j => $"interop {j.Direction} {j.Identifier}{(j.PayloadBytes is { } bytes ? $" ({DiagnosticContext.FormatBytes(bytes)})" : string.Empty)}{(j.StreamBytes is { } streamed ? $" (+{DiagnosticContext.FormatBytes(streamed)} streamed)" : string.Empty)}",
         BrowserInteractionEvent b => $"browser {b.EventType} (input delay {Ms(b.InputDelayMs)}, processing {Ms(b.ProcessingMs)}, presentation {Ms(b.PresentationDelayMs)}{(b.ContentPaintMs is { } cp ? $", content painted after {Ms(cp)}" : string.Empty)})",
         BrowserLongTaskEvent l => $"long frame (blocking {Ms(l.BlockingMs)}{(l.ForcedStyleAndLayoutMs > 0 ? $", forced layout {Ms(l.ForcedStyleAndLayoutMs)}" : string.Empty)})",
         CircuitActivityEvent a => $"circuit {a.ActivityName}{(a.ReceivedBytes is { } received ? $" ({DiagnosticContext.FormatBytes(received)} received)" : string.Empty)}",

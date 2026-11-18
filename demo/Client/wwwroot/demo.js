@@ -102,3 +102,20 @@ export function streamBatchedToDotNet(ref, count, intervalMs) {
 export function pingStatic() {
   return DotNet.invokeMethodAsync('BlazorProfiler.Demo.Client', 'DemoPing');
 }
+
+// Streaming interop: reads a .NET stream (DotNetStreamReference) and returns its length.
+export async function receiveStream(streamRef) {
+  const data = await streamRef.arrayBuffer();
+  return data.byteLength;
+}
+
+// Streaming interop: passes a JavaScript stream reference to .NET.
+export function sendStream(ref, size) {
+  return ref.invokeMethodAsync('ReceiveStream', DotNet.createJSStreamReference(new Uint8Array(size)));
+}
+
+// Streaming interop: returns data that .NET receives as a stream (InvokeAsync<IJSStreamReference>; the framework creates
+// the reference from the returned typed array).
+export function makeStream(size) {
+  return new Uint8Array(size);
+}

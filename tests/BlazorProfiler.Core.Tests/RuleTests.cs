@@ -846,7 +846,7 @@ public class RuleTests
         CircuitActivityEvent Received(string activity, long bytes) =>
             new() { CircuitId = "c1", ActivityName = activity, ReceivedBytes = bytes, Timestamp = Ev.T(0), Duration = Ev.D(5) };
 
-        var findings = Findings(Analyze([Received("DispatchBrowserEvent", 28 * 1024), Received("DispatchBrowserEvent", 25 * 1024), Received("EndInvokeJSFromDotNet", 40 * 1024), Received("OnRenderCompleted", 30)]), "BP6006");
+        var findings = Findings(Analyze([Received("DispatchBrowserEvent", 28 * 1024), Received("DispatchBrowserEvent", 25 * 1024), Received("EndInvokeJSFromDotNet", 40 * 1024), Received("OnRenderCompleted", 30), Received("ReceiveJSDataChunk", 31 * 1024)]), "BP6006");
         Assert.Equal(2, findings.Count);
         var events = findings.Single(f => f.Subject == "received|c1|DispatchBrowserEvent");
         Assert.Equal(DiagnosticSeverity.Medium, events.Severity);
