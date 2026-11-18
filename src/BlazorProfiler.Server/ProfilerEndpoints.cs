@@ -54,6 +54,7 @@ public static class ProfilerEndpoints
             var access = Access(c);
             return Json(circuits.GetCircuits(id => access.CanViewAllCircuits || access.OwnedCircuits.Contains(id)).ToList(), ServerJsonContext.Default.ListCircuitDescription);
         });
+        api.MapGet("/leaks", (HttpContext c, ProfilerApi p) => Json(p.GetLeaks(Access(c)), ProfilerJsonContext.Default.LeakReport));
         api.MapGet("/sessions/{id}/events", (HttpContext c, ProfilerApi p, string id, long? after, int? max) =>
             Json(p.GetEvents(Access(c), id, after ?? 0, max ?? 2_000), ProfilerJsonContext.Default.EventPage));
         api.MapGet("/sessions/{id}/summary", (HttpContext c, ProfilerApi p, string id) => Json(p.GetSummary(Access(c), id), ProfilerJsonContext.Default.SessionSummary));

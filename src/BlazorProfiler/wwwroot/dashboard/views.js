@@ -1206,6 +1206,10 @@ export function sessions(ctx) {
   }) : emptyState('No sessions', readOnly ? 'Import a trace file to analyze it.' : 'Start a session to begin recording.')));
 
   root.appendChild(panel('Compare sessions', compareView(ctx, list)));
+  if (source && typeof source.leaks === 'function') {
+    root.appendChild(panel('Leaks across sessions', leaksView(ctx, source)));
+  }
+
   const drop = h('div', { class: 'dropzone', tabindex: '0', role: 'button', 'aria-label': 'Drop a trace file here or press Enter to choose one' }, 'Drop a .bptrace or .json trace here to open it locally (read-only, never uploaded).');
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -1220,6 +1224,49 @@ export function sessions(ctx) {
   drop.addEventListener('keydown', e => { if (e.key === 'Enter') { ctx.importFile(true); } });
   root.appendChild(panel('Open a trace file', drop));
   return root;
+}
+
+// Retained components of every visible session grouped by leak signature (component type and retainers): the same
+// signature in many sessions or circuits is one leak.
+function leaksView(ctx, source) {
+  const host = h('div', null, h('div', { class: 'loading', role: 'status' }, 'Grouping retained components…'));
+  source.leaks().then(report => {
+    clear(host);
+    if (!report?.groups?.length) {
+      host.appendChild(emptyState('No retained components',
+        `None in ${fmtNum(report?.sessionsAnalyzed ?? 0)} session(s). Components are checked after full garbage collections; run the leak check in the Components view for an immediate answer.`));
+      return;
+    }
+
+    host.appendChild(h('p', { class: 'muted' },
+      `${fmtNum(report.groups.length)} leak signature(s), ${fmtNum(report.instances)} retained instance(s) in ${fmtNum(report.sessionsAnalyzed)} session(s). `,
+      'A signature identifies the component type and its likely retainers; it is the same in every session, process, and trace (rule BP5004 lists it as evidence).'));
+    host.appendChild(sortableTable({
+      label: 'Leaks across sessions',
+      rows: report.groups,
+      initialSort: { key: 'sessions', dir: -1 },
+      columns: [
+        { key: 'signature', title: 'Signature', render: g => h('span', { class: 'mono' }, g.signature) },
+        { key: 'componentType', title: 'Component', render: g => h('span', { title: g.componentType }, shortType(g.componentType)) },
+        { key: 'retainers', title: 'Likely retained by', sort: g => g.retainers.length, render: g => (g.retainers.length
+          ? h('span', { title: g.retainers.join('\n') }, g.retainers[0], g.retainers.length > 1 ? h('span', { class: 'muted' }, ` (+${g.retainers.length - 1})`) : null)
+          : h('span', { class: 'muted' }, 'not determined')) },
+        { key: 'instances', title: 'Instances', num: true, render: g => fmtNum(g.instances) },
+        { key: 'sessions', title: 'Sessions', num: true, render: g => h('span', { title: g.sessionIds.join(', ') }, fmtNum(g.sessions)) },
+        { key: 'circuits', title: 'Circuits', num: true, render: g => (g.circuits ? fmtNum(g.circuits) : '—') },
+        { key: 'lastReportedAt', title: 'Last seen', render: g => new Date(g.lastReportedAt).toLocaleString() },
+      ],
+      onSelect: g => {
+        const session = g.sessionIds[0];
+        if (session && session !== ctx.state.sessionId) {
+          ctx.selectSession(session);
+        }
+      },
+    }));
+  }).catch(error => {
+    clear(host).appendChild(h('div', { class: 'banner error', role: 'alert' }, `Could not load leaks: ${error.message}`));
+  });
+  return host;
 }
 
 function sessionActions(ctx, s, readOnly) {

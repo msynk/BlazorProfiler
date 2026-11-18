@@ -31,6 +31,7 @@ namespace BlazorProfiler.Export;
 [JsonSerializable(typeof(Api.ProfilerApiRequest))]
 [JsonSerializable(typeof(Api.ProfilerApiResponse))]
 [JsonSerializable(typeof(Api.ProfilerCommandResult))]
+[JsonSerializable(typeof(LeakReport))]
 public sealed partial class ProfilerJsonContext : JsonSerializerContext;
 
 /// <summary>Clones events (used when export redaction must not modify live events).</summary>

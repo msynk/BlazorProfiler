@@ -44,6 +44,11 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
   that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
   leave its render tree or the parent is disposed.
+- **Leaks across sessions**: retained components (BP5004) of every visible session are grouped by **leak signature**
+  (a stable hash of the component type and its likely retainers), so a leak seen in many circuits, sessions, or runs is
+  listed once with the number of sessions, circuits, and instances it affected. Available in the Sessions view, at
+  `GET /api/leaks` (and the bridge operation `leaks`), as the MCP tool `list_leaks`, and as `blazor-profiler leaks
+  <traces...> [--fail-on-leaks] [--format markdown|json]`. BP5004 lists the signature as evidence.
 - **Streaming interop sizes**: calls record the bytes passed through stream references (`streamBytes`):
   `DotNetStreamReference` arguments over seekable streams (taken before JavaScript reads them), `IJSStreamReference`
   results, and `DotNet.createJSStreamReference` arguments of calls from JavaScript to .NET. The Interop view shows them

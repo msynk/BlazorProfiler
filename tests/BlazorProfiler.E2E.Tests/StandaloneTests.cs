@@ -164,7 +164,15 @@ public sealed class StandaloneTests(StandaloneApp app) : IClassFixture<Standalon
                 && e.TryGetProperty("retainedBy", out var by)
                 && by.EnumerateArray().Any(r => r.GetString()!.StartsWith("AppState.Changed → Leaky.OnChanged", StringComparison.Ordinal)));
         }, 20_000, "The retained Leaky pages or their retainer were not reported.");
-        Assert.Contains(await FindingsAsync(page, sessionId), f => f.Str("ruleId") == "BP5004" && f.Str("componentType").EndsWith(".Leaky", StringComparison.Ordinal) && f.Str("confidence") == "High");
+        var leak = (await FindingsAsync(page, sessionId)).First(f => f.Str("ruleId") == "BP5004" && f.Str("componentType").EndsWith(".Leaky", StringComparison.Ordinal));
+        Assert.Equal("High", leak.Str("confidence"));
+
+        // Grouped across sessions by signature: the finding names the signature of the group.
+        var leaks = (await EndToEndTests.BridgeAsync(page, new { op = "leaks" })).GetProperty("leaks");
+        var group = leaks.GetProperty("groups").EnumerateArray().First(g => g.Str("componentType").EndsWith(".Leaky", StringComparison.Ordinal));
+        Assert.True(group.GetProperty("instances").GetInt32() >= 2);
+        Assert.Contains(group.GetProperty("retainers").EnumerateArray(), r => r.GetString()!.StartsWith("AppState.Changed → Leaky.OnChanged", StringComparison.Ordinal));
+        Assert.Contains(leak.GetProperty("evidence").EnumerateArray(), e => e.Str("label").StartsWith("Leak signature", StringComparison.Ordinal) && e.Str("value").Contains(group.Str("signature"), StringComparison.Ordinal));
         await page.CloseAsync();
     }
 

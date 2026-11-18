@@ -269,6 +269,12 @@ becomes the finding's "where to look" hint. Other retaining paths (caches, closu
 memory profiler or `dotnet-gcdump` for those. Demo: *Leaky component* (navigate away and back several times, then check
 for leaks).
 
+The evidence includes the **leak signature**: a hash of the component type and its retainers that is the same in every
+session, process, and trace. The leaks report groups retained instances of all sessions by signature, so a leak that
+occurs in many circuits is listed once with how many sessions, circuits, and instances it affected (Sessions view, `GET
+/api/leaks`, the MCP tool `list_leaks`, and `blazor-profiler leaks` for trace files). An instance reported by two
+overlapping sessions (process-wide and per circuit) counts once.
+
 <a id="bp5005"></a>
 ### BP5005 — Allocation-heavy rendering
 

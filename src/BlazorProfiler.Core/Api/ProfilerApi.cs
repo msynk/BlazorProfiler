@@ -151,6 +151,9 @@ public sealed class ProfilerApiResponse
 
     /// <summary>The result of a command.</summary>
     public ProfilerCommandResult? Command { get; set; }
+
+    /// <summary>Retained components grouped across sessions (<c>leaks</c>).</summary>
+    public LeakReport? Leaks { get; set; }
 }
 
 /// <summary>Thrown for invalid API requests.</summary>
@@ -290,6 +293,16 @@ public sealed class ProfilerApi
 
     /// <summary>Runs diagnostics on a session.</summary>
     public DiagnosticReport GetFindings(ProfilerApiAccess access, string sessionId) => _profiler.Diagnostics.Analyze(GetSession(access, sessionId));
+
+    /// <summary>
+    /// Groups the retained components (BP5004) of every session visible to the caller by leak signature, so a leak that
+    /// occurs in many circuits or sessions is listed once with how often it occurred.
+    /// </summary>
+    public LeakReport GetLeaks(ProfilerApiAccess access)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        return LeakGrouping.Group(_profiler.GetSessions().Where(access.CanView));
+    }
 
     /// <summary>Returns the retained events of one operation.</summary>
     public List<ProfilerEvent> GetOperation(ProfilerApiAccess access, string sessionId, long operationId) =>
@@ -535,6 +548,8 @@ public sealed class ProfilerApi
                 return new ProfilerApiResponse { Ok = true, Report = GetFindings(access, id) };
             case "operation":
                 return new ProfilerApiResponse { Ok = true, Events = GetOperation(access, id, request.OperationId) };
+            case "leaks":
+                return new ProfilerApiResponse { Ok = true, Leaks = GetLeaks(access) };
             case "control":
                 return new ProfilerApiResponse { Ok = true, Session = Control(access, id, request.Action, request.Name) };
             case "start":

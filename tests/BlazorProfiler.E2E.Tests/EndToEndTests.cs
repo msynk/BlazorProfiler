@@ -151,6 +151,11 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         await dashboard.WaitForSelectorAsync(".timeline-wrap canvas");
         await dashboard.ClickAsync("a[data-view=health]");
         await dashboard.WaitForSelectorAsync("text=component-metrics");
+        await dashboard.ClickAsync("a[data-view=sessions]");
+        await dashboard.WaitForSelectorAsync("text=Leaks across sessions");
+
+        // The panel loads the grouped leaks of every session: a table, or an empty state when nothing was retained.
+        await dashboard.WaitForFunctionAsync("() => !!document.querySelector(\"table[aria-label='Leaks across sessions']\") || document.body.innerText.includes('No retained components')");
 
         using var native = await app.Http.GetAsync($"_blazor-profiler/api/sessions/{session}/export?format=native");
         native.EnsureSuccessStatusCode();

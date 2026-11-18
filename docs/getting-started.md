@@ -124,6 +124,11 @@ keeps in a parent's previous render tree. For each reported instance the profile
 event of an injected service that still has its handler (`AppState.OnChange → Counter.StateHasChanged`), a static event,
 an undisposed `DotNetObjectReference`, or a timer.
 
+The same leak usually shows up in many circuits or test runs. **Sessions → Leaks across sessions** groups the retained
+instances of every session by leak signature (the component type and its retainers), the most widespread first; the
+signature is also listed in the BP5004 finding. For traces from several runs, use `blazor-profiler leaks a.bptrace
+b.bptrace` (add `--fail-on-leaks` to fail a build).
+
 ## Responsiveness
 
 The **Responsiveness** page shows what users felt on the browser's main thread: slow interactions split into input delay,
@@ -170,6 +175,7 @@ blazor-profiler check trace.bptrace --fail-on medium --budget budget.json --form
 blazor-profiler compare baseline.bptrace current.bptrace --threshold 10                      # fails on count regressions,
                                                                                              # including per-component renders
 blazor-profiler report trace.bptrace --output report.md
+blazor-profiler leaks run1.bptrace run2.bptrace --fail-on-leaks                                # leaks grouped by signature
 ```
 
 Exit codes: 0 success, 1 findings, budget violations, or regressions, 2 invalid usage or input.
@@ -216,7 +222,7 @@ a component rendered. Register it in your agent, for example:
 ```
 
 Tools: `list_sessions`, `get_overview`, `list_findings`, `explain_finding`, `list_interactions`, `get_interaction`,
-`list_components`, `get_component`, `get_report`. The endpoint is read-only unless `ProfilerServerOptions.McpAllowControl`
+`list_components`, `get_component`, `list_leaks` (across sessions), `get_report`. The endpoint is read-only unless `ProfilerServerOptions.McpAllowControl`
 is set, which adds `control_session` and `run_command` (for example `check-leaks`). For WebAssembly apps and CI, export a
 trace and serve it from the CLI over standard input and output:
 

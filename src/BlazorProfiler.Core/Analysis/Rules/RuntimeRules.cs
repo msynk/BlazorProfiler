@@ -333,6 +333,10 @@ public sealed class RetainedComponentsRule : DiagnosticRule
                     ? Evidence("Likely retained by", string.Join("; ", retainers), ValueQuality.Inferred)
                     : Evidence("Retaining path", "not determined (no event subscription, static event, DotNetObjectReference, or timer found; use dotnet-gcdump)", ValueQuality.Unavailable),
             };
+
+            // The same signature in other sessions, circuits, or traces is the same leak (see the leaks report).
+            var signatures = retained.GroupBy(e => LeakGrouping.Signature(e.ComponentType, e.RetainedBy)).OrderByDescending(g => g.Count()).Select(g => g.Key).ToList();
+            evidence.Add(Evidence(signatures.Count == 1 ? "Leak signature" : "Leak signatures", string.Join(", ", signatures.Take(3)) + (signatures.Count > 3 ? $" (+{signatures.Count - 3})" : string.Empty)));
             var caveats = new List<string>
             {
                 "Blazor keeps the previous render tree of a live component; it can reference the child most recently removed from a position until that position renders again. That retention is bounded and is not counted as a likely leak.",

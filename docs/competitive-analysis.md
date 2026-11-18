@@ -250,4 +250,5 @@ Two findings came out of testing against real browsers:
 ### Roadmap suggestions (updated)
 
 1. In-page agent tools through Chrome's DevTools extensibility once it leaves experimental status.
-2. Grouping leak reports across sessions by retainer signature (LeakCanary).
+2. ~~Grouping leak reports across sessions by retainer signature (LeakCanary).~~ Done: leak signatures, the leaks report
+   (Sessions view, `/api/leaks`, `list_leaks`), and `blazor-profiler leaks`.

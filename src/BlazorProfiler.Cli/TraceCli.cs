@@ -32,6 +32,10 @@ internal static class TraceCli
               Compares key metrics. Fails when a count (renders, batches, requests, queries, interop calls, retained
               components) grows by more than --threshold percent (default 10). Durations fail only with --include-timings.
               Per-component render counts (and, with --include-timings, render p95) are compared as well.
+          blazor-profiler leaks <trace> [<trace>...] [--format markdown|json] [--fail-on-leaks] [--output <file>]
+              Groups retained components (BP5004) across traces by leak signature (component type and likely retainers),
+              so a leak seen in many runs is listed once with how often it occurred. With --fail-on-leaks, fails (exit
+              code 1) when any is found.
           blazor-profiler mcp <trace> [<trace>...] [--allow-control]
               Serves the traces to a coding agent as a Model Context Protocol server over standard input and output
               (newline-delimited JSON-RPC). Configure it in the agent as: command "blazor-profiler", args ["mcp", "<trace>"].
@@ -60,6 +64,7 @@ internal static class TraceCli
                 "check" => await CheckAsync(options, output, cancellationToken).ConfigureAwait(false),
                 "report" => await ReportAsync(options, output, cancellationToken).ConfigureAwait(false),
                 "compare" => await CompareAsync(options, output, cancellationToken).ConfigureAwait(false),
+                "leaks" => await LeaksAsync(options, output, cancellationToken).ConfigureAwait(false),
                 "mcp" => await McpAsync(options, input, output, error, cancellationToken).ConfigureAwait(false),
                 _ => throw new CliException($"Unknown command '{args[0]}'."),
             };
@@ -312,6 +317,60 @@ internal static class TraceCli
         return [.. rows.OrderByDescending(r => r.Row.Regressed).ThenByDescending(r => r.Change).Take(20).Select(r => r.Row)];
     }
 
+    private static async Task<int> LeaksAsync(Options options, TextWriter output, CancellationToken cancellationToken)
+    {
+        var paths = options.AllPositional;
+        if (paths.Count == 0)
+        {
+            throw new CliException("Missing argument <trace>.");
+        }
+
+        var sources = new List<LeakSource>();
+        foreach (var path in paths)
+        {
+            var document = await ReadAsync(path, cancellationToken).ConfigureAwait(false);
+            var clock = new FixedProfilerClock(document.Clock.Frequency, document.Clock.AnchorTimestamp, document.Clock.AnchorTime);
+            var start = document.Events.Count > 0 ? document.Events.Min(e => e.Timestamp) : document.Clock.AnchorTimestamp;
+
+            // Each trace has its own instance identifiers.
+            sources.Add(new LeakSource(Path.GetFileName(path), "trace:" + path, clock, start, [.. document.Events.OfType<Events.ComponentRetainedEvent>()]));
+        }
+
+        var report = LeakGrouping.Group(sources);
+        var text = (options.Value("--format") ?? "markdown") switch
+        {
+            "markdown" or "md" or "text" => LeakGrouping.ToMarkdown(report, int.MaxValue),
+            "json" => JsonSerializer.Serialize(report, ProfilerJsonContext.Default.LeakReport),
+            var other => throw new CliException($"Unknown format '{other}'."),
+        };
+
+        await WriteAsync(options, output, text, cancellationToken).ConfigureAwait(false);
+        return options.Flag("--fail-on-leaks") && report.Groups.Count > 0 ? Violations : Success;
+    }
+
+    private static async Task<TraceDocument> ReadAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            throw new CliException($"File not found: {path}");
+        }
+
+        await using var stream = File.OpenRead(path);
+        return await TraceImporter.ReadAsync(stream, new TraceImportOptions { MaxInputBytes = 1L << 31, MaxDecompressedBytes = 4L << 30, MaxEvents = 10_000_000 }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>The clock of a trace file.</summary>
+    private sealed class FixedProfilerClock(long frequency, long anchorTimestamp, DateTimeOffset anchorTime) : IProfilerClock
+    {
+        public long Frequency { get; } = frequency;
+
+        public long AnchorTimestamp { get; } = anchorTimestamp;
+
+        public DateTimeOffset AnchorTime { get; } = anchorTime;
+
+        public long GetTimestamp() => AnchorTimestamp;
+    }
+
     private static async Task<int> McpAsync(Options options, TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
         var paths = options.AllPositional;
@@ -559,7 +618,7 @@ internal static class TraceCli
     /// <summary>Parsed arguments: positional values, <c>--name value</c> options, and <c>--flag</c> switches.</summary>
     private sealed class Options
     {
-        private static readonly HashSet<string> s_flags = new(StringComparer.Ordinal) { "--include-timings", "--allow-control" };
+        private static readonly HashSet<string> s_flags = new(StringComparer.Ordinal) { "--include-timings", "--allow-control", "--fail-on-leaks" };
         private readonly List<string> _positional = [];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _switches = new(StringComparer.Ordinal);
