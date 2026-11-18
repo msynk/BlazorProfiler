@@ -97,6 +97,13 @@ public sealed class ProfilerServerOptions
 
     /// <summary>The maximum size of an MCP request body. Defaults to 1 MB.</summary>
     public long MaxMcpRequestBytes { get; set; } = 1024 * 1024;
+
+    /// <summary>
+    /// Measures the size of circuit messages by wrapping Blazor's SignalR hub protocol: bytes of each render batch sent to
+    /// the browser, of each message received from it, and of the arguments of .NET-to-JavaScript calls made through
+    /// <c>IProfiledJSRuntime</c>. Defaults to true. Messages of other hubs are not affected.
+    /// </summary>
+    public bool MeasureCircuitMessages { get; set; } = true;
 }
 
 /// <summary>Registration of the Blazor Server / Blazor Web App integration.</summary>
@@ -144,8 +151,13 @@ public static class ProfilerServerExtensions
             // Global hub filters are copied to every hub's options, including Blazor's component hub.
             services.TryAddSingleton<LatencySimulator>();
             services.TryAddEnumerable(ServiceDescriptor.Singleton<IProfilerCommand, SimulateLatencyCommand>());
-            services.AddSingleton<ProfilerHubFilter>(sp => new ProfilerHubFilter(sp.GetRequiredService<LatencySimulator>()));
+            services.AddSingleton<ProfilerHubFilter>(sp => new ProfilerHubFilter(sp.GetRequiredService<LatencySimulator>(), sp.GetService<CircuitTransport>()));
             services.Configure<HubOptions>(o => o.AddFilter<ProfilerHubFilter>());
+        }
+
+        if (serverOptions.MeasureCircuitMessages)
+        {
+            CircuitTransport.Register(services);
         }
         services.AddHostedService<ProfilerHostedService>();
         services.TryAddSingleton<ProfilerAccessEvaluator>();

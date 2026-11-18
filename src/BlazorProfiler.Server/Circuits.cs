@@ -236,18 +236,29 @@ public sealed class CircuitCollector : ProfilerCollectorBase
 public sealed class CircuitCorrelationProvider : IProfilerCorrelationProvider
 {
     private readonly CircuitRegistry _registry;
+    private readonly CircuitTransport? _transport;
 
     /// <summary>Creates the provider.</summary>
-    public CircuitCorrelationProvider(CircuitRegistry registry) => _registry = registry;
+    /// <param name="registry">The circuit registry.</param>
+    /// <param name="transport">The circuit message measurement, when enabled.</param>
+    public CircuitCorrelationProvider(CircuitRegistry registry, CircuitTransport? transport = null)
+    {
+        _registry = registry;
+        _transport = transport;
+    }
 
     /// <inheritdoc />
     public void Enrich(ProfilerEvent profilerEvent)
     {
         profilerEvent.CircuitId ??= _registry.GetCircuitId(SynchronizationContext.Current);
-        if (profilerEvent is RenderBatchEvent { IncludesClientRoundTrip: null } batch)
+        if (profilerEvent is RenderBatchEvent batch)
         {
             // Circuit batches complete when the browser acknowledges them; static SSR batches complete immediately.
-            batch.IncludesClientRoundTrip = batch.CircuitId is not null;
+            batch.IncludesClientRoundTrip ??= batch.CircuitId is not null;
+            if (batch.TransportBytes is null && batch.CircuitId is not null && _transport is not null)
+            {
+                batch.TransportBytes = _transport.TakeBatchBytes(batch);
+            }
         }
     }
 }
@@ -259,10 +270,17 @@ public sealed class ProfilerHubFilter : IHubFilter
 
     private static readonly AsyncLocal<HubInvocationInfo?> s_current = new();
     private readonly LatencySimulator? _latency;
+    private readonly CircuitTransport? _transport;
 
-    /// <summary>Creates the filter, optionally with latency simulation.</summary>
+    /// <summary>Creates the filter, optionally with latency simulation and message measurement.</summary>
     /// <remarks>A single constructor: SignalR's filter factory rejects types with several applicable constructors.</remarks>
-    public ProfilerHubFilter(LatencySimulator? latency = null) => _latency = latency;
+    /// <param name="latency">The latency simulation, if any.</param>
+    /// <param name="transport">The circuit message measurement, if enabled.</param>
+    public ProfilerHubFilter(LatencySimulator? latency = null, CircuitTransport? transport = null)
+    {
+        _latency = latency;
+        _transport = transport;
+    }
 
     /// <summary>The hub invocation currently being processed, if any.</summary>
     internal static HubInvocationInfo? Current => s_current.Value;
@@ -275,7 +293,11 @@ public sealed class ProfilerHubFilter : IHubFilter
             return next(invocationContext);
         }
 
-        var info = new HubInvocationInfo(invocationContext.HubMethodName, IsProfilerInternal(invocationContext));
+        // The protocol wrapper keyed the message size by the parsed argument array, which SignalR passes to the hub method.
+        var info = new HubInvocationInfo(
+            invocationContext.HubMethodName,
+            IsProfilerInternal(invocationContext),
+            _transport?.TakeReceived(invocationContext.HubMethodArguments as object?[]));
         s_current.Value = info;
         var delay = _latency?.Delay ?? TimeSpan.Zero;
         return delay > TimeSpan.Zero && !info.ProfilerInternal ? DelayAsync(invocationContext, next, delay) : next(invocationContext);
@@ -305,7 +327,7 @@ public sealed class ProfilerHubFilter : IHubFilter
         return false;
     }
 
-    internal sealed record HubInvocationInfo(string Method, bool ProfilerInternal);
+    internal sealed record HubInvocationInfo(string Method, bool ProfilerInternal, long? ReceivedBytes = null);
 }
 
 /// <summary>A <see cref="CircuitHandler"/> that records circuit lifecycle and inbound activities.</summary>
@@ -403,6 +425,7 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
     {
         Record(circuit, CircuitChange.Closed);
         _registry.Remove(circuit.Id);
+        _services.GetService<CircuitTransport>()?.Forget(circuit.Id);
         if (_sessionId is not null && _services.GetService<IProfiler>() is { } profiler && profiler.GetSession(_sessionId) is { } session)
         {
             session.Stop();
@@ -451,10 +474,10 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
             return next(context);
         }
 
-        return TrackAsync(context, next, profiler, hub?.Method);
+        return TrackAsync(context, next, profiler, hub);
     }
 
-    private async Task TrackAsync(CircuitInboundActivityContext context, Func<CircuitInboundActivityContext, Task> next, IProfiler profiler, string? method)
+    private async Task TrackAsync(CircuitInboundActivityContext context, Func<CircuitInboundActivityContext, Task> next, IProfiler profiler, ProfilerHubFilter.HubInvocationInfo? hub)
     {
         var start = profiler.Clock.GetTimestamp();
 
@@ -481,7 +504,8 @@ public sealed class ProfilerCircuitHandler : CircuitHandler
             _collector.Publish(new CircuitActivityEvent
             {
                 CircuitId = context.Circuit.Id,
-                ActivityName = method,
+                ActivityName = hub?.Method,
+                ReceivedBytes = hub?.ReceivedBytes,
                 Timestamp = start,
                 Duration = profiler.Clock.GetTimestamp() - start,
                 Outcome = failure is null ? ProfilerOutcome.Success : failure is OperationCanceledException ? ProfilerOutcome.Canceled : ProfilerOutcome.Error,

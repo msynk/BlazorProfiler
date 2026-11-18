@@ -530,6 +530,12 @@ public sealed class HighRenderBatchVolumeRule : DiagnosticRule
             }
 
             var total = Weighted(sorted);
+            List<FindingEvidence> evidence = [Evidence("Peak batches per second", FormatNumber(peak)), Evidence("Seconds above threshold", FormatNumber(sustained))];
+            if (PeakBytesPerSecond(sorted, context.Clock.Frequency) is { } bytesPerSecond)
+            {
+                evidence.Add(Evidence("Peak bytes per second", FormatBytes(bytesPerSecond)));
+            }
+
             yield return Create(
                 $"Circuit {circuit.Key} sends up to {FormatNumber(peak)} render batches per second",
                 Scale(peak, threshold),
@@ -537,10 +543,100 @@ public sealed class HighRenderBatchVolumeRule : DiagnosticRule
                 $"Circuit {circuit.Key} produced {FormatNumber(total)} render batches, at or above {FormatNumber(threshold)} per second for {sustained} second(s).",
                 "Each batch is serialized and sent to the browser, which must acknowledge it. A sustained high rate consumes server CPU and bandwidth per user and limits how many users a server can host.",
                 "Throttle UI updates from timers and streams (for example to 10 per second), avoid StateHasChanged in loops, and coalesce updates.",
-                [Evidence("Peak batches per second", FormatNumber(peak)), Evidence("Seconds above threshold", FormatNumber(sustained))],
+                evidence,
                 new ImpactEstimate { Occurrences = total, Method = "Count of render batches on the circuit.", Quality = ValueQuality.Measured },
                 subject: circuit.Key,
                 related: circuit.Take(20));
+        }
+    }
+
+    /// <summary>The largest number of measured batch bytes sent in one second, or null when no batch was measured.</summary>
+    private static double? PeakBytesPerSecond(IEnumerable<ProfilerEvent> batches, long frequency)
+    {
+        var perSecond = new Dictionary<long, double>();
+        foreach (var batch in batches.OfType<RenderBatchEvent>())
+        {
+            if (batch.TransportBytes is { } bytes)
+            {
+                var second = batch.Timestamp / frequency;
+                perSecond[second] = perSecond.GetValueOrDefault(second) + bytes * DiagnosticContext.WeightOf(batch);
+            }
+        }
+
+        return perSecond.Count == 0 ? null : perSecond.Values.Max();
+    }
+}
+
+/// <summary>BP6006: large messages on Blazor Server circuits, measured from Blazor's hub protocol.</summary>
+public sealed class LargeCircuitMessageRule : DiagnosticRule
+{
+    private const long DefaultReceiveLimit = 32 * 1024;
+
+    /// <inheritdoc />
+    public override DiagnosticRuleDescriptor Descriptor { get; } = new()
+    {
+        Id = "BP6006",
+        Title = "Large circuit messages",
+        Category = DiagnosticCategory.Server,
+        Description = "Detects large render batches sent over Blazor Server circuits and messages from the browser close to the hub's receive limit, from the measured size of circuit messages.",
+        RequiredSignals = [ProfilerEventKind.RenderBatch, ProfilerEventKind.CircuitActivity],
+    };
+
+    /// <inheritdoc />
+    public override IEnumerable<DiagnosticFinding> Evaluate(DiagnosticContext context)
+    {
+        var options = context.Options;
+        var batchThreshold = options.LargeCircuitRenderBatchBytes;
+        var batchGroups = context.OfType<RenderBatchEvent>()
+            .Where(b => b.CircuitId is not null && b.TransportBytes >= batchThreshold)
+            .GroupBy(b => b.CircuitId!)
+            .OrderByDescending(g => g.Max(b => b.TransportBytes));
+        foreach (var circuit in batchGroups)
+        {
+            var batches = circuit.OrderByDescending(b => b.TransportBytes).ToList();
+            var max = batches[0].TransportBytes ?? 0;
+            var total = batches.Sum(b => (b.TransportBytes ?? 0) * DiagnosticContext.WeightOf(b));
+            var count = Weighted(batches);
+            yield return Create(
+                $"Circuit {circuit.Key} sends render batches of up to {FormatBytes(max)}",
+                Cap(Scale(max, batchThreshold), DiagnosticSeverity.High),
+                DiagnosticConfidence.High,
+                $"{FormatNumber(count)} render batch(es) on circuit {circuit.Key} were {FormatBytes(batchThreshold)} or more on the wire (largest {FormatBytes(max)}, {FormatBytes(total)} in total).",
+                "On Blazor Server every render batch is serialized, sent to the browser over the circuit, and applied to the DOM before the browser acknowledges it. Large batches use bandwidth and server memory (unacknowledged batches are kept per circuit) and delay the update on slow connections. They usually come from rendering many elements at once (long lists or tables), re-rendering large subtrees, or large inline content such as images in data URLs or long strings.",
+                "Render long lists with Virtualize or paging, avoid re-rendering unchanged subtrees (ShouldRender, @key for stable list items), and serve large content (images, documents) from URLs instead of rendering it into markup.",
+                [Evidence("Large batches", FormatNumber(count)), Evidence("Largest batch", FormatBytes(max)), Evidence("Total size", FormatBytes(total)), Evidence("Threshold", FormatBytes(batchThreshold))],
+                new ImpactEstimate { Occurrences = count, Method = "Measured size of the SignalR messages that carried the batches (Blazor's hub protocol).", Quality = ValueQuality.Measured },
+                subject: "batches|" + circuit.Key,
+                related: batches);
+        }
+
+        var receiveThreshold = options.LargeCircuitReceivedMessageBytes;
+        var receivedGroups = context.OfType<CircuitActivityEvent>()
+            .Where(a => a.CircuitId is not null && a.ReceivedBytes >= receiveThreshold)
+            .GroupBy(a => (CircuitId: a.CircuitId!, Activity: a.ActivityName ?? "(unknown)"))
+            .OrderByDescending(g => g.Max(a => a.ReceivedBytes));
+        foreach (var group in receivedGroups)
+        {
+            var messages = group.OrderByDescending(a => a.ReceivedBytes).ToList();
+            var max = messages[0].ReceivedBytes ?? 0;
+            var count = Weighted(messages);
+            yield return Create(
+                $"The browser sends {group.Key.Activity} messages of up to {FormatBytes(max)} to circuit {group.Key.CircuitId}",
+                max >= DefaultReceiveLimit ? DiagnosticSeverity.High : DiagnosticSeverity.Medium,
+                DiagnosticConfidence.High,
+                $"{FormatNumber(count)} {group.Key.Activity} message(s) from the browser were {FormatBytes(receiveThreshold)} or more (largest {FormatBytes(max)}).",
+                "Every message from the browser to a Blazor Server circuit (a UI event with its arguments, a call from JavaScript to .NET, or the result of a call from .NET to JavaScript) is one SignalR message. A message above the hub's MaximumReceiveMessageSize (32 KB by default) is rejected and the circuit is closed: the user sees the reconnection UI and loses their state. Messages close to the limit fail as soon as the data grows.",
+                group.Key.Activity switch
+                {
+                    "DispatchBrowserEvent" or "BeginInvokeDotNetFromJS" => "These messages carry UI events with their arguments, such as the whole value of an input bound with @bind, sent twice (as the event value and as the bound field value, so about 16,000 characters of plain text reach the default limit; since .NET 10 browser events arrive as BeginInvokeDotNetFromJS), and calls from JavaScript to .NET with theirs. Bind large text on change rather than on every input, or read it through JavaScript interop with a stream reference; send less data per call, split it into chunks, or stream it (DotNet.createJSStreamReference in JavaScript, IJSStreamReference in .NET).",
+                    "EndInvokeJSFromDotNet" => "A JavaScript function returns a large result to .NET: return only what .NET needs, or return a stream reference (IJSStreamReference) and read it with OpenReadStreamAsync.",
+                    _ => "Send less data per message, split it into chunks, or stream it (DotNet.createJSStreamReference in JavaScript, IJSStreamReference in .NET). Raising MaximumReceiveMessageSize only moves the limit and increases memory per circuit.",
+                },
+                [Evidence("Messages", FormatNumber(count)), Evidence("Largest message", FormatBytes(max)), Evidence("Threshold", FormatBytes(receiveThreshold))],
+                new ImpactEstimate { Occurrences = count, Method = "Measured size of the SignalR messages received from the browser (Blazor's hub protocol).", Quality = ValueQuality.Measured },
+                subject: "received|" + group.Key.CircuitId + "|" + group.Key.Activity,
+                caveats: ["Messages above the receive limit close the circuit before they are processed and are not recorded; repeated connection drops are reported by BP6002."],
+                related: messages);
         }
     }
 }

@@ -319,7 +319,13 @@ public sealed class SessionAggregates
 
                     if (batch.CircuitId is not null)
                     {
-                        GetCircuit(batch.CircuitId).Batches.Add(batch.Duration, weight);
+                        var batchCircuit = GetCircuit(batch.CircuitId);
+                        batchCircuit.Batches.Add(batch.Duration, weight);
+                        if (batch.TransportBytes is { } sent)
+                        {
+                            batchCircuit.SentBytes += sent * weight;
+                            batchCircuit.MaxSentBytes = Math.Max(batchCircuit.MaxSentBytes, sent);
+                        }
                     }
 
                     break;
@@ -489,6 +495,11 @@ public sealed class SessionAggregates
                 {
                     var aggregate = GetCircuit(activity.CircuitId);
                     aggregate.InboundActivities.Add(activity.Duration, weight);
+                    if (activity.ReceivedBytes is { } received)
+                    {
+                        aggregate.ReceivedBytes += received * weight;
+                        aggregate.MaxReceivedBytes = Math.Max(aggregate.MaxReceivedBytes, received);
+                    }
                     break;
                 }
 
@@ -681,6 +692,10 @@ public sealed class SessionAggregates
                 ConnectionUps = circuit.ConnectionUps,
                 InboundActivities = circuit.InboundActivities.ToSummary(_clock),
                 RenderBatches = circuit.Batches.ToSummary(_clock),
+                SentBytes = (long)Math.Round(circuit.SentBytes),
+                MaxSentBytes = circuit.MaxSentBytes,
+                ReceivedBytes = (long)Math.Round(circuit.ReceivedBytes),
+                MaxReceivedBytes = circuit.MaxReceivedBytes,
                 OpenedTimestamp = circuit.Opened,
                 ClosedTimestamp = circuit.Closed,
             });
@@ -992,6 +1007,10 @@ public sealed class SessionAggregates
         public int ConnectionUps { get; set; }
         public DurationStats InboundActivities { get; } = new();
         public DurationStats Batches { get; } = new();
+        public double SentBytes { get; set; }
+        public long MaxSentBytes { get; set; }
+        public double ReceivedBytes { get; set; }
+        public long MaxReceivedBytes { get; set; }
     }
 
     private sealed class TimeSeriesBucket

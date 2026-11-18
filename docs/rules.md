@@ -165,8 +165,10 @@ The same JavaScript identifier called 10+ times in one operation. Demo: *Interop
 <a id="bp4003"></a>
 ### BP4003 — Large interop payloads
 
-Calls whose estimated argument size is at least `LargeInteropPayloadBytes` (64 KB). Requires
-`Collectors.JSInteropPayloadEstimation`; sizes are estimates. Calls from JavaScript to .NET on Blazor Server are reported
+Calls whose argument size is at least `LargeInteropPayloadBytes` (64 KB). On Blazor Server, calls from .NET to JavaScript
+made through `IProfiledJSRuntime` are measured: the UTF-8 size of the arguments as the framework serialized them for the
+circuit (see `ProfilerServerOptions.MeasureCircuitMessages`); such findings have no estimation caveat. Other sizes are
+estimates and require `Collectors.JSInteropPayloadEstimation`. Calls from JavaScript to .NET on Blazor Server are reported
 from `LargeServerJSToDotNetPayloadBytes` (24 KB, 75% of the hub's default `MaximumReceiveMessageSize`), because a larger
 message closes the circuit: Medium severity, High from 32 KB. Their sizes are estimated in the browser with
 `JSON.stringify` (byte arrays, which Blazor sends in binary, are overestimated). Demo: *Interop chatter* (one call with
@@ -325,13 +327,34 @@ Inbound circuit activities at or above `SlowCircuitActivityMs` (250), by hub met
 <a id="bp6004"></a>
 ### BP6004 — High render batch volume
 
-Circuits sending at least `HighBatchRatePerSecond` (30) batches per second for 3+ seconds. Demo: *Render storm* (server).
+Circuits sending at least `HighBatchRatePerSecond` (30) batches per second for 3+ seconds. When batch sizes are measured
+(`ProfilerServerOptions.MeasureCircuitMessages`), the evidence includes the peak bytes per second. Demo: *Render storm*
+(server).
 
 <a id="bp6005"></a>
 ### BP6005 — Server thread-pool saturation
 
 Two or more runtime samples with a thread-pool queue of at least `ThreadPoolQueueSaturation` (100); overlapping slow
 operations are listed as temporal correlation.
+
+<a id="bp6006"></a>
+### BP6006 — Large circuit messages
+
+Uses the measured size of circuit messages (`ProfilerServerOptions.MeasureCircuitMessages`, on by default), read from
+Blazor's SignalR hub protocol. Reports, per circuit:
+
+- Render batches of at least `LargeCircuitRenderBatchBytes` (64 KB) on the wire. Severity scales with the largest batch
+  and is capped at High. Recommends `Virtualize` or paging for long lists, avoiding re-renders of unchanged subtrees, and
+  serving large content from URLs.
+- Messages from the browser of at least `LargeCircuitReceivedMessageBytes` (24 KB, 75% of the hub's default
+  `MaximumReceiveMessageSize`), by hub method: Medium, High from 32 KB (only possible when the limit was raised). A
+  larger message closes the circuit. The recommendation depends on the hub method: UI events and calls from JavaScript
+  (`BeginInvokeDotNetFromJS`, `DispatchBrowserEvent`), or results of calls to JavaScript (`EndInvokeJSFromDotNet`). An
+  input bound with `@bind` sends its whole value twice per event (as the event value and as the bound field value), so
+  about 16,000 characters of plain text reach the default limit.
+
+Messages above the limit close the circuit before they are processed and are not recorded; repeated drops are reported by
+BP6002. Demo: *Large list* (server: sort, and paste a long text into the notes box).
 
 ## Browser
 

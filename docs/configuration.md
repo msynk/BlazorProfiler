@@ -138,7 +138,8 @@ Thresholds for every rule (see [rules](rules.md)) and per-rule settings: `Rules[
 `RenderAllocationBytes` (32 KB) and `RenderAllocationTotalBytes` (64 MB, BP5005), `ExceptionsPerSecond` (10, BP5006),
 `TimerGrowthPerNavigation` (0.9, BP5007), `DomElementsWarning` (800) and `LargeDomElements` (1,400, BP7009),
 `FrequentJSToDotNetCallsPerSecond` (60) and `FrequentServerJSToDotNetCallsPerSecond` (20, BP4007),
-`LargeServerJSToDotNetPayloadBytes` (24 KB, BP4003).
+`LargeServerJSToDotNetPayloadBytes` (24 KB, BP4003), `LargeCircuitRenderBatchBytes` (64 KB) and
+`LargeCircuitReceivedMessageBytes` (24 KB, BP6006).
 
 ### `Telemetry` (OpenTelemetry)
 
@@ -182,6 +183,7 @@ counts.
 | `EnableMcp` | `true` | Map the Model Context Protocol endpoint `{RoutePrefix}/mcp` for coding agents (see [getting started](getting-started.md#coding-agents-mcp)). Same access rules as the API. |
 | `McpAllowControl` | `false` | Also offer MCP tools that change state (`control_session`, `run_command`). |
 | `MaxMcpRequestBytes` | 1 MB | Request size limit of the MCP endpoint. |
+| `MeasureCircuitMessages` | `true` | Wrap Blazor's SignalR hub protocol (`blazorpack`) to measure circuit messages: the size of each render batch sent to the browser (`renderBatch.transportBytes`), of each message received from it (`circuitActivity.receivedBytes`), and of the arguments of .NET-to-JavaScript calls made through `IProfiledJSRuntime` (`jsInterop.payloadBytes`, measured). Used by BP6006, BP6004, and BP4003. Other hubs' protocols are not wrapped. |
 
 ## `BlazorProfilerClient` parameters
 

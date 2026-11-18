@@ -130,7 +130,7 @@ public sealed class LargeInteropPayloadRule : DiagnosticRule
         Id = "BP4003",
         Title = "Large interop payloads",
         Category = DiagnosticCategory.Interop,
-        Description = "Detects interop calls whose estimated serialized arguments exceed the size threshold (requires Collectors.JSInteropPayloadEstimation).",
+        Description = "Detects interop calls whose serialized arguments exceed the size threshold (measured for .NET-to-JavaScript calls through IProfiledJSRuntime on Blazor Server; otherwise estimated, which requires Collectors.JSInteropPayloadEstimation).",
         RequiredSignals = [ProfilerEventKind.JSInterop],
     };
 
@@ -152,30 +152,37 @@ public sealed class LargeInteropPayloadRule : DiagnosticRule
             var threshold = calls.Min(ThresholdFor);
             var toDotNet = group.Key.Direction == InteropDirection.JSToDotNet;
             var server = calls.Any(c => c.CircuitId is not null);
+            var measured = calls.All(c => c.PayloadBytesQuality == ValueQuality.Measured);
+            var quality = measured ? ValueQuality.Measured : ValueQuality.Estimated;
+            var estimatedSuffix = measured ? string.Empty : " (estimated)";
             yield return Create(
-                toDotNet ? $"JavaScript sends up to {FormatBytes(max)} to {group.Key.Identifier} (estimated)" : $"{group.Key.Identifier} sends up to {FormatBytes(max)} (estimated)",
+                toDotNet ? $"JavaScript sends up to {FormatBytes(max)} to {group.Key.Identifier}{estimatedSuffix}" : $"{group.Key.Identifier} sends up to {FormatBytes(max)}{estimatedSuffix}",
                 toDotNet && server ? (max >= 32 * 1024 ? DiagnosticSeverity.High : DiagnosticSeverity.Medium) : Scale(max, threshold),
                 DiagnosticConfidence.Medium,
-                $"{calls.Count} call(s) {(toDotNet ? "from JavaScript to" : "to")} {group.Key.Identifier} passed arguments estimated at {FormatBytes(threshold)} or more (max {FormatBytes(max)}).",
+                $"{calls.Count} call(s) {(toDotNet ? "from JavaScript to" : "to")} {group.Key.Identifier} passed arguments {(measured ? "of" : "estimated at")} {FormatBytes(threshold)} or more (max {FormatBytes(max)}).",
                 toDotNet && server
                     ? "On Blazor Server a call from JavaScript to .NET is one SignalR message from the browser. A message above the hub's MaximumReceiveMessageSize (32 KB by default) is rejected and the circuit is closed: the user sees the reconnection UI and loses their state."
                     : "Large payloads are serialized to JSON on every call; on Blazor Server they are also sent over the circuit, where messages above the SignalR maximum message size fail.",
                 toDotNet
                     ? "Send only what .NET needs, stream large data (pass a stream reference: DotNet.createJSStreamReference in JavaScript, IJSStreamReference in .NET), or split it into chunks. Raising MaximumReceiveMessageSize only moves the limit and increases memory per circuit."
                     : "Send only the data JavaScript needs, use streaming interop (DotNetStreamReference / IJSStreamReference) for large binary data, or keep large data on one side and exchange identifiers.",
-                [Evidence("Calls", FormatNumber(calls.Count)), Evidence("Largest payload", FormatBytes(max), ValueQuality.Estimated), Evidence("Threshold", FormatBytes(threshold))],
+                [Evidence("Calls", FormatNumber(calls.Count)), Evidence("Largest payload", FormatBytes(max), quality), Evidence("Threshold", FormatBytes(threshold))],
                 new ImpactEstimate
                 {
                     Occurrences = calls.Count,
-                    Method = toDotNet
-                        ? "Estimated JSON size of the arguments, measured in the browser (JSON.stringify; not the framework's exact wire size)."
-                        : "Estimated JSON size of the arguments (serialized separately by the profiler; not the framework's exact wire size).",
-                    Quality = ValueQuality.Estimated,
+                    Method = measured
+                        ? "UTF-8 size of the arguments as the framework serialized them for the circuit (read from Blazor's hub protocol)."
+                        : toDotNet
+                            ? "Estimated JSON size of the arguments, measured in the browser (JSON.stringify; not the framework's exact wire size)."
+                            : "Estimated JSON size of the arguments (serialized separately by the profiler; not the framework's exact wire size).",
+                    Quality = quality,
                 },
                 subject: toDotNet ? "js-to-dotnet|" + group.Key.Identifier : group.Key.Identifier,
-                caveats: [toDotNet
-                    ? "Sizes are estimated with JSON.stringify in the browser; byte arrays are sent in binary by Blazor and are overestimated."
-                    : "Sizes are estimates computed with System.Text.Json default options and may differ from the framework's serialization."],
+                caveats: measured
+                    ? []
+                    : [toDotNet
+                        ? "Sizes are estimated with JSON.stringify in the browser; byte arrays are sent in binary by Blazor and are overestimated."
+                        : "Sizes are estimates computed with System.Text.Json default options and may differ from the framework's serialization."],
                 related: calls);
         }
     }

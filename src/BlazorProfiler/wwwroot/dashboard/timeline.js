@@ -1,5 +1,5 @@
 // Canvas timeline with lanes, zoom, pan, range selection, search, and causal-link highlighting.
-import { color, fmtMs } from './util.js';
+import { color, fmtMs, fmtBytes } from './util.js';
 
 export const LANES = [
   { id: 'interaction', label: 'Interactions', color: '--lane-interaction', types: ['eventHandler', 'browserInteraction'] },
@@ -449,7 +449,7 @@ export function describeShort(e) {
   switch (e.type) {
     case 'eventHandler': return `${e.attributeName || 'event'} → ${short(e.componentType)}.${e.methodName || '?'}`;
     case 'browserInteraction': return `${e.eventType || 'interaction'} (browser)`;
-    case 'renderBatch': return `Batch: ${e.updatedComponentCount >= 0 ? e.updatedComponentCount : '?'} components`;
+    case 'renderBatch': return `Batch: ${e.updatedComponentCount >= 0 ? e.updatedComponentCount : '?'} components${e.transportBytes ? `, ${fmtBytes(e.transportBytes)}` : ''}`;
     case 'componentRender': return `Render ${short(e.componentType)}`;
     case 'parametersSet': return `Params ${short(e.componentType)}`;
     case 'lifecycle': return `${e.method} ${short(e.componentType)}`;

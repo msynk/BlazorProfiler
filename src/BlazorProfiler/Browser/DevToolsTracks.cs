@@ -135,7 +135,7 @@ public sealed class DevToolsTrackProcessor : IProfilerEventProcessor
                     [("Component", r.ComponentType), ("Instance", r.ComponentInstanceId.ToString(CultureInfo.InvariantCulture)), ("Reason", r.Reason.ToString()), ("Render", r.RenderNumber.ToString(CultureInfo.InvariantCulture)), ("Output", r.OutputUnchanged is null ? null : r.OutputUnchanged.Value ? "identical to the previous render" : "changed")]);
             case RenderBatchEvent b:
                 return ($"Render batch ({b.UpdatedComponentCount})", "Render batches", Shade("secondary"), $"{b.UpdatedComponentCount} component(s) diffed, {Ms(ms)}{(b.IncludesClientRoundTrip == true ? " including the round trip to the browser" : string.Empty)}",
-                    [("Components diffed", b.UpdatedComponentCount.ToString(CultureInfo.InvariantCulture)), ("Includes round trip", b.IncludesClientRoundTrip?.ToString())]);
+                    [("Components diffed", b.UpdatedComponentCount.ToString(CultureInfo.InvariantCulture)), ("Includes round trip", b.IncludesClientRoundTrip?.ToString()), ("Sent", b.TransportBytes is { } sent ? DiagnosticContext.FormatBytes(sent) : null)]);
             case EventHandlerEvent h:
                 return ($"{h.AttributeName} → {Short(h.ComponentType)}.{h.MethodName}", "Event handlers", Shade("tertiary"), $"{h.AttributeName} → {h.ComponentType}.{h.MethodName}: {Ms(ms)}",
                     [("Component", h.ComponentType), ("Method", h.MethodName), ("Synchronous part", h.SynchronousDuration > 0 ? Ms(clock.ToMilliseconds(h.SynchronousDuration)) : null), ("Operation", h.OperationId.ToString(CultureInfo.InvariantCulture))]);

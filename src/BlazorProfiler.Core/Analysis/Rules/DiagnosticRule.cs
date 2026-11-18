@@ -220,6 +220,7 @@ public static class BuiltInRules
         new SlowCircuitActivityRule(),
         new HighRenderBatchVolumeRule(),
         new ServerSaturationRule(),
+        new LargeCircuitMessageRule(),
         new SlowBrowserInteractionRule(),
         new LongTaskRule(),
         new LargeFrameworkDownloadRule(),

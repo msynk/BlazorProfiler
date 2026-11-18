@@ -58,6 +58,12 @@ components spend more time in their own logic, so the relative overhead is lower
 
 Analysis and export run on demand (dashboard refresh, export button), not on instrumented threads.
 
+Circuit message measurement (Blazor Server, `MeasureCircuitMessages`) adds one type check per SignalR message while no
+session records. While recording, each render batch is written through a byte-counting buffer writer (one small
+allocation), each received invocation adds a weak-table entry until its hub method runs, and a .NET-to-JavaScript call
+made through `IProfiledJSRuntime` counts the UTF-8 bytes of its argument JSON (linear in the payload size). Message
+contents are never copied or stored.
+
 ## Optimization history
 
 The first benchmark run showed `ProfiledComponentBase` recording at **765 µs (14.4×)** with 573 KB allocated, and

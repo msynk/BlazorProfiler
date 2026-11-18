@@ -45,6 +45,30 @@ public class InteropTests
     }
 
     [Fact]
+    public async Task UsesTheArgumentSizeReportedByTheTransportAsMeasured()
+    {
+        var (f, runtime, inner) = Create();
+        await using var _ = f;
+
+        // A size reported while no call listens is ignored.
+        InteropMessageSize.Report(5);
+        await runtime.InvokeVoidAsync("log", "hello");
+
+        inner.ReportedBytes = 123;
+        await runtime.InvokeVoidAsync("plot", "data");
+        inner.Fail = new JSException("boom");
+        await Assert.ThrowsAsync<JSException>(() => runtime.InvokeAsync<int>("bad", ["x"]).AsTask());
+
+        var calls = f.All<JSInteropEvent>();
+        Assert.Null(calls[0].PayloadBytes);
+        Assert.Equal(ValueQuality.Unavailable, calls[0].PayloadBytesQuality);
+        Assert.Equal(123, calls[1].PayloadBytes);
+        Assert.Equal(ValueQuality.Measured, calls[1].PayloadBytesQuality);
+        Assert.Equal(123, calls[2].PayloadBytes);
+        Assert.False(InteropMessageSize.IsListening);
+    }
+
+    [Fact]
     public async Task FailuresAndCancellationPropagateAndAreRecorded()
     {
         var (f, runtime, inner) = Create();
@@ -112,10 +136,18 @@ public class InteropTests
 
         public FakeModule Module { get; } = new();
 
+        /// <summary>The argument size reported synchronously, as Blazor Server's hub protocol wrapper does.</summary>
+        public long? ReportedBytes { get; set; }
+
         public async ValueTask<TValue> InvokeAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicFields | DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(string identifier, object?[]? args)
         {
             Calls++;
             LastArgs = args;
+            if (ReportedBytes is { } bytes)
+            {
+                InteropMessageSize.Report(bytes);
+            }
+
             await Task.Yield();
             if (Fail is not null)
             {

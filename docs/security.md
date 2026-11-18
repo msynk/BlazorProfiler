@@ -59,7 +59,8 @@ built-in rule reference.
 ## What is never collected
 
 - Request and response bodies, headers (other than `Content-Length`), cookies, authorization data.
-- JS interop arguments and return values (only argument counts, and optional size estimates).
+- JS interop arguments and return values (only argument counts, and sizes: estimated, or measured on Blazor Server).
+- Circuit message contents. The hub protocol wrapper (`MeasureCircuitMessages`) records message sizes only.
 - Parameter values (only names, and whether values changed).
 - Element content, input values, or text typed by users. Browser interaction entries record the event type and the target's
   tag name only.

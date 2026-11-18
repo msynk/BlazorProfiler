@@ -404,6 +404,18 @@ public sealed class CircuitSummary
     /// <summary>Render batch durations (including client acknowledgement).</summary>
     public DurationSummary RenderBatches { get; set; } = new();
 
+    /// <summary>The bytes of render-batch messages sent to the browser, where measured (weighted when sampled).</summary>
+    public long SentBytes { get; set; }
+
+    /// <summary>The largest render-batch message sent to the browser, in bytes.</summary>
+    public long MaxSentBytes { get; set; }
+
+    /// <summary>The bytes of messages received from the browser, where measured (weighted when sampled).</summary>
+    public long ReceivedBytes { get; set; }
+
+    /// <summary>The largest message received from the browser, in bytes.</summary>
+    public long MaxReceivedBytes { get; set; }
+
     /// <summary>The time the circuit opened.</summary>
     public long? OpenedTimestamp { get; set; }
 

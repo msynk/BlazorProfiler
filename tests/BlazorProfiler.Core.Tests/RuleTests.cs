@@ -801,6 +801,81 @@ public class RuleTests
     }
 
     [Fact]
+    public void BP6004_ReportsTheMeasuredBandwidthOfTheBatches()
+    {
+        var events = Enumerable.Range(0, 200).Select(i =>
+        {
+            var batch = Ev.Batch(i * 20, 1, 1, roundTrip: true, circuit: "c1");
+            batch.TransportBytes = 2_048;
+            return (ProfilerEvent)batch;
+        }).ToList();
+        var finding = Assert.Single(Findings(Analyze(events), "BP6004"));
+        Assert.Contains(finding.Evidence, e => e.Label == "Peak bytes per second" && e.Value == "100 KB");
+
+        // Without measured sizes the evidence is left out rather than reported as zero.
+        var unmeasured = Enumerable.Range(0, 200).Select(i => (ProfilerEvent)Ev.Batch(i * 20, 1, 1, roundTrip: true, circuit: "c1")).ToList();
+        Assert.DoesNotContain(Assert.Single(Findings(Analyze(unmeasured), "BP6004")).Evidence, e => e.Label == "Peak bytes per second");
+    }
+
+    [Fact]
+    public void BP6006_ReportsLargeRenderBatchesPerCircuit()
+    {
+        RenderBatchEvent Sized(double atMs, long bytes, string circuit = "c1")
+        {
+            var batch = Ev.Batch(atMs, 30, 5, roundTrip: true, circuit: circuit);
+            batch.TransportBytes = bytes;
+            return batch;
+        }
+
+        var finding = Assert.Single(Findings(Analyze([Sized(0, 200 * 1024), Sized(100, 80 * 1024), Sized(200, 10 * 1024), Sized(300, 30 * 1024, "c2")]), "BP6006"));
+        Assert.Equal("batches|c1", finding.Subject);
+        Assert.Contains("200 KB", finding.Title, StringComparison.Ordinal);
+        Assert.Equal(DiagnosticSeverity.Medium, finding.Severity);
+        Assert.Contains(finding.Evidence, e => e.Label == "Large batches" && e.Value == "2");
+        Assert.Contains(finding.Evidence, e => e.Label == "Total size" && e.Value == "280 KB");
+        Assert.Equal(ValueQuality.Measured, finding.Impact!.Quality);
+
+        // Severity is capped: a batch is never critical on its own.
+        Assert.Equal(DiagnosticSeverity.High, Assert.Single(Findings(Analyze([Sized(0, 50 * 1024 * 1024)]), "BP6006")).Severity);
+        Assert.Empty(Findings(Analyze([Ev.Batch(0, 30, 5, roundTrip: true, circuit: "c1")]), "BP6006"));
+    }
+
+    [Fact]
+    public void BP6006_ReportsReceivedMessagesCloseToTheHubLimit()
+    {
+        CircuitActivityEvent Received(string activity, long bytes) =>
+            new() { CircuitId = "c1", ActivityName = activity, ReceivedBytes = bytes, Timestamp = Ev.T(0), Duration = Ev.D(5) };
+
+        var findings = Findings(Analyze([Received("DispatchBrowserEvent", 28 * 1024), Received("DispatchBrowserEvent", 25 * 1024), Received("EndInvokeJSFromDotNet", 40 * 1024), Received("OnRenderCompleted", 30)]), "BP6006");
+        Assert.Equal(2, findings.Count);
+        var events = findings.Single(f => f.Subject == "received|c1|DispatchBrowserEvent");
+        Assert.Equal(DiagnosticSeverity.Medium, events.Severity);
+        Assert.Contains("@bind", events.Recommendation, StringComparison.Ordinal);
+        Assert.Contains(events.Evidence, e => e.Label == "Messages" && e.Value == "2");
+        var result = findings.Single(f => f.Subject == "received|c1|EndInvokeJSFromDotNet");
+        Assert.Equal(DiagnosticSeverity.High, result.Severity);
+        Assert.Contains("IJSStreamReference", result.Recommendation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BP4003_ReportsMeasuredPayloadsWithoutEstimationCaveats()
+    {
+        var call = Ev.Interop("grid.load", 0, 5, payload: 400 * 1024);
+        call.PayloadBytesQuality = ValueQuality.Measured;
+        call.CircuitId = "c1";
+        var finding = Assert.Single(Findings(Analyze([call]), "BP4003"));
+        Assert.DoesNotContain("estimated", finding.Title, StringComparison.Ordinal);
+        Assert.Empty(finding.Caveats);
+        Assert.Equal(ValueQuality.Measured, finding.Impact!.Quality);
+        Assert.Contains(finding.Evidence, e => e.Label == "Largest payload" && e.Quality == ValueQuality.Measured);
+
+        // Estimated sizes keep their caveat.
+        var estimated = Assert.Single(Findings(Analyze([Ev.Interop("grid.load", 0, 5, payload: 400 * 1024)]), "BP4003"));
+        Assert.Contains("(estimated)", estimated.Title, StringComparison.Ordinal);
+        Assert.NotEmpty(estimated.Caveats);
+    }
+
+    [Fact]
     public void BP6005_ReportsThreadPoolSaturation()
     {
         var events = Enumerable.Range(0, 3).Select(i => (ProfilerEvent)Ev.Runtime(i * 1000, 1000, 10, queue: 500)).ToList();

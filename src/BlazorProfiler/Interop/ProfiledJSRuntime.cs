@@ -50,7 +50,7 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
 
     internal long StartTimestamp() => Profiler?.Clock.GetTimestamp() ?? 0;
 
-    internal void Record(string identifier, object?[]? args, bool synchronous, bool viaReference, long start, Exception? exception)
+    internal void Record(string identifier, object?[]? args, bool synchronous, bool viaReference, long start, Exception? exception, long? measuredBytes = null)
     {
         var profiler = Profiler;
         if (profiler is null)
@@ -74,7 +74,13 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
                 ErrorType = exception?.GetType().FullName,
             };
 
-            if (profiler.Options.Collectors.JSInteropPayloadEstimation && args is { Length: > 0 })
+            if (measuredBytes is { } measured)
+            {
+                // The arguments as the framework serialized them for the circuit (Blazor Server).
+                e.PayloadBytes = measured;
+                e.PayloadBytesQuality = ValueQuality.Measured;
+            }
+            else if (profiler.Options.Collectors.JSInteropPayloadEstimation && args is { Length: > 0 })
             {
                 e.PayloadBytes = EstimatePayload(args);
                 e.PayloadBytesQuality = e.PayloadBytes is null ? ValueQuality.Unavailable : ValueQuality.Estimated;
@@ -213,24 +219,30 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
 
         var start = Collector.StartTimestamp();
         ValueTask<TValue> task;
+        long? measured;
+        InteropMessageSize.Begin();
         try
         {
             task = invoke(target, identifier, unwrapped);
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex);
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, InteropMessageSize.End());
             throw;
+        }
+        finally
+        {
+            measured = InteropMessageSize.End();
         }
 
         if (task.IsCompletedSuccessfully)
         {
             var result = task.Result;
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, null);
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, null, measured);
             return new ValueTask<TValue>(WrapResult(result));
         }
 
-        return AwaitAsync(task, identifier, args, viaReference, start);
+        return AwaitAsync(task, identifier, args, viaReference, start, measured);
     }
 
     /// <summary>Intercepts an asynchronous void call.</summary>
@@ -243,23 +255,29 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
 
         var start = Collector.StartTimestamp();
         ValueTask task;
+        long? measured;
+        InteropMessageSize.Begin();
         try
         {
             task = invoke(target, identifier);
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex);
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, InteropMessageSize.End());
             throw;
+        }
+        finally
+        {
+            measured = InteropMessageSize.End();
         }
 
         if (task.IsCompletedSuccessfully)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null);
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, measured);
             return default;
         }
 
-        return AwaitVoidAsync(task, identifier, args, start);
+        return AwaitVoidAsync(task, identifier, args, start, measured);
     }
 
     /// <summary>Intercepts a synchronous call.</summary>
@@ -285,7 +303,7 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
     }
 
-    private async ValueTask<TValue> AwaitAsync<TValue>(ValueTask<TValue> task, string identifier, object?[]? args, bool viaReference, long start)
+    private async ValueTask<TValue> AwaitAsync<TValue>(ValueTask<TValue> task, string identifier, object?[]? args, bool viaReference, long start, long? measured)
     {
         TValue result;
         try
@@ -294,15 +312,15 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex);
+            Collector.Record(identifier, args, synchronous: false, viaReference, start, ex, measured);
             throw;
         }
 
-        Collector.Record(identifier, args, synchronous: false, viaReference, start, null);
+        Collector.Record(identifier, args, synchronous: false, viaReference, start, null, measured);
         return WrapResult(result);
     }
 
-    private async ValueTask AwaitVoidAsync(ValueTask task, string identifier, object?[]? args, long start)
+    private async ValueTask AwaitVoidAsync(ValueTask task, string identifier, object?[]? args, long start, long? measured)
     {
         try
         {
@@ -310,11 +328,11 @@ public class ProfiledJSRuntime : IProfiledJSRuntime
         }
         catch (Exception ex)
         {
-            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex);
+            Collector.Record(identifier, args, synchronous: false, viaReference: false, start, ex, measured);
             throw;
         }
 
-        Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null);
+        Collector.Record(identifier, args, synchronous: false, viaReference: false, start, null, measured);
     }
 
     private TValue WrapResult<TValue>(TValue value)

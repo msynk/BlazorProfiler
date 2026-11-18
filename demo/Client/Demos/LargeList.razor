@@ -1,5 +1,7 @@
 <h2>Large list</h2>
-<p>Sorting re-renders 1,000 row components in one batch. Switch to &lt;Virtualize&gt; to render only the visible rows.</p>
+<p>Sorting re-renders 1,000 row components in one batch. Switch to &lt;Virtualize&gt; to render only the visible rows.
+   On Blazor Server the batch is one large message to the browser, and every change of the notes box sends its whole
+   text to the server, twice (BP6006): paste a long text to see it.</p>
 <label><input type="checkbox" @bind="virtualize" /> Use Virtualize</label>
 <button id="sort" @onclick="Sort">Sort (@(ascending ? "descending" : "ascending"))</button>
 <div class="list" style="height:300px;overflow:auto">
@@ -15,10 +17,13 @@
     }
   }
 </div>
+<textarea id="notes" rows="2" style="width:100%" @bind="notes" @bind:event="oninput" aria-label="Notes"></textarea>
+<p id="notes-length">@notes.Length characters</p>
 @code {
     private List<Product> items = Enumerable.Range(1, 1000).Select(i => new Product(i, $"Product {i:0000}", i * 1.5m)).ToList();
     private bool ascending = true;
     private bool virtualize;
+    private string notes = "";
 
     private void Sort()
     {

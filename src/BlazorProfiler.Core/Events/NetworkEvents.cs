@@ -116,10 +116,16 @@ public sealed class JSInteropEvent : ProfilerEvent
     /// <summary>The number of arguments passed.</summary>
     public int ArgumentCount { get; set; }
 
-    /// <summary>The estimated serialized size of the arguments in bytes, when estimation is enabled.</summary>
+    /// <summary>
+    /// The serialized size of the arguments in bytes: measured on Blazor Server from the JSON the framework sent over the
+    /// circuit, otherwise estimated when estimation is enabled.
+    /// </summary>
     public long? PayloadBytes { get; set; }
 
-    /// <summary>The quality of <see cref="PayloadBytes"/>; always <see cref="ValueQuality.Estimated"/> when present.</summary>
+    /// <summary>
+    /// The quality of <see cref="PayloadBytes"/>: <see cref="ValueQuality.Measured"/> for .NET-to-JavaScript calls on Blazor
+    /// Server whose message was observed, <see cref="ValueQuality.Estimated"/> otherwise.
+    /// </summary>
     public ValueQuality PayloadBytesQuality { get; set; }
 
     /// <summary>The mechanism that observed the call.</summary>

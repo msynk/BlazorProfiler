@@ -862,7 +862,7 @@ export function interop(ctx) {
       // Traces exported before responseDurations existed fall back to all calls.
       { key: 'p95', title: 'p95 (answered)', num: true, sort: r => answeredP95(r) ?? -1, render: r => { const v = answeredP95(r); return v == null ? '—' : fmtMs(v); } },
       { key: 'total', title: 'Total', num: true, sort: r => r.durations.totalMs, render: r => fmtMs(r.durations.totalMs) },
-      { key: 'maxPayloadBytes', title: 'Max payload', num: true, render: r => (r.maxPayloadBytes ? `≈ ${fmtBytes(r.maxPayloadBytes)}` : '—') },
+      { key: 'maxPayloadBytes', title: 'Max payload', num: true, render: r => (r.maxPayloadBytes ? h('span', { title: 'Measured for .NET-to-JavaScript calls on Blazor Server, estimated otherwise' }, fmtBytes(r.maxPayloadBytes)) : '—') },
     ],
   })));
 
@@ -876,7 +876,11 @@ export function interop(ctx) {
       h('span', { class: 'mono', title: c.identifier }, `${c.viaObjectReference ? 'module.' : ''}${c.identifier}`),
       h('span', null, c.synchronous ? 'sync' : 'async'),
       interopDuration(ctx, c),
-      h('span', { title: 'Estimated serialized size' }, c.payloadBytes != null ? `≈ ${fmtBytes(c.payloadBytes)}` : '—'),
+      c.payloadBytes == null
+        ? h('span', null, '—')
+        : c.payloadBytesQuality === 'Measured'
+          ? h('span', { title: 'Serialized size sent over the circuit (measured)' }, fmtBytes(c.payloadBytes))
+          : h('span', { title: 'Estimated serialized size' }, `≈ ${fmtBytes(c.payloadBytes)}`),
       h('span', null, c.originComponentType ? shortType(c.originComponentType) : '—'),
     ],
     onSelect: c => ctx.showEvent(c),
@@ -967,17 +971,21 @@ export function circuits(ctx) {
       { key: 'activityP95', title: 'Activity p95', num: true, sort: c => c.inboundActivities.p95Ms, render: c => fmtMs(c.inboundActivities.p95Ms) },
       { key: 'batches', title: 'Render batches', num: true, sort: c => c.renderBatches.count, render: c => fmtNum(c.renderBatches.count) },
       { key: 'batchP95', title: 'Round trip p95', num: true, sort: c => c.renderBatches.p95Ms, render: c => h('span', { title: 'Diff + transport + browser apply, until acknowledgement' }, fmtMs(c.renderBatches.p95Ms)) },
+      { key: 'sentBytes', title: 'Sent', num: true, sort: c => c.sentBytes ?? 0, render: c => (c.sentBytes ? h('span', { title: `Render batches; largest ${fmtBytes(c.maxSentBytes)}` }, fmtBytes(c.sentBytes)) : '—') },
+      { key: 'receivedBytes', title: 'Received', num: true, sort: c => c.receivedBytes ?? 0, render: c => (c.receivedBytes ? h('span', { title: `Messages from the browser; largest ${fmtBytes(c.maxReceivedBytes)}` }, fmtBytes(c.receivedBytes)) : '—') },
     ],
-  }), h('p', { class: 'muted' }, 'Render-batch durations on circuits include the network round trip and browser-side application; they are not the same as diff generation time or paint time.')));
+  }), h('p', { class: 'muted' }, 'Render-batch durations on circuits include the network round trip and browser-side application; they are not the same as diff generation time or paint time. Sizes are measured from the circuit\'s SignalR messages; messages from the browser above the hub\'s MaximumReceiveMessageSize (32 KB by default) close the circuit.')));
 
   const byName = new Map();
   for (const e of events.filter(e => e.type === 'circuitActivity')) {
     const key = e.activityName || '(unknown)';
-    const entry = byName.get(key) || { name: key, count: 0, total: 0, max: 0 };
+    const entry = byName.get(key) || { name: key, count: 0, total: 0, max: 0, bytes: 0, maxBytes: 0 };
     const ms = ctx.ticksToMs(e.duration);
     entry.count++;
     entry.total += ms;
     entry.max = Math.max(entry.max, ms);
+    entry.bytes += e.receivedBytes || 0;
+    entry.maxBytes = Math.max(entry.maxBytes, e.receivedBytes || 0);
     byName.set(key, entry);
   }
 
@@ -990,6 +998,8 @@ export function circuits(ctx) {
       { key: 'count', title: 'Count', num: true },
       { key: 'total', title: 'Total', num: true, render: r => fmtMs(r.total) },
       { key: 'max', title: 'Max', num: true, render: r => fmtMs(r.max) },
+      { key: 'bytes', title: 'Received', num: true, render: r => (r.bytes ? fmtBytes(r.bytes) : '—') },
+      { key: 'maxBytes', title: 'Largest', num: true, render: r => (r.maxBytes ? fmtBytes(r.maxBytes) : '—') },
     ],
   })));
   root.appendChild(panel('Circuit events', eventList(ctx, events, 300)));

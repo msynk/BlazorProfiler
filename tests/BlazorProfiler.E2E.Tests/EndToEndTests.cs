@@ -287,6 +287,70 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
     }
 
     [Fact]
+    public async Task ServerMeasuresCircuitMessageSizes()
+    {
+        var session = await app.StartSessionAsync("circuit messages");
+        var page = await OpenAsync("server/interop");
+        await ClickWhenInteractiveAsync(page, "#batched", "20000 points", "#interop-status");
+        await page.ClickAsync("#stream-batched");
+        await page.WaitForSelectorAsync("text=Sent 150 pointer moves to .NET with one call", new() { Timeout = 20_000 });
+
+        List<JsonElement> events = [];
+        await Waits.UntilAsync(
+            async () =>
+            {
+                events = await app.EventsAsync(session);
+                return events.Any(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "plotMany");
+            },
+            20_000,
+            "The large call was not recorded.");
+
+        static long? Bytes(JsonElement e, string property) =>
+            e.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt64() : null;
+
+        // .NET-to-JavaScript arguments are measured from the JSON the framework sent: 20,000 points of about 20 bytes each.
+        var plotMany = events.First(e => e.Str("type") == "jsInterop" && e.Str("identifier") == "plotMany");
+        Assert.Equal("Measured", plotMany.Str("payloadBytesQuality"));
+        Assert.InRange(Bytes(plotMany, "payloadBytes") ?? 0, 200_000, 1_000_000);
+
+        // Render batches carry the size of the message that delivered them, and inbound messages their received size: the
+        // batched pointer moves (150 pairs of numbers) arrive in one message.
+        Assert.Contains(events, e => e.Str("type") == "renderBatch" && e.Str("circuitId").Length > 0 && Bytes(e, "transportBytes") > 0);
+        Assert.Contains(events, e => e.Str("type") == "circuitActivity" && e.Str("activityName") == "OnRenderCompleted" && Bytes(e, "receivedBytes") > 0);
+        Assert.Contains(events, e => e.Str("type") == "circuitActivity" && e.Str("activityName") == "BeginInvokeDotNetFromJS" && Bytes(e, "receivedBytes") > 1_000);
+
+        var summary = await app.ApiAsync($"/sessions/{session}/summary");
+        var circuit = summary.GetProperty("circuits").EnumerateArray().Single(c => c.GetProperty("renderBatches").GetProperty("count").GetDouble() > 0);
+        Assert.True(circuit.GetProperty("sentBytes").GetInt64() > 0);
+        Assert.True(circuit.GetProperty("receivedBytes").GetInt64() > 1_000);
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ServerReportsLargeRenderBatchesAndMessagesNearTheHubLimit()
+    {
+        var session = await app.StartSessionAsync("large circuit messages");
+        var page = await OpenAsync("server/large-list");
+        await ClickWhenInteractiveAsync(page, "#sort", "(ascending)", "#sort");
+
+        // One input event carries the whole text twice (as the event's value and as the bound field's value): 12,500
+        // characters are about 25 KB, above 75% of the hub's 32 KB receive limit.
+        await page.FillAsync("#notes", new string('x', 12_500));
+        await page.WaitForSelectorAsync("text=12500 characters", new() { Timeout = 20_000 });
+
+        await Waits.UntilAsync(
+            async () => (await app.FindingsAsync(session)).Count(f => f.Str("ruleId") == "BP6006") >= 2,
+            20_000,
+            "BP6006 was not reported for both directions.");
+        var findings = (await app.FindingsAsync(session)).Where(f => f.Str("ruleId") == "BP6006").ToList();
+        Assert.Contains(findings, f => f.Str("subject").StartsWith("batches|", StringComparison.Ordinal));
+        var received = findings.Single(f => f.Str("subject").StartsWith("received|", StringComparison.Ordinal));
+        Assert.EndsWith("|BeginInvokeDotNetFromJS", received.Str("subject"), StringComparison.Ordinal);
+        Assert.Contains("@bind", received.Str("recommendation"), StringComparison.Ordinal);
+        await page.CloseAsync();
+    }
+
+    [Fact]
     public async Task WebAssemblyRecordsJavaScriptToDotNetCallsAndReportsFrequentOnes()
     {
         var page = await app.Browser.NewPageAsync();
@@ -552,9 +616,19 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
 
         // The same circuit keeps being profiled after the reconnection.
         var circuit = (await app.EventsAsync(session)).First(e => e.Str("type") == "circuit" && e.Str("change") == "ConnectionDown").Str("circuitId");
-        await page.ClickAsync("#block");
+        // A click made while the reconnected circuit is still resuming can be lost, so it is repeated until one is recorded.
+        var lastClick = DateTime.MinValue;
         await Waits.UntilAsync(
-            async () => (await app.EventsAsync(session)).Count(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "Block" && e.Str("circuitId") == circuit) >= 2,
+            async () =>
+            {
+                if (DateTime.UtcNow - lastClick > TimeSpan.FromSeconds(5))
+                {
+                    await page.ClickAsync("#block");
+                    lastClick = DateTime.UtcNow;
+                }
+
+                return (await app.EventsAsync(session)).Count(e => e.Str("type") == "eventHandler" && e.Str("methodName") == "Block" && e.Str("circuitId") == circuit) >= 2;
+            },
             30_000,
             "Handlers were not recorded after the reconnection.");
         await page.CloseAsync();

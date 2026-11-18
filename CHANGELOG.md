@@ -44,6 +44,13 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
   that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
   leave its render tree or the parent is disposed.
+- **Circuit message sizes** (Blazor Server): the profiler wraps Blazor's SignalR hub protocol and measures each render
+  batch sent to the browser (`renderBatch.transportBytes`), each message received from it
+  (`circuitActivity.receivedBytes`), and the arguments of .NET-to-JavaScript calls through `IProfiledJSRuntime` (measured
+  instead of estimated). New rule **BP6006** (render batches of 64 KB or more, and messages from the browser near the hub's
+  32 KB receive limit, such as long text bound with `@bind`); BP6004 reports the peak bytes per second. The Circuits view
+  shows bytes sent and received per circuit and per hub method. `ProfilerServerOptions.MeasureCircuitMessages` turns it
+  off.
 - **Calls from JavaScript to .NET** (`DotNetObjectReference.invokeMethodAsync`, `DotNet.invokeMethodAsync`, and their
   synchronous forms) are recorded by the browser module in both hosting models, timed until .NET returns; previously they
   were invisible in WebAssembly. Blazor's own plumbing (event dispatch, root components) is excluded. New rule **BP4007**

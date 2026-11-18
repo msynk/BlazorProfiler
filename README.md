@@ -24,7 +24,7 @@ batches, HTTP, JavaScript interop, runtime/GC, Blazor Server circuits, and brows
   a leak check forces collections and separates accumulating leaks from the renderer's bounded retention.
 - **Measures startup and Core Web Vitals**: time to interactive after first paint, the `_framework` download (size,
   cache, compression, largest files), LCP, CLS, and INP, with Blazor-specific advice.
-- **Explains** problems with 52 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
+- **Explains** problems with 53 deterministic diagnostic rules. Every finding carries severity, confidence, evidence (each
   value labelled measured / estimated / inferred / unavailable), an impact estimate with its calculation method, a suggested
   fix, conditions under which the advice may not apply, and suppression support.
 - **Shows** it all in a dependency-free dashboard (overview, interactions with per-operation waterfalls and ranked

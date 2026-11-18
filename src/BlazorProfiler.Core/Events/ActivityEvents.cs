@@ -31,6 +31,13 @@ public sealed class RenderBatchEvent : ProfilerEvent
     /// </summary>
     public bool? IncludesClientRoundTrip { get; set; }
 
+    /// <summary>
+    /// The size in bytes of the SignalR message that carried the batch to the browser (Blazor Server), as written by the
+    /// circuit's hub protocol, or <see langword="null"/> when not measured (WebAssembly, static rendering, or a message
+    /// written outside the circuit's dispatcher).
+    /// </summary>
+    public long? TransportBytes { get; set; }
+
     /// <summary>The mechanism that produced the event.</summary>
     public InstrumentationSource Source { get; set; }
 }

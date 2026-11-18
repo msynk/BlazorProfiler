@@ -562,6 +562,15 @@ public sealed class DiagnosticOptions
     /// <summary>Render batches per second on one circuit considered high volume.</summary>
     public double HighBatchRatePerSecond { get; set; } = 30;
 
+    /// <summary>BP6006: measured size of a render-batch message sent over a circuit considered large.</summary>
+    public long LargeCircuitRenderBatchBytes { get; set; } = 64 * 1024;
+
+    /// <summary>
+    /// BP6006: measured size of a message received by a circuit considered large. The hub closes the circuit on messages above
+    /// its <c>MaximumReceiveMessageSize</c> (32 KB by default); the default is 75% of that limit.
+    /// </summary>
+    public long LargeCircuitReceivedMessageBytes { get; set; } = 24 * 1024;
+
     /// <summary>Thread-pool queue length considered saturated.</summary>
     public long ThreadPoolQueueSaturation { get; set; } = 100;
 

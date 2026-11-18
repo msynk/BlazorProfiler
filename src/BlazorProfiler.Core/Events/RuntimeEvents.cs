@@ -119,6 +119,12 @@ public sealed class CircuitActivityEvent : ProfilerEvent
     /// </summary>
     public string? ActivityName { get; set; }
 
+    /// <summary>
+    /// The size in bytes of the SignalR message that delivered the activity, as read by the circuit's hub protocol, or
+    /// <see langword="null"/> when not measured.
+    /// </summary>
+    public long? ReceivedBytes { get; set; }
+
     /// <inheritdoc />
     public override int EstimateSize() => base.EstimateSize() + StringSize(ActivityName);
 }

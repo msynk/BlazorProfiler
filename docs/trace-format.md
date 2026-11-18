@@ -58,14 +58,14 @@ Every event has: `type` (discriminator), `id`, `timestamp`, `duration`, optional
 | `renderRequest` | component fields, `result` (`Coalesced`, `SuppressedByShouldRender`) |
 | `lifecycle` | component fields, `method`, `synchronousDuration`, `completedAsynchronously` |
 | `componentChildren` | component fields, `childInstanceIds`, `childTypes` |
-| `renderBatch` | `updatedComponentCount`, `includesClientRoundTrip`, `source` |
+| `renderBatch` | `updatedComponentCount`, `includesClientRoundTrip`, `transportBytes` (Blazor Server: size of the message that carried the batch), `source` |
 | `eventHandler` | component fields, `methodName`, `attributeName`, `synchronousDuration` |
 | `navigation` | component fields, `route` (template) |
 | `http` | `method`, `url` (sanitized), `endpoint`, `urlHash`, `statusCode`, `requestBytes`, `responseBytes`, `responseBytesQuality`, `fromCache`, `retryAttempt`, `source`, `originComponentType`, `originComponentInstanceId`, `originLifecycleMethod` |
-| `jsInterop` | `direction`, `identifier`, `synchronous`, `viaObjectReference`, `argumentCount`, `payloadBytes`, `payloadBytesQuality`, `source`, `originComponentType`, `originComponentInstanceId`. Calls from JavaScript to .NET (`direction` `JSToDotNet`, `source` `Browser`) use the method name as `identifier` for instance methods and `Method (Assembly)` for static ones; a failed call has `errorType` `Microsoft.JSInterop.DotNetInvocationFailure`. |
+| `jsInterop` | `direction`, `identifier`, `synchronous`, `viaObjectReference`, `argumentCount`, `payloadBytes`, `payloadBytesQuality`, `source`, `originComponentType`, `originComponentInstanceId`. Calls from JavaScript to .NET (`direction` `JSToDotNet`, `source` `Browser`) use the method name as `identifier` for instance methods and `Method (Assembly)` for static ones; a failed call has `errorType` `Microsoft.JSInterop.DotNetInvocationFailure`. `payloadBytesQuality` is `Measured` for .NET-to-JavaScript calls on Blazor Server whose circuit message was observed, `Estimated` otherwise. |
 | `runtime` | `allocatedBytes`, `heapSizeBytes`, `totalMemoryBytes`, `gen0Collections`, `gen1Collections`, `gen2Collections`, `gcPauseTicks`, `cpuTicks`, `processorCount`, `workingSetBytes`, `threadPoolThreads`, `threadPoolQueueLength`, `lockContentions`, `exceptions` (unavailable values are omitted); schema 3: `exceptionTypes` (type name → count, at most 5), `activeTimers` |
 | `circuit` | `change` (`Opened`, `ConnectionUp`, `ConnectionDown`, `Closed`) |
-| `circuitActivity` | `activityName` (hub method) |
+| `circuitActivity` | `activityName` (hub method), `receivedBytes` (size of the message from the browser) |
 | `browserInteraction` | `eventType`, `targetTag`, `inputDelayMs`, `processingMs`, `presentationDelayMs`; schema 3: `contentPaintMs` (input to interaction contentful paint, when reported; attached within 5 s of the input), `contentPaintOnly` (recorded only because the content painted late; excluded from interaction statistics) |
 | `browserLongTask` | `entryType`, `blockingMs`, `script`; schema 3: `forcedStyleAndLayoutMs`, `renderMs`, `styleAndLayoutMs`, `scripts` (at most 5: `invoker`, `invokerType`, `sourceUrl` (sanitized), `sourceFunctionName`, `sourceCharPosition`, `durationMs`, `forcedStyleAndLayoutMs`, `pauseMs`) |
 | `browserResource` | `url`, `initiatorType`, `transferSize`, `decodedBodySize`, `fromCache`, `statusCode` |
