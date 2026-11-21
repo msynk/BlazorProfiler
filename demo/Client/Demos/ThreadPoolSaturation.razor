@@ -1,0 +1,36 @@
+<h2>Thread-pool saturation</h2>
+<p>Queues thousands of work items that each block a thread-pool thread for 50 ms (synchronous I/O, <code>.Result</code>, or
+   <code>Thread.Sleep</code> in real code), for about three seconds. On Blazor Server every circuit shares the thread pool:
+   while the queue is long, every user's events, renders, and requests wait (BP6005). The fix is asynchronous code that
+   releases the thread while it waits.</p>
+@if (OperatingSystem.IsBrowser())
+{
+    <p class="muted">WebAssembly has no thread pool to saturate: open this demo in the Interactive Server mode.</p>
+}
+else
+{
+    <button id="saturate" @onclick="Saturate">Block the thread pool</button>
+}
+<p id="pool-status">@status</p>
+@code {
+    private const int WorkItems = 5_000;
+    private string status = "";
+
+    private void Saturate()
+    {
+        // Bounded in time, whatever the number of processors: after three seconds the remaining items return at once.
+        var until = DateTime.UtcNow.AddSeconds(3);
+        for (var i = 0; i < WorkItems; i++)
+        {
+            ThreadPool.QueueUserWorkItem(static deadline =>
+            {
+                if (DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(50);
+                }
+            }, until, preferLocal: false);
+        }
+
+        status = $"Queued {WorkItems:N0} blocking work items";
+    }
+}

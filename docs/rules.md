@@ -216,7 +216,7 @@ Blazor's own plumbing (event dispatch, root components) is not counted; calls ma
 ### BP5001 — High garbage-collection pressure
 
 GC pause share at least `HighGcPauseRatio` (5%) or generation 2 collections at least `HighGen2CollectionsPerMinute` (6),
-over at least 5 s of samples.
+over at least 5 s of samples. Demo: *Allocation spike* → *Allocate large buffers* (large object heap churn).
 
 <a id="bp5002"></a>
 ### BP5002 — Allocation spike
@@ -317,18 +317,22 @@ candidates (inferred), and confidence is Medium on Blazor Server or when several
 ### BP6001 — Slow server render round trip
 
 Circuit batches whose p95 round trip (diff + transport + browser apply) is at least `SlowServerRenderMs` (250). When even
-small batches are slow, the latency is attributed to the network (Medium confidence); otherwise Low.
+small batches are slow, the latency is attributed to the network (Medium confidence); otherwise Low. Demo: *Slow
+handlers* (server) with the *Simulate latency* command at 300 ms.
 
 <a id="bp6002"></a>
 ### BP6002 — Circuit connection instability
 
-Circuits with at least `CircuitReconnectThreshold` (3) connection drops.
+Circuits with at least `CircuitReconnectThreshold` (3) connection drops. Reproduced by the end-to-end tests, which close
+the page's WebSocket three times; in a browser, switching the network off and on (DevTools → Network → Offline) for longer
+than the server's keep-alive timeout does the same.
 
 <a id="bp6003"></a>
 ### BP6003 — Slow circuit activity
 
 Inbound circuit activities at or above `SlowCircuitActivityMs` (250), by hub method. In .NET 10 browser events arrive as
-`BeginInvokeDotNetFromJS`. Activities include awaited work, so a slow activity is not necessarily blocking.
+`BeginInvokeDotNetFromJS`. Activities include awaited work, so a slow activity is not necessarily blocking. Demo: *Slow
+handlers* (server; *Compute (blocking)* takes 250 ms, more with simulated latency).
 
 <a id="bp6004"></a>
 ### BP6004 — High render batch volume
@@ -341,7 +345,7 @@ Circuits sending at least `HighBatchRatePerSecond` (30) batches per second for 3
 ### BP6005 — Server thread-pool saturation
 
 Two or more runtime samples with a thread-pool queue of at least `ThreadPoolQueueSaturation` (100); overlapping slow
-operations are listed as temporal correlation.
+operations are listed as temporal correlation. Demo: *Thread-pool saturation* (server).
 
 <a id="bp6006"></a>
 ### BP6006 — Large circuit messages
@@ -378,7 +382,7 @@ measurement. Demo: *Slow handlers* (WebAssembly).
 Three or more long animation frames / long tasks at or above `LongTaskMs` (150). With the Long Animation Frames API
 (Chromium) the evidence lists the scripts that ran longest (function and file, invoker type) and the share of script time
 spent in Blazor or the .NET WebAssembly runtime, which is where .NET handlers and rendering appear. Demo: *Layout
-thrashing*.
+thrashing* (*Block the main thread*, three times).
 
 <a id="bp7003"></a>
 ### BP7003 — Large framework download

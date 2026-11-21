@@ -45,7 +45,10 @@ public sealed class LeakGroup
     /// <summary>The number of distinct retained instances.</summary>
     public int Instances { get; set; }
 
-    /// <summary>The number of sessions in which the leak was seen.</summary>
+    /// <summary>
+    /// The number of sessions in which the leak was seen. A session whose instances were all counted already from an
+    /// overlapping session (for example a circuit's session inside the process-wide one) does not count.
+    /// </summary>
     public int Sessions { get; set; }
 
     /// <summary>The number of distinct circuits (Blazor Server) in which the leak was seen.</summary>
@@ -211,11 +214,6 @@ public static class LeakGrouping
 
         public void Add(LeakSource source, ComponentRetainedEvent e)
         {
-            if (_sessions.Add(source.Id))
-            {
-                _sessionOrder.Add(source.Id);
-            }
-
             if (e.CircuitId is not null)
             {
                 _circuits.Add(e.CircuitId);
@@ -228,8 +226,14 @@ public static class LeakGrouping
             _last = _last is null || reported > _last ? reported : _last;
             if (!_instances.Add((source.Domain, e.ComponentInstanceId)))
             {
-                // The same instance reported by an overlapping session (for example process-wide and per circuit).
+                // The same instance reported by an overlapping session (for example process-wide and per circuit): neither
+                // the instance nor the session counts again, so overlapping sessions do not make a leak look widespread.
                 return;
+            }
+
+            if (_sessions.Add(source.Id))
+            {
+                _sessionOrder.Add(source.Id);
             }
 
             if (e.Reason == RetentionReason.ScopeEnded)

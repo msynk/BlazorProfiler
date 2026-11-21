@@ -86,8 +86,25 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   after eviction.
 - Event schema version 3 (see [migration notes](docs/migration.md)).
 
+- **Demos for server infrastructure rules**: *Thread-pool saturation* (BP6005), *Allocate large buffers* (BP5001),
+  *Block the main thread* (BP7002), and *Slow handlers* with the *Simulate latency* command (BP6001, BP6003), each verified
+  by an end-to-end test; BP6002 is verified by dropping a circuit's connection three times.
+- **Accessibility**: the dashboard and the in-page toolbar are audited with axe-core against WCAG 2.1 A and AA in light and
+  dark color schemes. Fixed: text contrast on filled buttons, counts, and severity badges (new `--on-accent` and `--on-sev`
+  colors), grid cells in virtualized lists (`role="gridcell"`), and the trace drop zone's accessible name (now its visible
+  text).
+- **In-page agent tools (WebMCP)**: with `<BlazorProfilerClient AgentTools="true" />`, the profiler's read-only MCP tools
+  are registered with `document.modelContext` (as `blazor_profiler_*` debugging tools) where the browser supports WebMCP, so
+  agents in the browser can ask the profiler what it measured. They go through the dashboard bridge (new operation `mcp`)
+  or, on Blazor Server, the MCP endpoint. Verified end to end against Chromium's WebMCP implementation.
+- An end-to-end test records a Chrome performance trace over the DevTools protocol and checks that it contains the Blazor
+  track entries.
+
 Fixed:
 
+- Leaks across sessions: a session whose leaked instances were all counted already from an overlapping session (a
+  circuit's session inside the process-wide one) no longer counts, so overlapping sessions do not make a leak look
+  widespread.
 - On Blazor Server, the measured size of a .NET-to-JavaScript call now includes its `byte[]` arguments, which the
   framework sends in messages of their own before the call (`JS.ReceiveByteArray`); before, a large byte array was
   reported as a few bytes and BP4003 missed it.

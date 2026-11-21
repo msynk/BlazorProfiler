@@ -232,4 +232,10 @@ public sealed class ProfilerHostingInfo
     /// same-origin bridge; server apps use the endpoint mapped by <c>MapBlazorProfiler</c>.
     /// </summary>
     public string DashboardUrl { get; set; } = "_content/BlazorProfiler/dashboard/index.html?source=bridge";
+
+    /// <summary>
+    /// The URL of the Model Context Protocol endpoint relative to the app's base URL, when the hosting integration maps one
+    /// (Blazor Server); used by in-page agent tools when the dashboard bridge is off.
+    /// </summary>
+    public string? McpUrl { get; set; }
 }

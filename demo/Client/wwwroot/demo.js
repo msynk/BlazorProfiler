@@ -40,6 +40,17 @@ function boxes(count) {
   return [...host.children].slice(0, count);
 }
 
+// A long task: keeps the main thread busy, so the frame that runs it is long (BP7002).
+export function blockMainThread(ms) {
+  const until = performance.now() + ms;
+  let spins = 0;
+  while (performance.now() < until) {
+    spins++;
+  }
+
+  return spins;
+}
+
 // Layout thrashing: write a style, then read geometry, for every box. Each read forces a synchronous layout.
 export function thrashLayout(count) {
   let total = 0;

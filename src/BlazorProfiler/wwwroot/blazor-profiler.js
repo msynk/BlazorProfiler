@@ -92,6 +92,10 @@ export function start(dotNetRef, optionsJson) {
     startBridge();
   }
 
+  if (options.agentTools) {
+    registerAgentTools();
+  }
+
   if (options.shortcut) {
     installShortcut(options.shortcut, openDashboard);
   }
@@ -138,6 +142,11 @@ export function stop(owner) {
   flush(true);
   if (state.channel) {
     state.channel.close();
+  }
+
+  if (state.agentTools) {
+    // Unregisters the WebMCP tools.
+    state.agentTools.abort();
   }
 
   for (const handler of state.keyHandlers) {
@@ -829,6 +838,100 @@ function startBridge() {
   window.addEventListener('pagehide', () => {
     try { channel.postMessage({ type: 'goodbye', clientId: state && state.clientId }); } catch { /* ignore */ }
   });
+}
+
+// In-page agent tools (WebMCP): the profiler's read-only MCP tools, offered to AI agents in the browser through
+// document.modelContext where the browser supports it. Requests reach the profiler through the dashboard bridge (in-process
+// in WebAssembly, the circuit on Blazor Server), or on Blazor Server through the MCP endpoint, with the same access rules.
+const AGENT_TOOL_PREFIX = 'blazor_profiler_';
+let mcpRequestId = 0;
+
+async function callMcp(method, params) {
+  const message = { jsonrpc: '2.0', id: ++mcpRequestId, method, params };
+  let reply;
+  if (state.options.bridge) {
+    const response = JSON.parse(await invokeApi(state.ref, JSON.stringify({ op: 'mcp', mcpMessage: JSON.stringify(message) })));
+    if (!response.ok) {
+      throw new Error(response.error || 'The profiler refused the request.');
+    }
+
+    reply = JSON.parse(response.mcp || 'null');
+  } else if (state.options.mcpUrl) {
+    const response = await fetch(new URL(state.options.mcpUrl, document.baseURI), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(message),
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      throw new Error(`The profiler's MCP endpoint answered ${response.status}.`);
+    }
+
+    reply = await response.json();
+  } else {
+    throw new Error('The profiler is not reachable from this page (enable the dashboard bridge or the MCP endpoint).');
+  }
+
+  if (!reply || reply.error) {
+    throw new Error((reply && reply.error && reply.error.message) || 'The profiler returned no answer.');
+  }
+
+  return reply.result;
+}
+
+async function registerAgentTools() {
+  const context = document.modelContext;
+  if (!context || typeof context.registerTool !== 'function' || typeof AbortController === 'undefined') {
+    return;
+  }
+
+  const owner = state;
+  let tools;
+  try {
+    tools = (await callMcp('tools/list', {})).tools || [];
+  } catch {
+    // No access from this page (for example a remote origin on Blazor Server): no tools.
+    return;
+  }
+
+  if (state !== owner) {
+    return;
+  }
+
+  const controller = new AbortController();
+  state.agentTools = controller;
+  for (const tool of tools) {
+    // Only tools that read: the page's agent must not change what is being profiled.
+    if (!tool.annotations || tool.annotations.readOnlyHint !== true) {
+      continue;
+    }
+
+    try {
+      await context.registerTool({
+        name: AGENT_TOOL_PREFIX + tool.name,
+        title: tool.title ? `Blazor Profiler: ${tool.title}` : undefined,
+        description: `${tool.description} (Blazor Profiler: performance data recorded from this app.)`,
+        inputSchema: tool.inputSchema || { type: 'object', properties: {} },
+        // Results contain names and URLs recorded from the app: data, not instructions.
+        annotations: { readOnlyHint: true, untrustedContentHint: true, debugging: true },
+        async execute(input) {
+          if (!state) {
+            throw new Error('The profiler was stopped.');
+          }
+
+          const result = await callMcp('tools/call', { name: tool.name, arguments: input || {} });
+          const text = (result.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n\n');
+          if (result.isError) {
+            throw new Error(text || 'The tool failed.');
+          }
+
+          return text;
+        },
+      }, { signal: controller.signal });
+    } catch {
+      // A tool the browser rejects (or one registered twice) is skipped; the others stay available.
+    }
+  }
 }
 
 // Sends a dashboard request to .NET. A request above the transport budget (on Blazor Server, SignalR's message size limit,

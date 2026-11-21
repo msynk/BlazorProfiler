@@ -3,9 +3,11 @@
 <h2>Layout thrashing</h2>
 <p>Resizes 400 boxes and reads the height of each one right after changing it, which forces the browser to recompute
    layout 400 times in one frame. The fixed version writes everything first and reads once. Rule BP7006 names the script
-   that forced the layout (from Long Animation Frame attribution, Chromium only); BP7002 reports the long frame.</p>
+   that forced the layout (from Long Animation Frame attribution, Chromium only); BP7002 reports the long frame. The last
+   button keeps the main thread busy for 200 ms: three clicks are three long frames.</p>
 <button id="thrash" @onclick="ThrashAsync">Measure each box (thrashing)</button>
 <button id="batched-layout" @onclick="BatchedAsync">Measure once (batched)</button>
+<button id="block-main" @onclick="BlockMainAsync">Block the main thread (200 ms)</button>
 <p id="layout-status">@status</p>
 <div id="layout-boxes" style="display:flex;flex-wrap:wrap;gap:2px;max-height:240px;overflow:hidden"></div>
 @code {
@@ -20,6 +22,15 @@
         var height = await (await ModuleAsync()).InvokeAsync<double>("thrashLayout", 400);
         status = $"Measured 400 boxes one by one ({height:0} px total)";
     }
+
+    private async Task BlockMainAsync()
+    {
+        await (await ModuleAsync()).InvokeAsync<long>("blockMainThread", 200);
+        blocked++;
+        status = $"Blocked the main thread {blocked} time(s)";
+    }
+
+    private int blocked;
 
     private async Task BatchedAsync()
     {

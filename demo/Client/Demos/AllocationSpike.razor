@@ -1,6 +1,9 @@
 <h2>Allocation spike</h2>
-<p>Allocates roughly 150 MB of short-lived strings in one handler.</p>
+<p>The first button allocates roughly 150 MB of short-lived strings in one handler (BP5002). The second allocates large
+   buffers for about two seconds: buffers of 85,000 bytes or more go to the large object heap, which is collected only
+   with generation 2, so the garbage collector runs full collections again and again (BP5001).</p>
 <button id="allocate" @onclick="Allocate">Allocate</button>
+<button id="allocate-large" @onclick="AllocateLargeAsync">Allocate large buffers</button>
 <p id="alloc-status">@status</p>
 @code {
     private string status = "";
@@ -20,5 +23,28 @@
         }
 
         status = $"Allocated {total:N0} strings";
+    }
+
+    private async Task AllocateLargeAsync()
+    {
+        status = "Allocating large buffers…";
+        // Off the circuit's dispatcher on the server; in WebAssembly this runs on the only thread.
+        var (buffers, collections) = await Task.Run(() =>
+        {
+            var gen2 = GC.CollectionCount(2);
+            var until = DateTime.UtcNow.AddSeconds(2);
+            var count = 0;
+            byte[]? keep = null;
+            while (DateTime.UtcNow < until && count < 2_000)
+            {
+                keep = new byte[4 * 1024 * 1024];
+                keep[count % keep.Length] = 1;
+                count++;
+            }
+
+            GC.KeepAlive(keep);
+            return (count, GC.CollectionCount(2) - gen2);
+        });
+        status = $"Allocated {buffers:N0} large buffers ({collections} full collections)";
     }
 }

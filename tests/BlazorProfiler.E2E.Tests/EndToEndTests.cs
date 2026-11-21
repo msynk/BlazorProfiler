@@ -593,6 +593,62 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
         await page.CloseAsync();
     }
 
+    [Theory]
+    [InlineData("server/requests")]
+    [InlineData("wasm/requests")]
+    public async Task DevToolsTracksReachTheBrowsersPerformanceTrace(string path)
+    {
+        // The Performance panel builds custom tracks from the trace Chrome records: user timing events whose detail carries
+        // a "devtools" object. Recording a trace over the protocol checks what the panel receives (how it draws the tracks
+        // is Chrome's part).
+        await app.StartSessionAsync("devtools-trace");
+        var page = await app.Browser.NewPageAsync();
+        var cdp = await page.Context.NewCDPSessionAsync(page);
+        var traceEvents = new List<JsonElement>();
+        var complete = new TaskCompletionSource();
+        cdp.Event("Tracing.dataCollected").OnEvent += (_, e) =>
+        {
+            lock (traceEvents)
+            {
+                traceEvents.AddRange(e!.Value.GetProperty("value").EnumerateArray().Select(v => v.Clone()));
+            }
+        };
+        cdp.Event("Tracing.tracingComplete").OnEvent += (_, _) => complete.TrySetResult();
+        await cdp.SendAsync("Tracing.start", new Dictionary<string, object>
+        {
+            ["transferMode"] = "ReportEvents",
+            ["traceConfig"] = new Dictionary<string, object> { ["includedCategories"] = new[] { "blink.user_timing", "devtools.timeline" } },
+        });
+
+        await page.GotoAsync(app.BaseUrl + path);
+        await ClickWhenInteractiveAsync(page, "#reload", "Reloaded", "#requests-status");
+        await page.WaitForTimeoutAsync(2_000);
+        await cdp.SendAsync("Tracing.end");
+        await complete.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        List<(string Name, string Track, string? Group)> entries = [];
+        lock (traceEvents)
+        {
+            foreach (var e in traceEvents.Where(e => e.Str("cat")?.Contains("blink.user_timing", StringComparison.Ordinal) == true))
+            {
+                if (!e.TryGetProperty("args", out var args) || !args.TryGetProperty("detail", out var detail) || detail.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                using var parsed = JsonDocument.Parse(detail.GetString()!);
+                if (parsed.RootElement.TryGetProperty("devtools", out var devtools) && devtools.Str("track") is { } track)
+                {
+                    entries.Add((e.Str("name")!, track, devtools.Str("trackGroup")));
+                }
+            }
+        }
+
+        Assert.Contains(entries, e => e.Group == "Blazor" && e.Track == "HTTP (.NET)");
+        Assert.Contains(entries, e => e.Group == "Blazor" && e.Track == "Render batches");
+        await page.CloseAsync();
+    }
+
     [Fact]
     public async Task WebAssemblyBrowserCollectorReportsUserPerceivedLatency()
     {
@@ -704,6 +760,69 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
             var report = await BridgeAsync(page, new { op = "findings", sessionId });
             return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP7006" && f.Str("title").Contains("thrashLayout", StringComparison.Ordinal));
         }, 30_000, "BP7006 did not attribute the forced layout to thrashLayout.");
+
+        // Three 200 ms tasks on the main thread are three long frames (BP7002), with the script that ran them.
+        for (var i = 1; i <= 3; i++)
+        {
+            await page.ClickAsync("#block-main");
+            await page.WaitForSelectorAsync($"#layout-status:has-text('Blocked the main thread {i} time')");
+        }
+
+        await Waits.UntilAsync(async () =>
+        {
+            var info = await BridgeAsync(page, new { op = "info" });
+            var sessionId = info.GetProperty("info").GetProperty("sessions")[0].Str("id");
+            var report = await BridgeAsync(page, new { op = "findings", sessionId });
+            return report.GetProperty("report").GetProperty("findings").EnumerateArray().Any(f => f.Str("ruleId") == "BP7002");
+        }, 30_000, "BP7002 did not report the long frames.");
+        await page.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ServerInfrastructureRulesAreReproducedByTheDemos()
+    {
+        var session = await app.StartSessionAsync("infrastructure");
+        async Task<bool> HasFinding(string ruleId) => (await app.FindingsAsync(session)).Any(f => f.Str("ruleId") == ruleId);
+
+        // BP6001 and BP6003: with simulated latency, every browser message (events and render acknowledgements) waits
+        // 300 ms before the circuit handles it, as on a slow connection.
+        var page = await OpenAsync("server/slow-handler");
+        await ClickWhenInteractiveAsync(page, "#block", "Computed", "#slow-status");
+        await app.ApiAsync("/commands/simulate-latency?argument=300", HttpMethod.Post);
+        try
+        {
+            var lastClick = DateTime.MinValue;
+            await Waits.UntilAsync(
+                async () =>
+                {
+                    if (DateTime.UtcNow - lastClick > TimeSpan.FromSeconds(1.5))
+                    {
+                        await page.ClickAsync("#block");
+                        lastClick = DateTime.UtcNow;
+                    }
+
+                    return await HasFinding("BP6001") && await HasFinding("BP6003");
+                },
+                45_000,
+                "Simulated latency did not produce BP6001 and BP6003.");
+        }
+        finally
+        {
+            await app.ApiAsync("/commands/simulate-latency?argument=0", HttpMethod.Post);
+        }
+
+        await page.CloseAsync();
+
+        // BP6005: thousands of blocking work items queue up on the thread pool for about three seconds.
+        page = await OpenAsync("server/thread-pool");
+        await ClickWhenInteractiveAsync(page, "#saturate", "Queued", "#pool-status");
+        await Waits.UntilAsync(() => HasFinding("BP6005"), 30_000, "Thread-pool saturation was not reported.");
+        await page.CloseAsync();
+
+        // BP5001: large buffers make the garbage collector run full collections again and again.
+        page = await OpenAsync("server/allocations");
+        await ClickWhenInteractiveAsync(page, "#allocate-large", "full collections", "#alloc-status");
+        await Waits.UntilAsync(() => HasFinding("BP5001"), 30_000, "Garbage-collection pressure was not reported.");
         await page.CloseAsync();
     }
 
@@ -743,10 +862,16 @@ public sealed class EndToEndTests(SampleApp app) : IClassFixture<SampleApp>
             events.Count(e => e.Str("type") == "circuit" && e.Str("change") == change && e.Str("circuitId") == circuit);
 
         // Dropping the connection makes Blazor reconnect to the same circuit (the first ConnectionUp was recorded when the
-        // page opened, after the session started).
-        await page.EvaluateAsync("() => { for (const s of window.__sockets || []) { s.close(); } }");
-        await Waits.UntilAsync(async () => Count(await app.EventsAsync(session), "ConnectionDown") >= 1, 30_000, "No ConnectionDown was recorded.");
-        await Waits.UntilAsync(async () => Count(await app.EventsAsync(session), "ConnectionUp") >= 2, 45_000, "The circuit did not reconnect.");
+        // page opened, after the session started). Three drops make an unstable connection (BP6002).
+        for (var drop = 1; drop <= 3; drop++)
+        {
+            await page.EvaluateAsync("() => { for (const s of window.__sockets || []) { s.close(); } }");
+            await Waits.UntilAsync(async () => Count(await app.EventsAsync(session), "ConnectionDown") >= drop, 30_000, $"Connection drop {drop} was not recorded.");
+            await Waits.UntilAsync(async () => Count(await app.EventsAsync(session), "ConnectionUp") >= drop + 1, 45_000, $"The circuit did not reconnect after drop {drop}.");
+        }
+
+        var instability = Assert.Single(await app.FindingsAsync(session), f => f.Str("ruleId") == "BP6002" && f.Str("title").Contains(circuit, StringComparison.Ordinal));
+        Assert.Contains("disconnected 3 times", instability.Str("title"), StringComparison.Ordinal);
 
         // The same circuit keeps being profiled after the reconnection. A click made while the reconnected circuit is still
         // resuming can be lost, so it is repeated until one is recorded.

@@ -198,6 +198,7 @@ counts.
 | `HighlightUpdates` | `false` | Start with update highlighting on (outlines DOM elements as render batches change them). The toolbar/shortcut choice is remembered per tab. |
 | `HighlightShortcut` | `Alt+Shift+H` | Toggles update highlighting; empty disables. |
 | `DevToolsTracks` | `false` | Write Blazor activity (renders, batches, handlers, HTTP, interop, database) into the Chrome/Edge Performance panel as a "Blazor" track group (enable "Show custom tracks"). Sent once per second; on Blazor Server only the current circuit's events, as extra circuit traffic. |
+| `AgentTools` | `false` | Offer the profiler's read-only MCP tools to AI agents in the browser through WebMCP (`document.modelContext`), as debugging tools named `blazor_profiler_*`. Only where the browser supports WebMCP (Chrome origin trial, or `chrome://flags/#enable-webmcp-testing`). Requests go through the dashboard bridge, or on Blazor Server through the MCP endpoint (local origins only). See [getting started](getting-started.md#agents-in-the-browser-webmcp). |
 
 ## Commands
 

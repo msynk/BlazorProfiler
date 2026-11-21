@@ -1,5 +1,5 @@
 @* Shared shell for the interactive demos. Hosts the profiler client so browser data and the dashboard bridge work. *@
-<BlazorProfilerClient ShowToolbar="true" DevToolsTracks="true" />
+<BlazorProfilerClient ShowToolbar="true" DevToolsTracks="true" AgentTools="true" />
 <div class="demo-shell">
   <p class="mode">Render mode: <strong>@ModeLabel</strong> · <a href="@DashboardUrl" target="_blank" rel="noopener">Open dashboard</a> (or press Alt+Shift+P; Alt+Shift+H highlights DOM updates)</p>
   <nav class="demo-nav" aria-label="Demos">
@@ -23,6 +23,7 @@
       case "churn": <KeyedReload /> break;
       case "layout": <LayoutThrash /> break;
       case "frustration": <Frustration /> break;
+      case "thread-pool": <ThreadPoolSaturation /> break;
       default: <p>Pick a demo. Each one reproduces a performance problem that a diagnostic rule detects.</p> break;
     }
   </section>

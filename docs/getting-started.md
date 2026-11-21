@@ -230,6 +230,23 @@ trace and serve it from the CLI over standard input and output:
 { "mcpServers": { "blazor-profiler": { "command": "blazor-profiler", "args": ["mcp", "trace.bptrace"] } } }
 ```
 
+### Agents in the browser (WebMCP)
+
+Browser agents (for example Chrome's built-in assistant, or an agent driving Chrome through Chrome DevTools MCP with
+`--categoryExperimentalWebmcp`) can call tools that a page registers with WebMCP. With `AgentTools`, the profiler offers its
+read-only MCP tools there too, so an agent looking at the running app can ask the profiler what it measured:
+
+```razor
+<BlazorProfilerClient AgentTools="true" />
+```
+
+The tools are the read-only ones listed above, prefixed `blazor_profiler_` (`blazor_profiler_list_findings`, ...), and
+marked as read-only debugging tools whose results are untrusted content. Tools that change the profiling state are never
+offered in the page. In WebAssembly they run in-process through the dashboard bridge; on Blazor Server they call the MCP
+endpoint (same access rules: in Development, local requests only), or the bridge when it is enabled. WebMCP is available in
+Chrome through an origin trial and `chrome://flags/#enable-webmcp-testing`; in other browsers nothing is registered. Chrome
+DevTools lists the tools under **Application → WebMCP**, where they can also be run by hand.
+
 ## Explaining findings with AI
 
 Findings are explained by deterministic rules. A language model can add an explanation in the context of your code: set

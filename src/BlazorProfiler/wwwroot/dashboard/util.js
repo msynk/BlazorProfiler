@@ -212,6 +212,13 @@ export function virtualList({ rows, rowHeight = 28, height = 460, columns, heade
         style: { top: `${i * rowHeight}px`, height: `${rowHeight}px`, gridTemplateColumns: columns },
         dataset: { index: i },
       }, renderRow(rows[i], i));
+      // Each column is a grid cell for assistive technology (rows of a grid must contain cells).
+      for (const cell of row.children) {
+        if (!cell.hasAttribute('role')) {
+          cell.setAttribute('role', 'gridcell');
+        }
+      }
+
       inner.appendChild(row);
     }
   };

@@ -227,6 +227,7 @@ release notes, and source code:
 | **Deep capture** in WebAssembly: CPU samples, GC dump, and runtime counters through the runtime's diagnostics API (`collectCpuSamples`, `collectGcDump`, `collectMetrics`), offered only when the build enables diagnostics, with a marker on the timeline | .NET WebAssembly EventPipe diagnostics, Tracy/Superluminal capture buttons | Toolbar |
 | **Leaks across sessions**: retained components grouped by a signature of component type and retainers, counted across live sessions and imported traces | LeakCanary leak signatures, Sentry issue grouping | `LeakGrouping`; Sessions view, `/api/leaks`, `list_leaks`, `blazor-profiler leaks` |
 | **AI explanations** (opt-in): an **Explain with AI** button on findings that sends the finding, its evidence, and the component's statistics to an `IChatClient`, with the answer shown as text | Datadog Bits AI, Sentry Seer, Chrome DevTools "Ask AI", Laravel Debugbar prompts | `IFindingExplainer`, `ProfilerServerOptions.AiExplanations` |
+| **In-page agent tools** (WebMCP): the read-only MCP tools registered with `document.modelContext` as debugging tools, so agents in the browser can ask the profiler what it measured | Chrome WebMCP and DevTools for agents, Angular | `BlazorProfilerClient.AgentTools` |
 | **Streamed interop sizes**: bytes passed through `DotNetStreamReference` and `IJSStreamReference` in both directions | Chrome DevTools network sizes | `JSInteropEvent.StreamBytes`; Interop view |
 | End-to-end coverage in **Firefox and WebKit** (WebAssembly collection and bridge, server collection, dashboard, rage clicks) and of **circuit reconnection** (offline, reconnect, collection resumes on the same circuit) | | E2E tests |
 
@@ -244,7 +245,6 @@ Two findings came out of testing against real browsers:
 | Idea | Why not now |
 |---|---|
 | Soft navigations (Chrome 151) | Verified with Chromium 156: Blazor's router and enhanced navigation produce **no** `soft-navigation` entries (Server or WebAssembly), so per-route vitals cannot rely on them; the profiler's own navigation events already split sessions by route. |
-| In-page agent tools (`devtoolstooldiscovery`) and WebMCP | Experimental flags in Chrome; the server MCP endpoint and the CLI cover agents today. |
 | Zero-code per-instance render timing through renderer internals (BlazorDeveloperTools) | Unchanged: depends on undocumented internals. |
 | Field-level state tracking (`[TrackState]`) and state-container history (BevTools `IBevStateProvider`) | Needs app cooperation through a new API; render causes and changed parameters cover the common case. |
 | OTLP profiles export | The OpenTelemetry profiles signal is still alpha. |
@@ -252,6 +252,8 @@ Two findings came out of testing against real browsers:
 
 ### Roadmap suggestions (updated)
 
-1. In-page agent tools through Chrome's DevTools extensibility once it leaves experimental status.
+1. ~~In-page agent tools through Chrome's DevTools extensibility once it leaves experimental status.~~ Done through WebMCP
+   (origin trial since Chrome 149): `BlazorProfilerClient.AgentTools` registers the read-only MCP tools with
+   `document.modelContext`, verified against Chromium's implementation.
 2. ~~Grouping leak reports across sessions by retainer signature (LeakCanary).~~ Done: leak signatures, the leaks report
    (Sessions view, `/api/leaks`, `list_leaks`), and `blazor-profiler leaks`.

@@ -104,6 +104,16 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
     [Parameter]
     public bool DevToolsTracks { get; set; }
 
+    /// <summary>
+    /// Whether to offer the profiler's read-only tools (the same as the MCP endpoint's: sessions, findings, interactions,
+    /// components, report) to AI agents in the browser through WebMCP (<c>document.modelContext</c>), where the browser
+    /// supports it (Chrome with the WebMCP origin trial or <c>chrome://flags/#enable-webmcp-testing</c>). The tools are marked
+    /// as debugging tools. They reach the profiler through the dashboard bridge, or on Blazor Server through the MCP endpoint
+    /// (same access rules, local origins only). Nothing happens in browsers without WebMCP.
+    /// </summary>
+    [Parameter]
+    public bool AgentTools { get; set; }
+
     /// <inheritdoc />
     public void Attach(RenderHandle renderHandle) => _renderHandle = renderHandle;
 
@@ -180,7 +190,9 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
                 options.FrustrationSignals,
                 options.FrustrationIgnoreSelector,
                 options.JSInterop,
-                options.JSInteropPayloadEstimation));
+                options.JSInteropPayloadEstimation,
+                AgentTools,
+                hosting.McpUrl));
 
             _callbacks.Value.ClockOffsetMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - clientNow;
             if (DevToolsTracks)
@@ -262,7 +274,7 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
         }
     }
 
-    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner, bool toolbar, bool highlight, string highlightShortcut, bool frustration, string? frustrationIgnoreSelector, bool dotNetCalls, bool estimatePayload)
+    private static string SerializeOptions(bool collect, int thresholdMs, int maxBatchBytes, int maxRequestBytes, bool bridge, string source, string shortcut, bool showLauncher, string dashboardUrl, string owner, bool toolbar, bool highlight, string highlightShortcut, bool frustration, string? frustrationIgnoreSelector, bool dotNetCalls, bool estimatePayload, bool agentTools, string? mcpUrl)
     {
         // Serialized explicitly (no reflection) so the payload is trimming-safe in WebAssembly.
         using var buffer = new MemoryStream();
@@ -286,6 +298,11 @@ public sealed class BlazorProfilerClient : IComponent, IHandleAfterRender, IAsyn
             writer.WriteBoolean("frustration", frustration);
             writer.WriteBoolean("dotNetCalls", dotNetCalls);
             writer.WriteBoolean("estimatePayload", estimatePayload);
+            writer.WriteBoolean("agentTools", agentTools);
+            if (!string.IsNullOrEmpty(mcpUrl))
+            {
+                writer.WriteString("mcpUrl", mcpUrl);
+            }
             if (!string.IsNullOrWhiteSpace(frustrationIgnoreSelector))
             {
                 writer.WriteString("frustrationIgnoreSelector", frustrationIgnoreSelector);

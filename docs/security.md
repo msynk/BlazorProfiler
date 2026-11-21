@@ -111,6 +111,14 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
   endpoint like a developer with access to the dashboard.
 - `blazor-profiler mcp` serves only the trace files given on its command line, over standard input and output.
 
+## In-page agent tools (WebMCP)
+
+Off by default (`BlazorProfilerClient.AgentTools`). When enabled, agents in the user's browser can call the profiler's
+read-only MCP tools on that page; tools that change state are never registered there. Every call goes through the same
+access checks as the dashboard: in WebAssembly the profiler belongs to the user's own browser; on Blazor Server the calls
+use the MCP endpoint (access evaluated per request, local origins only) or the bridge (authorized for the circuit's user).
+Results are marked as untrusted content (`untrustedContentHint`), because they contain names and URLs recorded from the app.
+
 ## AI explanations
 
 Off by default. With `ProfilerServerOptions.AiExplanations` and a registered `IChatClient` (or any `IFindingExplainer`),

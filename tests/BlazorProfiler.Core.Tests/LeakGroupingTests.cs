@@ -66,12 +66,13 @@ public sealed class LeakGroupingTests : IDisposable
         Assert.Equal([Subscription], counter.Retainers);
         Assert.True(counter.RetainerIdentified);
         Assert.Equal(3, counter.Instances);
-        Assert.Equal(2, counter.Sessions);
+        // The second session saw only instances the first one already counted: it adds nothing.
+        Assert.Equal(1, counter.Sessions);
         Assert.Equal(3, counter.Circuits);
         Assert.Equal(2, counter.Disposed);
         Assert.Equal(1, counter.ScopeEnded);
         Assert.Equal(4, counter.MaxSurvivedCollections);
-        Assert.Equal(new[] { first.Id, second.Id }.Order(), counter.SessionIds.Order());
+        Assert.Equal([first.Id], counter.SessionIds);
         Assert.True(counter.LastReportedAt > counter.FirstReleasedAt);
 
         var chart = report.Groups[1];

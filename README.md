@@ -38,7 +38,8 @@ batches, HTTP, JavaScript interop, runtime/GC, Blazor Server circuits, and brows
 - **Says what holds a leak**: the event subscription on an injected service, static event, undisposed
   `DotNetObjectReference`, or timer that keeps a disposed component alive.
 - **Talks to coding agents**: an MCP endpoint (`/_blazor-profiler/mcp`) and `blazor-profiler mcp <trace>` let agents list
-  findings, explain them, and inspect interactions and components, with the dashboard's access rules.
+  findings, explain them, and inspect interactions and components, with the dashboard's access rules. With
+  `AgentTools="true"`, the same read-only tools are offered to agents in the browser through WebMCP.
 - **Feeds OpenTelemetry** (opt-in): render, lifecycle, and interop spans nested under Blazor's own `HandleEvent` spans, and
   metrics for renders, interop, interaction latency, web vitals, leaks, and frustration signals, for the Aspire dashboard
   or any backend.

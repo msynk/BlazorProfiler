@@ -17,6 +17,9 @@
   --sev-medium: #a16207;
   --sev-low: #2563eb;
   --sev-info: #5b6575;
+  /* Text on filled accent and severity colors (at least 4.5:1, WCAG AA). */
+  --on-accent: #ffffff;
+  --on-sev: #ffffff;
   --lane-interaction: #7c3aed;
   --lane-batch: #0e7490;
   --lane-component: #2563eb;
@@ -53,6 +56,8 @@
     --sev-medium: #facc15;
     --sev-low: #60a5fa;
     --sev-info: #9aa4b5;
+    --on-accent: #111318;
+    --on-sev: #111318;
   }
 }
 
@@ -75,6 +80,8 @@
   --sev-medium: #facc15;
   --sev-low: #60a5fa;
   --sev-info: #9aa4b5;
+  --on-accent: #111318;
+  --on-sev: #111318;
 }
 
 * { box-sizing: border-box; }
@@ -107,7 +114,7 @@ select, input[type="search"], input[type="text"], input[type="number"] {
   border-radius: 6px; padding: 5px 10px; min-height: 32px; cursor: pointer;
 }
 .btn:hover { border-color: var(--accent); }
-.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .btn.ghost { background: transparent; }
 .btn[aria-pressed="false"] { opacity: .7; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -122,7 +129,7 @@ select, input[type="search"], input[type="text"], input[type="number"] {
 }
 .sidenav a:hover { background: var(--surface-2); }
 .sidenav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.count { background: var(--accent); color: #fff; border-radius: 999px; padding: 0 7px; font-size: 12px; }
+.count { background: var(--accent); color: var(--on-accent); border-radius: 999px; padding: 0 7px; font-size: 12px; }
 .count:empty { display: none; }
 
 main { padding: 16px; min-width: 0; }
@@ -161,10 +168,10 @@ h3 { font-size: 14px; }
 .badge.estimated { color: var(--warn); border-color: var(--warn); }
 .badge.inferred { color: var(--info); border-color: var(--info); }
 .badge.unavailable { color: var(--muted); }
-.badge.sev-Critical { color: #fff; background: var(--sev-critical); border-color: var(--sev-critical); }
-.badge.sev-High { color: #fff; background: var(--sev-high); border-color: var(--sev-high); }
-.badge.sev-Medium { color: #111; background: var(--sev-medium); border-color: var(--sev-medium); }
-.badge.sev-Low { color: #fff; background: var(--sev-low); border-color: var(--sev-low); }
+.badge.sev-Critical { color: var(--on-sev); background: var(--sev-critical); border-color: var(--sev-critical); }
+.badge.sev-High { color: var(--on-sev); background: var(--sev-high); border-color: var(--sev-high); }
+.badge.sev-Medium { color: var(--on-sev); background: var(--sev-medium); border-color: var(--sev-medium); }
+.badge.sev-Low { color: var(--on-sev); background: var(--sev-low); border-color: var(--sev-low); }
 .badge.sev-Info { color: var(--sev-info); }
 .state-Running, .state-Recording { color: var(--ok); }
 .state-Failed { color: var(--bad); }

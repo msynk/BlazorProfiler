@@ -117,6 +117,9 @@ public sealed class ProfilerApiRequest
 
     /// <summary>A suppression note.</summary>
     public string? Note { get; set; }
+
+    /// <summary>A Model Context Protocol JSON-RPC message (<c>mcp</c>), handled by the read-only MCP tools.</summary>
+    public string? McpMessage { get; set; }
 }
 
 /// <summary>A response produced by <see cref="ProfilerApi.HandleAsync(ProfilerApiRequest, ProfilerApiAccess, CancellationToken)"/>.</summary>
@@ -163,6 +166,9 @@ public sealed class ProfilerApiResponse
 
     /// <summary>The explanation of a finding (<c>explain</c>).</summary>
     public FindingExplanation? Explanation { get; set; }
+
+    /// <summary>The JSON-RPC response to an <c>mcp</c> message, or null for a notification.</summary>
+    public string? Mcp { get; set; }
 }
 
 /// <summary>Thrown for invalid API requests.</summary>
@@ -251,6 +257,8 @@ public sealed class ProfilerApi
 
     /// <summary>Explains findings in natural language, when configured (see <see cref="IFindingExplainer"/>).</summary>
     public IFindingExplainer? Explainer { get; init; }
+
+    private ProfilerMcpServer? _mcp;
 
     /// <summary>The maximum length of an explanation returned to clients.</summary>
     public const int MaxExplanationLength = 20_000;
@@ -612,6 +620,10 @@ public sealed class ProfilerApi
                 return new ProfilerApiResponse { Ok = true, Events = GetOperation(access, id, request.OperationId) };
             case "leaks":
                 return new ProfilerApiResponse { Ok = true, Leaks = GetLeaks(access) };
+            case "mcp":
+                // The read-only MCP tools, for in-page agent tools (WebMCP) that reach the profiler through the bridge.
+                _mcp ??= new ProfilerMcpServer(this);
+                return new ProfilerApiResponse { Ok = true, Mcp = await _mcp.HandleAsync(request.McpMessage ?? string.Empty, access, cancellationToken).ConfigureAwait(false) };
             case "explain":
                 return new ProfilerApiResponse { Ok = true, Explanation = await ExplainFindingAsync(access, id, request.Fingerprint, cancellationToken).ConfigureAwait(false) };
             case "control":

@@ -146,6 +146,7 @@ public static class ProfilerServerExtensions
         profiler.Hosting.Source = "server";
         profiler.Hosting.EnvironmentName = builder.Environment.EnvironmentName;
         profiler.Hosting.DashboardUrl = serverOptions.RoutePrefix.TrimStart('/') + "/";
+        profiler.Hosting.McpUrl = serverOptions.EnableMcp ? serverOptions.RoutePrefix.TrimStart('/') + "/mcp" : null;
 
         var services = builder.Services;
         services.TryAddSingleton(serverOptions);

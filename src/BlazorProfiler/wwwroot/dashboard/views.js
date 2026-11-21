@@ -1250,7 +1250,8 @@ export function sessions(ctx) {
     root.appendChild(panel('Leaks across sessions', leaksView(ctx, source)));
   }
 
-  const drop = h('div', { class: 'dropzone', tabindex: '0', role: 'button', 'aria-label': 'Drop a trace file here or press Enter to choose one' }, 'Drop a .bptrace or .json trace here to open it locally (read-only, never uploaded).');
+  // The visible text is the accessible name, so speech input users can say what they see.
+  const drop = h('div', { class: 'dropzone', tabindex: '0', role: 'button' }, 'Drop a .bptrace or .json trace here, or press Enter to choose one. It opens locally (read-only, never uploaded).');
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', e => {

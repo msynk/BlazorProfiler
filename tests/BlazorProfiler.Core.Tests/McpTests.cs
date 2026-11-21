@@ -53,6 +53,35 @@ public sealed class McpTests : IDisposable
     }
 
     [Fact]
+    public async Task BridgeServesTheReadOnlyToolsForInPageAgents()
+    {
+        var (host, api, sessionId) = CreateWithData();
+        using var owner = host;
+        async Task<JsonElement> Bridge(string message, ProfilerApiAccess access)
+        {
+            var response = await api.HandleAsync(new ProfilerApiRequest { Op = "mcp", McpMessage = message }, access);
+            Assert.True(response.Ok, response.Error);
+            return JsonDocument.Parse(response.Mcp!).RootElement.Clone();
+        }
+
+        // Control tools are never listed through the bridge, even with full access: in-page agents only read.
+        var tools = (await Bridge("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""", ProfilerApiAccess.Full)).GetProperty("result").GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToList();
+        Assert.Contains("list_findings", tools);
+        Assert.DoesNotContain("control_session", tools);
+        Assert.DoesNotContain("run_command", tools);
+
+        var call = await Bridge(JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 2, method = "tools/call", @params = new { name = "list_findings", arguments = new { session = sessionId, minSeverity = "Low" } } }), ProfilerApiAccess.Full);
+        Assert.False(call.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Contains("BP8001", call.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString(), StringComparison.Ordinal);
+
+        var refused = await Bridge("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"control_session","arguments":{}}}""", ProfilerApiAccess.Full);
+        Assert.True(refused.TryGetProperty("error", out _) || refused.GetProperty("result").GetProperty("isError").GetBoolean());
+
+        // Notifications have no answer.
+        Assert.Null((await api.HandleAsync(new ProfilerApiRequest { Op = "mcp", McpMessage = """{"jsonrpc":"2.0","method":"notifications/initialized"}""" }, ProfilerApiAccess.Full)).Mcp);
+    }
+
+    [Fact]
     public async Task InitializeNegotiatesTheProtocolVersion()
     {
         var (host, api, _) = CreateWithData();
