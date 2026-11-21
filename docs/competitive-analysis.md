@@ -225,6 +225,9 @@ release notes, and source code:
 | **DOM size** and BP7009 (Lighthouse thresholds, with the component types created in large numbers) | Chrome DevTools "Optimize DOM size" insight, Lighthouse | Browser module; overview tile |
 | **Window comparison** within one session: select a range on the timeline, use it as baseline, compare another range (same table as session comparison) | Grafana Pyroscope baseline/comparison picker, Unity Profile Analyzer | Timeline selection panel |
 | **Deep capture** in WebAssembly: CPU samples, GC dump, and runtime counters through the runtime's diagnostics API (`collectCpuSamples`, `collectGcDump`, `collectMetrics`), offered only when the build enables diagnostics, with a marker on the timeline | .NET WebAssembly EventPipe diagnostics, Tracy/Superluminal capture buttons | Toolbar |
+| **Leaks across sessions**: retained components grouped by a signature of component type and retainers, counted across live sessions and imported traces | LeakCanary leak signatures, Sentry issue grouping | `LeakGrouping`; Sessions view, `/api/leaks`, `list_leaks`, `blazor-profiler leaks` |
+| **AI explanations** (opt-in): an **Explain with AI** button on findings that sends the finding, its evidence, and the component's statistics to an `IChatClient`, with the answer shown as text | Datadog Bits AI, Sentry Seer, Chrome DevTools "Ask AI", Laravel Debugbar prompts | `IFindingExplainer`, `ProfilerServerOptions.AiExplanations` |
+| **Streamed interop sizes**: bytes passed through `DotNetStreamReference` and `IJSStreamReference` in both directions | Chrome DevTools network sizes | `JSInteropEvent.StreamBytes`; Interop view |
 | End-to-end coverage in **Firefox and WebKit** (WebAssembly collection and bridge, server collection, dashboard, rage clicks) and of **circuit reconnection** (offline, reconnect, collection resumes on the same circuit) | | E2E tests |
 
 Two findings came out of testing against real browsers:

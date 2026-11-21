@@ -21,6 +21,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="BlazorProfiler.Tests" />
     <InternalsVisibleTo Include="BlazorProfiler.Server" />
+    <InternalsVisibleTo Include="BlazorProfiler.Server.Tests" />
     <InternalsVisibleTo Include="BlazorProfiler.WebAssembly" />
     <InternalsVisibleTo Include="BlazorProfiler.Benchmarks" />
   </ItemGroup>

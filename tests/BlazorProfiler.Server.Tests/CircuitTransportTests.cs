@@ -112,6 +112,26 @@ public sealed class CircuitTransportTests
     }
 
     [Fact]
+    public async Task MeasuresInteropArgumentsIncludingByteArraysSentSeparately()
+    {
+        await using var app = await CreateAppAsync(profilerFirst: false);
+        app.Services.GetRequiredService<IProfiler>().StartSession(new ProfilerSessionOptions { Name = "interop" });
+        var protocol = app.Services.GetRequiredService<IHubProtocolResolver>().GetProtocol("blazorpack", null)!;
+
+        // A byte[] argument travels in a JS.ReceiveByteArray message before the call, whose JSON holds a placeholder.
+        const string json = "[{\"__byte[]\":0},\"text\"]";
+        Interop.InteropMessageSize.Begin();
+        protocol.WriteMessage(new InvocationMessage("JS.ReceiveByteArray", [0L, new byte[5_000]]), new ArrayBufferWriter<byte>());
+        protocol.WriteMessage(new InvocationMessage("JS.BeginInvokeJS", [1L, "draw", json, 0, 0L]), new ArrayBufferWriter<byte>());
+        Assert.Equal(5_000 + json.Length, Interop.InteropMessageSize.End());
+
+        // Not listening: nothing is kept for the next call.
+        protocol.WriteMessage(new InvocationMessage("JS.ReceiveByteArray", [1L, new byte[10]]), new ArrayBufferWriter<byte>());
+        Interop.InteropMessageSize.Begin();
+        Assert.Null(Interop.InteropMessageSize.End());
+    }
+
+    [Fact]
     public async Task DoesNotMeasureWhileNotRecording()
     {
         await using var app = await CreateAppAsync(profilerFirst: false);

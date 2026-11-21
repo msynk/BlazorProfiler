@@ -34,6 +34,12 @@ public sealed class CircuitTransport
     /// <summary>The client method that starts a .NET-to-JavaScript call.</summary>
     internal const string BeginInvokeJSTarget = "JS.BeginInvokeJS";
 
+    /// <summary>
+    /// The client method that receives a <c>byte[]</c> argument of a .NET-to-JavaScript call: the framework sends each one
+    /// in a message of its own (as binary) before <see cref="BeginInvokeJSTarget"/>, whose JSON holds only a placeholder.
+    /// </summary>
+    internal const string ReceiveByteArrayTarget = "JS.ReceiveByteArray";
+
     // Batches in flight on one circuit are few; the bound only matters when their events are not recorded.
     private const int MaxPendingBatchesPerCircuit = 256;
 
@@ -268,17 +274,28 @@ internal sealed class ProfilingHubProtocol : IHubProtocol
 
     /// <summary>
     /// Reports the size of the arguments of a .NET-to-JavaScript call (<c>JS.BeginInvokeJS</c>: call id, identifier,
-    /// arguments JSON, ...) to the interop decorator waiting on this thread.
+    /// arguments JSON, ...; and <c>JS.ReceiveByteArray</c>: id, bytes for each <c>byte[]</c> argument) to the interop
+    /// decorator waiting on this thread.
     /// </summary>
     private static void ReportInteropArguments(InvocationMessage invocation)
     {
-        if (InteropMessageSize.IsListening
-            && string.Equals(invocation.Target, CircuitTransport.BeginInvokeJSTarget, StringComparison.Ordinal)
-            && invocation.Arguments is { Length: > 2 } arguments
+        if (!InteropMessageSize.IsListening || invocation.Arguments is not { } arguments)
+        {
+            return;
+        }
+
+        if (string.Equals(invocation.Target, CircuitTransport.BeginInvokeJSTarget, StringComparison.Ordinal)
+            && arguments.Length > 2
             && arguments[1] is string
             && arguments[2] is null or string)
         {
             InteropMessageSize.Report(arguments[2] is string json ? Encoding.UTF8.GetByteCount(json) : 0);
+        }
+        else if (string.Equals(invocation.Target, CircuitTransport.ReceiveByteArrayTarget, StringComparison.Ordinal)
+            && arguments.Length > 1
+            && arguments[1] is byte[] bytes)
+        {
+            InteropMessageSize.Report(bytes.Length);
         }
     }
 

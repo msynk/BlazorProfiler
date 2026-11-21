@@ -47,7 +47,7 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - **AI explanations** (opt-in): with `ProfilerServerOptions.AiExplanations` and an `IChatClient` (Microsoft.Extensions.AI;
   the keyed service `"BlazorProfiler"` or the app's), findings get **Explain with AI** in the dashboard. The profiler
   builds the prompt from the finding, its evidence, and the component's statistics; the answer is shown as text with the
-  model's name. `IFindingExplainer` lets WebAssembly apps (or anything else) provide explanations, for example through
+  model's name and kept while the dashboard is open. An explainer's own timeout is reported as a failure (502). `IFindingExplainer` lets WebAssembly apps (or anything else) provide explanations, for example through
   their own backend. API: `POST /api/sessions/{id}/findings/explain?fingerprint=...` and the bridge operation `explain`;
   control access required. The demo has a stand-in assistant (`Demo:EchoAssistant`).
 - **Leaks across sessions**: retained components (BP5004) of every visible session are grouped by **leak signature**
@@ -85,6 +85,16 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
 - A two-hour simulated session test: storage, aggregates, analysis, the API, MCP, and export stay bounded and consistent
   after eviction.
 - Event schema version 3 (see [migration notes](docs/migration.md)).
+
+Fixed:
+
+- On Blazor Server, the measured size of a .NET-to-JavaScript call now includes its `byte[]` arguments, which the
+  framework sends in messages of their own before the call (`JS.ReceiveByteArray`); before, a large byte array was
+  reported as a few bytes and BP4003 missed it.
+- A stream passed in a `DotNetStreamReference` whose size cannot be read (any exception, for example from a custom
+  stream) no longer fails the app's interop call; its size is reported as unknown.
+- `blazor-profiler leaks` counts traces with the same file name in different folders (CI artifacts) as different
+  sessions, named by path.
 
 ### Earlier unreleased changes
 

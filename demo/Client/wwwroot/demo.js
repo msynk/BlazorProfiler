@@ -114,6 +114,11 @@ export function sendStream(ref, size) {
   return ref.invokeMethodAsync('ReceiveStream', DotNet.createJSStreamReference(new Uint8Array(size)));
 }
 
+// Binary interop: a byte[] argument arrives as a Uint8Array (on Blazor Server it travels in a message of its own).
+export function receiveBytes(bytes) {
+  return bytes.length;
+}
+
 // Streaming interop: returns data that .NET receives as a stream (InvokeAsync<IJSStreamReference>; the framework creates
 // the reference from the returned typed array).
 export function makeStream(size) {

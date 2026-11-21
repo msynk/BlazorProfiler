@@ -50,6 +50,7 @@
         var toJavaScript = await m.InvokeAsync<int>("receiveStream", new DotNetStreamReference(source, leaveOpen: true));
         var toDotNet = await m.InvokeAsync<long>("sendStream", self, size);
         await using var back = await m.InvokeAsync<IJSStreamReference>("makeStream", size);
+        await m.InvokeAsync<int>("receiveBytes", new byte[50_000]);
         status = $"Streamed {toJavaScript} bytes to JavaScript, {toDotNet} bytes to .NET, {back.Length} bytes back";
     }
 

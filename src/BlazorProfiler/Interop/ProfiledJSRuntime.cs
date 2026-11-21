@@ -108,13 +108,18 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
         {
             foreach (var arg in args)
             {
-                if (arg is DotNetStreamReference { Stream: { CanSeek: true } stream })
+                if (arg is DotNetStreamReference { Stream: { } stream })
                 {
                     try
                     {
-                        total = (total ?? 0) + Math.Max(0, stream.Length - stream.Position);
+                        if (stream.CanSeek)
+                        {
+                            total = (total ?? 0) + Math.Max(0, stream.Length - stream.Position);
+                        }
                     }
-                    catch (Exception ex) when (ex is ObjectDisposedException or NotSupportedException or IOException)
+#pragma warning disable CA1031 // Measuring runs before the app's call: any failure of a stream (custom streams and wrappers included) must leave the call alone.
+                    catch (Exception)
+#pragma warning restore CA1031
                     {
                         // Disposed or not measurable: the size stays unknown.
                     }
@@ -124,7 +129,15 @@ public sealed class JSInteropCollector : ProfilerCollectorBase
 
         if (result is IJSStreamReference reference)
         {
-            total = (total ?? 0) + Math.Max(0, reference.Length);
+            try
+            {
+                total = (total ?? 0) + Math.Max(0, reference.Length);
+            }
+#pragma warning disable CA1031 // A custom stream reference must not fail the app's call.
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+            }
         }
 
         return total;

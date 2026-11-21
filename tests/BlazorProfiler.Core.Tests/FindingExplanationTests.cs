@@ -89,6 +89,18 @@ public sealed class FindingExplanationTests
         var (host2, api2, sessionId2, fingerprint2) = Create(new RecordingExplainer(_ => new string('x', ProfilerApi.MaxExplanationLength + 500)));
         using var owner2 = host2;
         Assert.Equal(ProfilerApi.MaxExplanationLength, (await api2.ExplainFindingAsync(ProfilerApiAccess.Full, sessionId2, fingerprint2)).Text.Length);
+
+        // The explainer's own timeout (HttpClient reports it as a cancellation) is a failure, not a cancelled request.
+        var (host3, api3, sessionId3, fingerprint3) = Create(new RecordingExplainer(_ => throw new TaskCanceledException("The request timed out.")));
+        using var owner3 = host3;
+        Assert.Equal(502, (await Assert.ThrowsAsync<ProfilerApiException>(() => api3.ExplainFindingAsync(ProfilerApiAccess.Full, sessionId3, fingerprint3))).StatusCode);
+
+        // The caller's cancellation is not.
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        var (host4, api4, sessionId4, fingerprint4) = Create(new RecordingExplainer(_ => throw new OperationCanceledException(cancelled.Token)));
+        using var owner4 = host4;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => api4.ExplainFindingAsync(ProfilerApiAccess.Full, sessionId4, fingerprint4, cancelled.Token));
     }
 
     [Fact]

@@ -87,6 +87,24 @@ public class InteropTests
         Assert.Equal(900, calls[0].StreamBytes);
         Assert.Equal(500, calls[1].StreamBytes);
         Assert.Null(calls[2].StreamBytes);
+
+        // A stream that fails to report its size leaves the app's call alone; the size is unknown.
+        await runtime.InvokeVoidAsync("upload", new DotNetStreamReference(new UnmeasurableStream()));
+        Assert.Null(f.All<JSInteropEvent>()[3].StreamBytes);
+    }
+
+    /// <summary>Fails the first time its length is read (by the profiler, before the call); the call itself reads it.</summary>
+    private sealed class UnmeasurableStream : MemoryStream
+    {
+        private bool _measured;
+
+        public override long Length => _measured ? base.Length : throw Fail();
+
+        private InvalidOperationException Fail()
+        {
+            _measured = true;
+            return new InvalidOperationException("Not measurable.");
+        }
     }
 
     [Fact]

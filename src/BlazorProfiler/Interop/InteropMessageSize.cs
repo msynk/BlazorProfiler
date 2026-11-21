@@ -36,12 +36,15 @@ internal static class InteropMessageSize
         return bytes >= 0 ? bytes : null;
     }
 
-    /// <summary>Reports the size of the arguments of a message written on this thread.</summary>
+    /// <summary>
+    /// Reports the size of a message written on this thread for the call: its arguments, and byte arrays the framework
+    /// sends in messages of their own before it. Sizes reported during one call add up.
+    /// </summary>
     internal static void Report(long bytes)
     {
         if (t_listening)
         {
-            t_bytes = bytes;
+            t_bytes = Math.Max(0, t_bytes) + bytes;
         }
     }
 }

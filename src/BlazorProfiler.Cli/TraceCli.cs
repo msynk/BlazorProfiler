@@ -325,6 +325,8 @@ internal static class TraceCli
             throw new CliException("Missing argument <trace>.");
         }
 
+        // Traces are named by file name, or by path when names repeat (CI artifacts: run1/trace.bptrace, run2/trace.bptrace).
+        var names = paths.GroupBy(p => Path.GetFileName(p), StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
         var sources = new List<LeakSource>();
         foreach (var path in paths)
         {
@@ -333,7 +335,8 @@ internal static class TraceCli
             var start = document.Events.Count > 0 ? document.Events.Min(e => e.Timestamp) : document.Clock.AnchorTimestamp;
 
             // Each trace has its own instance identifiers.
-            sources.Add(new LeakSource(Path.GetFileName(path), "trace:" + path, clock, start, [.. document.Events.OfType<Events.ComponentRetainedEvent>()]));
+            var name = Path.GetFileName(path);
+            sources.Add(new LeakSource(names.Contains(name) ? path : name, "trace:" + path, clock, start, [.. document.Events.OfType<Events.ComponentRetainedEvent>()]));
         }
 
         var report = LeakGrouping.Group(sources);

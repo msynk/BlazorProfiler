@@ -172,5 +172,16 @@ public sealed class LeakGroupingTests : IDisposable
         Assert.Equal(["monday.bptrace", "tuesday.bptrace"], counter.GetProperty("sessionIds").EnumerateArray().Select(e => e.GetString()).Order().ToList());
 
         Assert.Equal(TraceCli.Success, await TraceCli.RunAsync(["leaks", clean, "--fail-on-leaks"], TextWriter.Null, TextWriter.Null));
+
+        // Traces with one file name in different folders (CI artifacts) are different sessions, named by path.
+        Directory.CreateDirectory(Path.Combine(_directory, "run1"));
+        Directory.CreateDirectory(Path.Combine(_directory, "run2"));
+        var run1 = await Write(Path.Combine("run1", "trace.bptrace"), Retained("App.Counter", 1, null, RetentionReason.Disposed, Subscription));
+        var run2 = await Write(Path.Combine("run2", "trace.bptrace"), Retained("App.Counter", 1, null, RetentionReason.Disposed, Subscription));
+        using var runs = new StringWriter();
+        Assert.Equal(TraceCli.Success, await TraceCli.RunAsync(["leaks", run1, run2, monday, "--format", "json"], runs, TextWriter.Null));
+        var group = JsonDocument.Parse(runs.ToString()).RootElement.GetProperty("groups")[0];
+        Assert.Equal(3, group.GetProperty("sessions").GetInt32());
+        Assert.Equal(new[] { run1, run2, "monday.bptrace" }.Order(StringComparer.Ordinal), group.GetProperty("sessionIds").EnumerateArray().Select(e => e.GetString()!).Order(StringComparer.Ordinal));
     }
 }

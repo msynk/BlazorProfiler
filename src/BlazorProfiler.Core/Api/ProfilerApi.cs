@@ -350,8 +350,10 @@ public sealed class ProfilerApi
         {
             text = await explainer.ExplainAsync(request, cancellationToken).ConfigureAwait(false) ?? string.Empty;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            // Includes the explainer's own timeouts (an HttpClient timeout is a TaskCanceledException); only the caller's
+            // cancellation propagates as such.
             // The explainer's error may describe its configuration (endpoints, deployments); report only that it failed.
             throw new ProfilerApiException($"The finding explainer failed ({ex.GetType().Name}).", ex) { StatusCode = 502 };
         }
