@@ -46,6 +46,12 @@ public sealed class ProfilerInfo
 
     /// <summary>Whether the caller may see process-wide information and all circuits.</summary>
     public bool CanViewAllCircuits { get; set; }
+
+    /// <summary>Whether findings can be explained by an <see cref="IFindingExplainer"/> (for example a language model).</summary>
+    public bool CanExplainFindings { get; set; }
+
+    /// <summary>The name of the finding explainer, when available.</summary>
+    public string? FindingExplainer { get; set; }
 }
 
 /// <summary>A page of events.</summary>
@@ -154,6 +160,9 @@ public sealed class ProfilerApiResponse
 
     /// <summary>Retained components grouped across sessions (<c>leaks</c>).</summary>
     public LeakReport? Leaks { get; set; }
+
+    /// <summary>The explanation of a finding (<c>explain</c>).</summary>
+    public FindingExplanation? Explanation { get; set; }
 }
 
 /// <summary>Thrown for invalid API requests.</summary>
@@ -240,6 +249,12 @@ public sealed class ProfilerApi
     /// <summary>The profiler.</summary>
     public IProfiler Profiler => _profiler;
 
+    /// <summary>Explains findings in natural language, when configured (see <see cref="IFindingExplainer"/>).</summary>
+    public IFindingExplainer? Explainer { get; init; }
+
+    /// <summary>The maximum length of an explanation returned to clients.</summary>
+    public const int MaxExplanationLength = 20_000;
+
     /// <summary>Returns profiler information.</summary>
     public ProfilerInfo GetInfo(ProfilerApiAccess access)
     {
@@ -256,6 +271,8 @@ public sealed class ProfilerApi
             Sessions = [.. _profiler.GetSessions().Where(access.CanView).Select(s => s.GetStatistics())],
             Rules = [.. _profiler.Diagnostics.Rules.Select(r => r.Descriptor)],
             CanViewAllCircuits = access.CanViewAllCircuits,
+            CanExplainFindings = Explainer is not null && access.CanControl,
+            FindingExplainer = Explainer is not null && access.CanControl ? Explainer.Name : null,
             Commands = GetCommands(access),
         };
     }
@@ -302,6 +319,49 @@ public sealed class ProfilerApi
     {
         ArgumentNullException.ThrowIfNull(access);
         return LeakGrouping.Group(_profiler.GetSessions().Where(access.CanView));
+    }
+
+    /// <summary>
+    /// Explains a finding with the configured <see cref="Explainer"/>. The finding and its context are sent to it (for
+    /// example to a hosted language model), so this is a control action: it needs <see cref="ProfilerApiAccess.CanControl"/>.
+    /// </summary>
+    public async Task<FindingExplanation> ExplainFindingAsync(ProfilerApiAccess access, string sessionId, string? fingerprint, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        var explainer = Explainer ?? throw new ProfilerApiException("No finding explainer is configured.") { StatusCode = 404 };
+        RequireControl(access);
+        var session = GetSession(access, sessionId);
+        if (string.IsNullOrEmpty(fingerprint))
+        {
+            throw new ProfilerApiException("A finding fingerprint is required.");
+        }
+
+        var finding = _profiler.Diagnostics.Analyze(session).Findings.FirstOrDefault(f => string.Equals(f.Fingerprint, fingerprint, StringComparison.Ordinal))
+            ?? throw new ProfilerApiException("Finding not found.") { StatusCode = 404 };
+        var request = new FindingExplanationRequest
+        {
+            Finding = finding,
+            SystemPrompt = FindingPrompt.System,
+            Prompt = FindingPrompt.Build(finding, session.GetSummary(), session.IsImported ? "trace" : _source),
+        };
+
+        string text;
+        try
+        {
+            text = await explainer.ExplainAsync(request, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The explainer's error may describe its configuration (endpoints, deployments); report only that it failed.
+            throw new ProfilerApiException($"The finding explainer failed ({ex.GetType().Name}).", ex) { StatusCode = 502 };
+        }
+
+        return new FindingExplanation
+        {
+            Fingerprint = finding.Fingerprint,
+            Text = text.Length <= MaxExplanationLength ? text : text[..MaxExplanationLength],
+            Source = explainer.Name,
+        };
     }
 
     /// <summary>Returns the retained events of one operation.</summary>
@@ -550,6 +610,8 @@ public sealed class ProfilerApi
                 return new ProfilerApiResponse { Ok = true, Events = GetOperation(access, id, request.OperationId) };
             case "leaks":
                 return new ProfilerApiResponse { Ok = true, Leaks = GetLeaks(access) };
+            case "explain":
+                return new ProfilerApiResponse { Ok = true, Explanation = await ExplainFindingAsync(access, id, request.Fingerprint, cancellationToken).ConfigureAwait(false) };
             case "control":
                 return new ProfilerApiResponse { Ok = true, Session = Control(access, id, request.Action, request.Name) };
             case "start":

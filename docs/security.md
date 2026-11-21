@@ -111,6 +111,15 @@ reversed or correlated across processes. Export can additionally pseudonymize ci
   endpoint like a developer with access to the dashboard.
 - `blazor-profiler mcp` serves only the trace files given on its command line, over standard input and output.
 
+## AI explanations
+
+Off by default. With `ProfilerServerOptions.AiExplanations` and a registered `IChatClient` (or any `IFindingExplainer`),
+users with control access can ask for an explanation of a finding. The request sends the finding and its component's
+statistics to the configured provider: type and method names, rule texts, measured values, and URLs and SQL as recorded
+(query values redacted, SQL literals normalized). Nothing is sent until a user asks for an explanation. The answer is
+displayed as text, never as HTML, and capped at 20,000 characters; an explainer's error is reported by type only, so
+endpoint or deployment details in its message are not shown.
+
 ## OpenTelemetry
 
 Telemetry is off by default. When enabled, spans and metrics carry component type names, JS interop identifiers

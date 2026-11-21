@@ -44,6 +44,12 @@ Improvements from a [second study of profilers across ecosystems](docs/competiti
   likely to leak; previously their disposal was invisible. Components with their own `IAsyncDisposable`, and components
   that are not instrumented at all, are recorded (and watched by the leak check) by their instrumented parent when they
   leave its render tree or the parent is disposed.
+- **AI explanations** (opt-in): with `ProfilerServerOptions.AiExplanations` and an `IChatClient` (Microsoft.Extensions.AI;
+  the keyed service `"BlazorProfiler"` or the app's), findings get **Explain with AI** in the dashboard. The profiler
+  builds the prompt from the finding, its evidence, and the component's statistics; the answer is shown as text with the
+  model's name. `IFindingExplainer` lets WebAssembly apps (or anything else) provide explanations, for example through
+  their own backend. API: `POST /api/sessions/{id}/findings/explain?fingerprint=...` and the bridge operation `explain`;
+  control access required. The demo has a stand-in assistant (`Demo:EchoAssistant`).
 - **Leaks across sessions**: retained components (BP5004) of every visible session are grouped by **leak signature**
   (a stable hash of the component type and its likely retainers), so a leak seen in many circuits, sessions, or runs is
   listed once with the number of sessions, circuits, and instances it affected. Available in the Sessions view, at

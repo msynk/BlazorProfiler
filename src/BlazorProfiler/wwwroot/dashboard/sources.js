@@ -72,6 +72,7 @@ export class ApiSource {
   operation(id, operationId) { return this.get(`/sessions/${encodeURIComponent(id)}/operations/${operationId}`); }
   circuits() { return this.get('/circuits'); }
   leaks() { return this.get('/leaks'); }
+  explain(id, fingerprint) { return this.send('POST', `/sessions/${encodeURIComponent(id)}/findings/explain?fingerprint=${encodeURIComponent(fingerprint)}`); }
   control(id, action, name) { return this.send('POST', `/sessions/${encodeURIComponent(id)}/${action}${name ? `?name=${encodeURIComponent(name)}` : ''}`); }
   start(name) { return this.send('POST', '/sessions', { name }); }
   remove(id) { return this.send('DELETE', `/sessions/${encodeURIComponent(id)}`); }
@@ -182,6 +183,7 @@ export class BridgeSource {
   async findings(id) { return (await this.call({ op: 'findings', sessionId: id })).report; }
   async operation(id, operationId) { return (await this.call({ op: 'operation', sessionId: id, operationId })).events; }
   async leaks() { return (await this.call({ op: 'leaks' })).leaks; }
+  async explain(id, fingerprint) { return (await this.call({ op: 'explain', sessionId: id, fingerprint }, 120000)).explanation; }
   async circuits() { return []; }
   async control(id, action, name) { return (await this.call({ op: 'control', sessionId: id, action, name })).session; }
   async start(name) { return (await this.call({ op: 'start', name })).session; }

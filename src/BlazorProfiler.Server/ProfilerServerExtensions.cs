@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -104,6 +105,18 @@ public sealed class ProfilerServerOptions
     /// <c>IProfiledJSRuntime</c>. Defaults to true. Messages of other hubs are not affected.
     /// </summary>
     public bool MeasureCircuitMessages { get; set; } = true;
+
+    /// <summary>
+    /// Offers <em>Explain with AI</em> on findings in the dashboard, using an <c>IChatClient</c> (Microsoft.Extensions.AI)
+    /// from dependency injection: the keyed service <see cref="ChatClientKey"/> if registered, otherwise the app's
+    /// <c>IChatClient</c>. Defaults to false. Each explanation sends the finding and its context (type and method names,
+    /// rule texts, measured values, sanitized URLs and SQL) to the chat client's provider; it needs control access.
+    /// Ignored when an <see cref="IFindingExplainer"/> is registered, or when no chat client is.
+    /// </summary>
+    public bool AiExplanations { get; set; }
+
+    /// <summary>The service key of a chat client dedicated to the profiler (see <see cref="AiExplanations"/>).</summary>
+    public const string ChatClientKey = "BlazorProfiler";
 }
 
 /// <summary>Registration of the Blazor Server / Blazor Web App integration.</summary>
@@ -158,6 +171,15 @@ public static class ProfilerServerExtensions
         if (serverOptions.MeasureCircuitMessages)
         {
             CircuitTransport.Register(services);
+        }
+
+        if (serverOptions.AiExplanations)
+        {
+            // Resolved lazily: the chat client may be registered after the profiler. Without one there is no explainer.
+            services.TryAddSingleton<IFindingExplainer>(sp =>
+                (sp.GetKeyedService<IChatClient>(ProfilerServerOptions.ChatClientKey) ?? sp.GetService<IChatClient>()) is { } client
+                    ? new ChatClientFindingExplainer(client)
+                    : null!);
         }
         services.AddHostedService<ProfilerHostedService>();
         services.TryAddSingleton<ProfilerAccessEvaluator>();

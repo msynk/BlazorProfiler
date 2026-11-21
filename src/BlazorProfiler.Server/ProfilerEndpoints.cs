@@ -107,6 +107,8 @@ public static class ProfilerEndpoints
             p.Unsuppress(Access(c), fingerprint);
             return Results.NoContent();
         });
+        api.MapPost("/sessions/{id}/findings/explain", async (HttpContext c, ProfilerApi p, string id, string? fingerprint) =>
+            Json(await p.ExplainFindingAsync(Access(c), id, fingerprint, c.RequestAborted), ProfilerJsonContext.Default.FindingExplanation));
         api.MapPost("/commands/{name}", async (HttpContext c, ProfilerApi p, string name, string? argument) =>
             Json(await p.ExecuteCommandAsync(Access(c), name, argument, c.RequestAborted), ProfilerJsonContext.Default.ProfilerCommandResult));
 

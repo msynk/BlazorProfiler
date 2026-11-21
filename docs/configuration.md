@@ -184,6 +184,7 @@ counts.
 | `McpAllowControl` | `false` | Also offer MCP tools that change state (`control_session`, `run_command`). |
 | `MaxMcpRequestBytes` | 1 MB | Request size limit of the MCP endpoint. |
 | `MeasureCircuitMessages` | `true` | Wrap Blazor's SignalR hub protocol (`blazorpack`) to measure circuit messages: the size of each render batch sent to the browser (`renderBatch.transportBytes`), of each message received from it (`circuitActivity.receivedBytes`), and of the arguments of .NET-to-JavaScript calls made through `IProfiledJSRuntime` (`jsInterop.payloadBytes`, measured). Used by BP6006, BP6004, and BP4003. Other hubs' protocols are not wrapped. |
+| `AiExplanations` | `false` | Offer **Explain with AI** on findings, using an `IChatClient` (Microsoft.Extensions.AI): the keyed service `ProfilerServerOptions.ChatClientKey` (`"BlazorProfiler"`) if registered, otherwise the app's `IChatClient`. Each explanation sends the finding and its context to the chat client's provider and needs control access. Ignored when an `IFindingExplainer` is registered or no chat client is. See [getting started](getting-started.md#explaining-findings-with-ai). |
 
 ## `BlazorProfilerClient` parameters
 

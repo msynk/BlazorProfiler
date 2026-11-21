@@ -48,6 +48,9 @@ public class SampleApp : IAsyncLifetime
         };
         start.Environment["ASPNETCORE_ENVIRONMENT"] = EnvironmentName;
         start.Environment["Logging__LogLevel__Default"] = "Warning";
+
+        // A stand-in language model, so the dashboard's "Explain with AI" can be tested without one.
+        start.Environment["Demo__EchoAssistant"] = "true";
         _process = Process.Start(start)!;
         _process.OutputDataReceived += (_, _) => { };
         _process.ErrorDataReceived += (_, _) => { };

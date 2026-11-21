@@ -63,7 +63,10 @@ public static class BlazorProfilerServiceCollectionExtensions
         services.TryAddSingleton<JSInteropCollector>();
         services.TryAddSingleton(sp => CreateHost(sp, options));
         services.TryAddSingleton<IProfiler>(sp => sp.GetRequiredService<ProfilerHost>());
-        services.TryAddSingleton(sp => new ProfilerApi(sp.GetRequiredService<IProfiler>(), hosting.Source, null, sp.GetServices<IProfilerCommand>()));
+        services.TryAddSingleton(sp => new ProfilerApi(sp.GetRequiredService<IProfiler>(), hosting.Source, null, sp.GetServices<IProfilerCommand>())
+        {
+            Explainer = sp.GetService<IFindingExplainer>(),
+        });
         services.TryAddScoped<IProfiledJSRuntime>(sp => ProfiledJSRuntime.Create(sp.GetRequiredService<IJSRuntime>(), sp.GetRequiredService<JSInteropCollector>()));
 
         if (options.Enabled == false)

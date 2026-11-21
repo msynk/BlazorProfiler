@@ -19,7 +19,19 @@ builder.AddBlazorProfiler(
         options.Collectors.JSInteropPayloadEstimation = true;
         options.Collectors.JSObjectReferences = true;
     },
-    server => server.AuthorizationPolicy = builder.Environment.IsDevelopment() ? null : "ProfilerAccess");
+    server =>
+    {
+        server.AuthorizationPolicy = builder.Environment.IsDevelopment() ? null : "ProfilerAccess";
+
+        // "Explain with AI" on findings, with the chat client registered under ProfilerServerOptions.ChatClientKey (or the
+        // app's IChatClient). The demo has no model; set Demo:EchoAssistant to try the flow with a stand-in.
+        server.AiExplanations = true;
+    });
+if (builder.Configuration.GetValue<bool>("Demo:EchoAssistant"))
+{
+    builder.Services.AddKeyedSingleton<Microsoft.Extensions.AI.IChatClient>(ProfilerServerOptions.ChatClientKey, new EchoChatClient());
+}
+
 builder.Services.AddAuthorization(o => o.AddPolicy("ProfilerAccess", p => p.RequireRole("Developer")));
 
 // Server-side components call the demo API through IHttpClientFactory, which the profiler instruments automatically.

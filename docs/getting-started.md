@@ -230,6 +230,31 @@ trace and serve it from the CLI over standard input and output:
 { "mcpServers": { "blazor-profiler": { "command": "blazor-profiler", "args": ["mcp", "trace.bptrace"] } } }
 ```
 
+## Explaining findings with AI
+
+Findings are explained by deterministic rules. A language model can add an explanation in the context of your code: set
+`ProfilerServerOptions.AiExplanations` and register an `IChatClient` (Microsoft.Extensions.AI) for the profiler, and every
+finding in the dashboard gets an **Explain with AI** button:
+
+```csharp
+builder.AddBlazorProfiler(configureServer: server => server.AiExplanations = true);
+
+// Any Microsoft.Extensions.AI chat client: OpenAI, Azure OpenAI, Ollama, ... Keyed, so the profiler never uses the app's
+// own client by accident; without the key it falls back to the app's IChatClient.
+// (AddKeyedChatClient comes with the Microsoft.Extensions.AI package; AddKeyedSingleton<IChatClient> works as well.)
+builder.Services.AddKeyedChatClient(ProfilerServerOptions.ChatClientKey, sp => CreateYourChatClient(sp));
+```
+
+The profiler sends the finding (rule texts, evidence, caveats) and the statistics of the component it concerns, framed by
+a system prompt that tells the model to stay with the evidence and to treat the data as data. It does not send source code,
+parameter values, or request bodies, which it never records; type and method names, URLs (with redacted query values),
+and normalized SQL are part of findings. The answer is shown as text, with the model's name and a reminder to check it.
+Explanations need control access, like other actions.
+
+In WebAssembly, implement `IFindingExplainer` with a call to your own backend (so no model credentials reach the browser)
+and register it as a singleton; the dashboard then offers the button there too. Coding agents connected through
+[MCP](#coding-agents-mcp) already have the findings and do not need this.
+
 ## OpenTelemetry
 
 Set `options.Telemetry.Metrics` and `options.Telemetry.Traces` and add the `BlazorProfiler` meter and activity source to
