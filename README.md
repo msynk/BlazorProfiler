@@ -1,3 +1,7 @@
+**Note**: moved to bitfoundation labs (https://github.com/bitfoundation/bitlabs)
+
+---
+
 # BlazorProfiler
 
 A lightweight, Blazor-specific performance profiler that identifies, correlates, explains, and helps resolve performance
